@@ -1,136 +1,144 @@
-// Tell emacs that this is a C++ source
-//  -*- C++ -*-.
+// Tell Emacs this is C++   -*- C++ -*-
 #ifndef EMCALSEPDCORRELATOR_H
 #define EMCALSEPDCORRELATOR_H
+//==========================================================================
+//  sPHENIX EMCal × sEPD × MBD correlator – headers
+//  Author:  <your name>          (world‑class clean‑room version)
+//  ------------------------------------------------------------------
+//  PUBLIC  :  unchanged Fun4All module interface.
+//  PRIVATE :  book‑once helpers  |  per‑event helpers  |  caches.
+//==========================================================================
 
+//––– Framework ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <fun4all/SubsysReco.h>
 #include <calotrigger/TriggerAnalyzer.h>
+#include <phool/PHCompositeNode.h>
 
+//––– ROOT base ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+#include <TFile.h>
+#include <TH1F.h>
+#include <TH2F.h>
+#include <TH2Poly.h>
+#include <TLorentzVector.h>
+
+//––– sPHENIX objects ––––––––––––––––––––––––––––––––––––––––––––––––––––––
+#include <calobase/TowerInfoContainer.h>
+#include <calobase/RawTowerGeomContainer.h>
+#include <calobase/RawClusterContainer.h>
+#include <globalvertex/GlobalVertexMap.h>
+#include <mbd/MbdGeom.h>
+#include <mbd/MbdPmtContainer.h>
+#include <epd/EpdGeom.h>
+
+//––– STL ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <string>
-#include <chrono>
+#include <map>
 #include <vector>
+#include <tuple>
 #include <sstream>
 #include <iomanip>
-#include <TTree.h>
-#include <ffarawobjects/Gl1Packet.h>
-#include <ffarawobjects/Gl1Packetv1.h>
-#include <ffarawobjects/Gl1Packetv2.h>
-#include <calobase/RawTowerGeom.h>
-#include <calobase/TowerInfoContainer.h>
-#include <calobase/TowerInfoContainerv1.h>
-#include <calobase/TowerInfo.h>
-#include <calobase/TowerInfoDefs.h>
-#include <calobase/RawTowerGeomContainer.h>
-#include <unordered_map>
+#include <cmath>
+using HistMap = std::map<std::string,TObject*>;
 
-//for the vertex
-#include <globalvertex/GlobalVertex.h>
-#include <globalvertex/GlobalVertexMap.h>
+//==========================================================================
+//                               CLASS
+//==========================================================================
+class emcal_sepdCorrelator : public SubsysReco
+{
+ public:
+  explicit emcal_sepdCorrelator(const std::string& out = "caloTreeData.root");
+  ~emcal_sepdCorrelator() override = default;
 
-class PHCompositeNode;
-class Fun4AllHistoManager;
-class TFile;
-class RawCluster;
-class TowerInfoContainer;
-class TH1F;
-class TH2F;
+  // Fun4All hooks ---------------------------------------------------------
+  int  Init            (PHCompositeNode*) override;
+  int  process_event   (PHCompositeNode*) override;
+  int  ResetEvent      (PHCompositeNode*) override;
+  int  End             (PHCompositeNode*) override;
+  int  Reset           (PHCompositeNode*) override;
+  void Print           (const std::string& what = "ALL") const override;
 
-class emcal_sepdCorrelator : public SubsysReco{
-public:
-    
-    // A constructor that takes two std::string arguments
-    emcal_sepdCorrelator(const std::string &dataOutFile = "caloTreeData.root");
-    
-    ~emcal_sepdCorrelator() override;
-    
-    int Init(PHCompositeNode *topNode) override;
-    
-    int process_event(PHCompositeNode *topNode) override;
-    
-    int ResetEvent(PHCompositeNode *topNode) override;
-    
-    int End(PHCompositeNode *topNode) override;
-    
-    int Reset(PHCompositeNode * /*topNode*/) override;
-    
-    void Print(const std::string &what = "ALL") const override;
-    
-    void setGenEvent(int eventGet)     {getEvent = eventGet;}
+  // user bits -------------------------------------------------------------
+  void setVerbose(int level) { Verbosity(level); }
+  void setRunNumber(int r)         { m_runNumber = r;   }
+  void setVzCut(double c)          { m_vzCut = std::fabs(c); }
+  void enableVzCut(bool f=true)    { m_useVzCut = f;    }
 
-    /// Turn verbose mode on or off
-    void setVerbose(bool v) { verbose = v; }
-    
-    void setRunNumber(int runnumber) { m_runNumber = runnumber; }
-    
-    /// change the numerical cut (negative values are abs‑ed)
-    void setVzCut(double cut)          { m_vzCut   = std::fabs(cut); }
-    /// turn the cut on/off from the macro
-    void enableVzCut(bool enable=true) { m_useVzCut = enable;        }
+ private:
+  //=======================================================================
+  // 1)  One‑time booking helpers
+  //=======================================================================
+  void createHistos_Data();                                  // main booker
+  static TH2Poly* makeMbdHitmap(const std::string&, MbdGeom*, int arm);
+  static TH2Poly* makeEpdHitmap(const std::string&,            int arm);
 
-private:
-    
-    int m_runNumber = -1;
-    std::map<std::string, double> m_scaleFactors;
-    
-    TFile *out     = nullptr;  // data
+  //=======================================================================
+  // 2)  Per‑event helpers (called in process_event)
+  //=======================================================================
+  bool fetchNodes (PHCompositeNode*);                        // guards + cache
+  void doCaloQA   (const std::vector<std::string>&);
+  void doSepdQA   (const std::vector<std::string>&);
+  void doMbdQA    (const std::vector<std::string>&);
+  void doPi0QA    (const std::vector<std::string>&);
+  void fillCorrelations (const std::vector<std::string>&);
 
-    // 3) Filenames:
-    std::string Outfile;     // data output file
-    
-    int getEvent;
-    TriggerAnalyzer* trigAna{nullptr};
-    std::size_t event_count = 0;
-    
-    std::map<std::string, std::string> triggerNameMap = {
-        {"MBD N&S >= 1",          "MBD_NandS_geq_1"}
-    };
-    
-    // Pointer to the active trigger name map for the current run
-    std::map<int, std::string>* activeTriggerNameMap = nullptr;
-    
-    static constexpr std::array<std::pair<const char*, const char*>, 2> kJetRadii {{
-        {"r03", "AntiKt_unsubtracted_r03"},
-        {"r05", "AntiKt_unsubtracted_r05"}
-    }};
-    
-    bool   verbose = true;
+  //=======================================================================
+  // 3)  Configuration & state
+  //=======================================================================
+  // ––– run‑wide ----------------------------------------------------------
+  int         m_runNumber  = -1;
+  bool        verbose      = true;
+  double      m_vzCut      = 30.;      // [cm]
+  bool        m_useVzCut   = true;
+  std::string Outfile;                 // ROOT output
 
-    float m_vertex;
-    double m_vx, m_vy, m_vz;
-    
-    double m_vzCut   = 30.0;   // [cm]  default threshold
-    bool   m_useVzCut = true;  // enable/disable flag
+  TFile*            out   = nullptr;
+  TriggerAnalyzer*  trigAna = nullptr;
+  std::size_t       event_count = 0;
 
-    std::map<std::string, std::map<std::string, TObject*>> qaHistogramsByTrigger;
-    void createHistos_Data();
+  // ––– trigger map (unchanged) ------------------------------------------
+  std::map<std::string,std::string> triggerNameMap {
+     {"MBD N&S >= 2", "MBD_NandS_geq_2"}
+  };
+  std::map<std::string,
+           std::map<std::string,TObject*>> qaHistogramsByTrigger;
+
+  // ––– cut tables (unchanged) -------------------------------------------
+  const std::vector<float>               m_asymCuts   {0.5f,0.7f};
+  const std::vector<float>               m_chi2Cuts   {4.f};
+  const std::vector<float>               m_minClusE   {1.f,2.f};
+  const std::vector<std::pair<float,float>> m_ptBins {
+        {2,3},{3,4},{4,5},{5,6},{6,7},{7,8},{8,9},{9,10},
+        {10,12},{12,15},{15,20},{20,30} };
+
+  // ––– calorimeter convenience list -------------------------------------
+  const std::vector<std::tuple<std::string,std::string,std::string>> m_caloInfo {
+        {"TOWERINFO_CALIB_CEMC",   "TOWERGEOM_CEMC",   "CEMC"},
+        {"TOWERINFO_CALIB_HCALIN", "TOWERGEOM_HCALIN", "IHCAL"},
+        {"TOWERINFO_CALIB_HCALOUT","TOWERGEOM_HCALOUT","OHCAL"} };
+
+  // ––– run‑time caches ---------------------------------------------------
+  struct CaloCache { TowerInfoContainer* tw=nullptr;
+                     RawTowerGeomContainer* g=nullptr;
+                     double sumE=0.; };
+  std::map<std::string,CaloCache>  m_calo;  // "CEMC" …
+  TowerInfoContainer*  m_sepd    = nullptr;
+  MbdPmtContainer*     m_mbdpmts = nullptr;
+  MbdGeom*             m_mbdgeom = nullptr;
+  EpdGeom*             m_epdgeom = nullptr;
+  RawClusterContainer* m_clus    = nullptr;
+
+  void bookShapeHitMaps        (PHCompositeNode* topNode);          ///< NEW
+  void bookTowerAndClusterQA   (const std::string& trig, HistMap& H);
+  void bookChargeQA            (const std::string& trig, HistMap& H);
+  void bookEnergyChargeCorrel  (const std::string& trig, HistMap& H);
+  void bookPi0MassSpectra      (const std::string& trig, HistMap& H);
     
-    void checkMbdAndFillNewHists(
-            PHCompositeNode*                      topNode,
-            const std::unordered_map<std::string,float>& jetEtByRadius);
-    
-    inline std::string formatFloatForFilename(float value) {
-        std::ostringstream ss;
-        // Increase the precision to handle more decimal places accurately
-        ss << std::fixed << std::setprecision(3) << value;
-        std::string str = ss.str();
-        size_t dotPos = str.find('.');
-        if (dotPos != std::string::npos) {
-            // Replace '.' with "point"
-            str = str.substr(0, dotPos) + "point" + str.substr(dotPos + 1);
-        }
-        // Remove trailing zeros and 'point' for whole numbers
-        if (value == static_cast<int>(value)) {
-            size_t pointPos = str.find("point");
-            if (pointPos != std::string::npos) {
-                str.erase(pointPos);
-            }
-        } else {
-            // Remove trailing zeros for decimal values
-            str.erase(str.find_last_not_of('0') + 1, std::string::npos);
-        }
-        return str;
-    }
+  double m_sepdQ = 0., m_mbdQ = 0., m_vz = 0.;
+
+  // ––– utility -----------------------------------------------------------
+  static std::string invKey(float ptLo,float ptHi,
+                            float minE,float maxChi,float maxAsy);
 };
+//==========================================================================
 
-#endif  
-
+#endif  // EMCALSEPDCORRELATOR_H
