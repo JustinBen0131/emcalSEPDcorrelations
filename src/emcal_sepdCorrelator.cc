@@ -307,148 +307,18 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode *topNode)
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Build a map: radius‑tag  ->  max jet Et in this event
-    std::unordered_map<std::string, float> maxJetEt;
-    for (const auto& r : kJetRadii)
-    {
-        auto* jets = findNode::getClass<JetContainer>(topNode, r.second);
-        if (!jets)
-        {
-            if (verbose)
-                std::cout << "Aborting run: missing jet container " << r.second << " …\n";
-            return Fun4AllReturnCodes::ABORTRUN;
-        }
-        maxJetEt[r.first] = getMaxJetEt(jets);
-    }
     // ---------------------------------------------------------------------------
     // Loop over active trigger names  (UNCHANGED)
     for (const std::string& firedShortName : activeTriggerNames)
     {
         auto& qaHistograms = qaHistogramsByTrigger[firedShortName];
 
-        // Fill the scaled (“normal”) histograms – one per radius
-        for (const auto& kv : maxJetEt)               // kv.first = "r03"/"r06"
-        {
-            const std::string histName =
-                "h_leadingJetET_" + kv.first + "_" + firedShortName;
-
-            TH1F* h = static_cast<TH1F*>(qaHistograms[histName]);
-            if (!h)
-            {
-                std::cerr << "Error: Histogram " << histName << " not found.\n";
-                continue;
-            }
-            h->Fill(kv.second);
-
-            if (verbose)
-                std::cout << "Filled " << histName << " with " << kv.second << '\n';
-        }
+ 
     }
-    // ----------  NEW: fill the “doNotScale” histograms -------------------------
-    checkMbdAndFillNewHists(topNode, maxJetEt);
-    // ---------------------------------------------------------------------------
 
 
     return Fun4AllReturnCodes::EVENT_OK;
 }
-
-
-
-//____________________________________________________________________________
-void emcal_sepdCorrelator::checkMbdAndFillNewHists(
-    PHCompositeNode*                            topNode,
-    const std::unordered_map<std::string,float>& jetEtByRadius)
-{
-    if (!trigAna)
-    {
-        std::cerr << "[ERROR] No emcal_sepdCorrelator pointer!\n";
-        return;
-    }
-
-    // Make sure trigger bits for *this* event are decoded
-    trigAna->decodeTriggers(topNode);
-
-    // --------------------------------------------------------------------
-    // We always demand the *RAW* MBD bit; if it is absent we do nothing.
-    // --------------------------------------------------------------------
-    const std::string mbdDbName    = "MBD N&S >= 1";
-    const std::string mbdShortName = "MBD_NandS_geq_1";
-
-    if (!trigAna->checkRawTrigger(mbdDbName))
-    {
-        if (verbose)
-            std::cout << "[INFO] Raw MBD bit did not fire – skipping do‑not‑scale hists.\n";
-        return;
-    }
-
-    // --------------------------------------------------------------------
-    // 1) Fill MBD’s own “do not scale” histograms (one per radius)
-    // --------------------------------------------------------------------
-    for (const auto& r : kJetRadii)   // r.first = "r03"/"r06"
-    {
-        const std::string tag   = "_" + std::string(r.first);   // "_r03"
-        const std::string hName = "h_leadingJetET" + tag +
-                                  "_NewTriggerFilling_doNotScale_" +
-                                  mbdShortName;
-
-        auto& histMap = qaHistogramsByTrigger[mbdShortName];
-        auto  it      = histMap.find(hName);
-        if (it == histMap.end() || !(it->second))
-        {
-            if (verbose)
-                std::cerr << "[WARNING] Histogram " << hName << " not booked.\n";
-            continue;
-        }
-
-        if (auto* h = dynamic_cast<TH1F*>(it->second))
-        {
-            h->Fill(jetEtByRadius.at(r.first));
-            if (verbose)
-                std::cout << "[INFO] Filled " << hName << " with "
-                        << jetEtByRadius.at(r.first) << '\n';
-        }
-    }
-
-    // --------------------------------------------------------------------
-    // 2) For every *other* trigger we now require:
-    //       (a) raw‑MBD bit  **and**
-    //       (b) *scaled* version of the rare trigger (didTriggerFire)
-    // --------------------------------------------------------------------
-    for (const auto& kv : triggerNameMap)
-    {
-        const std::string& dbTriggerName   = kv.first;   // DB name
-        const std::string& histFriendlyStr = kv.second;  // short name
-
-        if (dbTriggerName == mbdDbName) continue;        // already handled
-
-        // need the scaled (live) bit for the rare trigger
-        if (!trigAna->didTriggerFire(dbTriggerName)) continue;
-
-        for (const auto& r : kJetRadii)
-        {
-            const std::string tag   = "_" + std::string(r.first);
-            const std::string hName = "h_leadingJetET" + tag +
-                                      "_NewTriggerFilling_doNotScale_" +
-                                      histFriendlyStr;
-
-            auto& histMap = qaHistogramsByTrigger[histFriendlyStr];
-            auto  it      = histMap.find(hName);
-            if (it == histMap.end() || !(it->second))
-            {
-                if (verbose)
-                    std::cerr << "[WARNING] Histogram " << hName << " not booked.\n";
-                continue;
-            }
-
-            if (auto* h = dynamic_cast<TH1F*>(it->second))
-            {
-                h->Fill(jetEtByRadius.at(r.first));
-            }
-        }
-    }
-}
-
     
 
 
