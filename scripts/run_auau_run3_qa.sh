@@ -1,53 +1,52 @@
 #!/usr/bin/env bash
 ##############################################################################
 # run_auau_run3_qa.sh
-#  argv[1]  run number
-#  argv[2]  list file (≤ N lines as produced by submitter)
-#  argv[3]  Condor cluster‑ID (for unique filenames)
-#  argv[4]  DEST_BASE — base directory for .root output
-#            (if empty, defaults to $SCRATCH/output/<run>)
+#   argv[1]  run number                    (e.g. 54128)
+#   argv[2]  chunk .list                   (≤ CHUNK_SIZE lines)
+#   argv[3]  Condor Cluster ID             (for unique file names)
+#   argv[4]  DEST_BASE  (optional)         default → group scratch
+#
+#   Produces TrigPlot_run<run>_c<cluster>_<firstDST>.root in:
+#       DEST_BASE/<run>/
 ##############################################################################
 set -euo pipefail
 
-# ----- user paths -----------------------------------------------------------
-USER="$(id -un)"
-HOME="/sphenix/u/${USER}"
-SCRATCH="/sphenix/u/${USER}/scratch/TriggerAnalysis"
-MYINSTALL="${HOME}/install"
-MACRO_DIR="${SCRATCH}/../macros"
-# ----------------------------------------------------------------------------
+########################  FIXED PATHS  ########################################
+USER="$(id -un)"                       # still useful for local tests
+PROJECT_BASE="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
+MACRO_DIR="${PROJECT_BASE}/macro"
+SCRATCH_BASE="/sphenix/u/${USER}/scratch/TriggerAnalysis"  # minimal local scratch
 
-runNumber="$1"
-fileList="$2"
-clusterID="${3:-0}"
-destBase="${4:-}"
+DEFAULT_DEST="/sphenix/tg/tg01/bulk/jbennett/emcalSEPDcorrelations"
+################################################################################
 
-# ----- environment ----------------------------------------------------------
+runNumber="$1"; shift
+fileList="$1"; shift
+clusterID="${1:-0}"; shift
+destBase="${1:-$DEFAULT_DEST}"
+
+[[ -s "$fileList" ]] || { echo "[FATAL] Empty list file: $fileList" >&2; exit 2; }
+
+#  -- Condor sets HOME wrong; force a sane env --------------------------------
 set +u
 export PGHOST=localhost
 source /opt/sphenix/core/bin/sphenix_setup.sh -n
 export PGHOST=localhost
 set -u
-source /opt/sphenix/core/bin/setup_local.sh "$HOME/install"
-# ----------------------------------------------------------------------------
+source /opt/sphenix/core/bin/setup_local.sh "/sphenix/u/${USER}/install"
+################################################################################
 
-# ----- decide output directory ---------------------------------------------
-if [[ -n "$destBase" ]]; then
-  outDir="${destBase}/${runNumber}"
-else
-  outDir="${SCRATCH}/output/${runNumber}"
-fi
+#  Output directory -----------------------------------------------------------
+outDir="${destBase}/${runNumber}"
 mkdir -p "$outDir"
-# ----------------------------------------------------------------------------
 
 firstFile="$(head -n1 "$fileList")"
-baseName="$(basename "$firstFile")"
-rootOut="${outDir}/TrigPlot_run${runNumber}_c${clusterID}_${baseName%.*}.root"
+baseTag="$(basename "${firstFile%.root}")"
+rootOut="${outDir}/TrigPlot_run${runNumber}_c${clusterID}_${baseTag}.root"
 
 echo "[INFO] $(date)  Run=$runNumber  Files=$(wc -l < "$fileList")"
-echo "[INFO] Output → $rootOut"
+echo "[INFO] Writing → $rootOut"
 
-root -b -l -q "macro/Fun4All_getJetTrigs.C(0, \"$fileList\", \"$rootOut\")"
+root -b -l -q "${MACRO_DIR}/Fun4All_emcalSEPDcorrelator.C(0, \"$fileList\", \"$rootOut\")"
 
 echo "[INFO] Completed $(date)"
-
