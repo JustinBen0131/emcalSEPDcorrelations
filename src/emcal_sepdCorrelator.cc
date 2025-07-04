@@ -13,22 +13,21 @@
 #include <TDirectory.h>
 #include <TSystem.h>
 #include <TMath.h>
+#include <globalvertex/GlobalVertex.h>   // full definition of GlobalVertex
+#include <calobase/TowerInfo.h>   // full definition of TowerInfo
+#include <iostream>
 
 //–––––––– helpers ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #define COUT_BLUE(MSG) \
     if (Verbosity() > 0) std::cout << "\033[1;34m" << MSG << "\033[0m\n"
 
-/* -----------------------------------------------------------------------
- *  Colour helpers and verbosity‑aware logger
- * -------------------------------------------------------------------- */
-#include <iostream>
 
 #define CLR_BLUE   "\033[1;34m"
 #define CLR_GREEN  "\033[1;32m"
 #define CLR_YELLOW "\033[1;33m"
 #define CLR_RESET  "\033[0m"
 
-/** Print `msg` if Verbosity() ≥ lvl, decorated with the chosen colour */
+/** Print `msg` if Verbosity() ≥ lvl, decorated with the chosen color */
 #define LOG(lvl, colour, msg)                                  \
   do { if (Verbosity() >= (lvl))                               \
          std::cout << colour << msg << CLR_RESET << std::endl; \
@@ -228,8 +227,8 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   doSepdQA(act);
   doMbdQA (act);
   doPi0QA (act);
-  fillCorrel(act);
-
+  fillCorrelations(act);
+    
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -241,31 +240,40 @@ TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
                                              MbdGeom* geom,
                                              int       arm)   // 0 = S, 1 = N
 {
-  LOG(2, CLR_BLUE,
-      "    ↳ makeMbdHitmap(\"" << name << "\")  arm=" << (arm? "North":"South"));
+  auto* h = new TH2Poly();                 // ROOT‑safe constructor
+  h->SetNameTitle(name.c_str(), ";x (cm);y (cm)");
 
-  auto* h = new TH2Poly(name.c_str(),";x (cm);y (cm)");
+  LOG(2, CLR_BLUE,
+        "    ↳ makeMbdHitmap(\"" << name << "\")  arm=" << (arm ? "North" : "South"));
+    
   if (!geom)
   {
     LOG(1, CLR_YELLOW, "      [WARN] MbdGeom is nullptr – map left empty");
     return h;
   }
 
-  const std::size_t nTot = geom->get_npmt();
   std::size_t nAdded = 0;
+  const double r = 3.0;                     // hex-radius [cm] ≈ actual tile size
 
-  for (unsigned ip = 0; ip < nTot; ++ip)
+  for (unsigned ip = 0; ip < 128; ++ip)     // 64 PMTs per arm → 128 total
   {
-    auto* p = geom->get_pmt(ip);
-    if (p->get_arm() != arm) continue;
+        if (geom->get_arm(ip) != arm) continue;
 
-    double x[7]{}, y[7]{};
-    for (int i = 0; i < 6; ++i)
-    { TVector3 v = p->get_vertex(i); x[i] = v.X(); y[i] = v.Y(); }
-    x[6] = x[0];  y[6] = y[0];
+        const double cx = geom->get_x(ip);
+        const double cy = geom->get_y(ip);
+        if (std::isnan(cx) || std::isnan(cy))  continue;
 
-    h->AddBin(6, x, y);
-    ++nAdded;
+        double x[7]{}, y[7]{};
+        for (int k = 0; k < 6; ++k)
+        {
+            const double ang = TMath::Pi()/6. + k * TMath::Pi()/3.;
+            x[k] = cx + r * std::cos(ang);
+            y[k] = cy + r * std::sin(ang);
+        }
+        x[6] = x[0];  y[6] = y[0];
+
+        h->AddBin(6, x, y);
+        ++nAdded;
   }
 
   LOG(3, CLR_GREEN, "      → " << nAdded << " hex‑bins booked");
@@ -276,6 +284,9 @@ TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
 TH2Poly* emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
                                              int /*arm*/)
 {
+  auto* h = new TH2Poly();
+  h->SetNameTitle(name.c_str(), ";x (cm);y (cm)");
+    
   LOG(2, CLR_BLUE, "    ↳ makeEpdHitmap(\"" << name << "\")");
 
   constexpr int    NR   = 16;        // radial rings
@@ -283,7 +294,6 @@ TH2Poly* emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
   constexpr double Rmax = 15.5;      // cm
   const double     dR   = Rmax / NR;
 
-  auto* h = new TH2Poly(name.c_str(),";x (cm);y (cm)");
   std::size_t nAdded = 0;
 
   for (int ir = 0; ir < NR; ++ir)
@@ -444,14 +454,15 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
   {
     auto* p = m_mbdpmts->get_pmt(ip);
     const double q = p->get_q(); if (q <= 0) continue;
-
-    TVector3 c = m_mbdgeom->get_pmt(ip)->get_center();
+    
+    double cx = m_mbdgeom->get_x(ip);
+    double cy = m_mbdgeom->get_y(ip);
     const std::string key = (p->get_arm() == 0 ? "h_MBD_Hitmap_South_"
-                                              : "h_MBD_Hitmap_North_");
+                                                : "h_MBD_Hitmap_North_");
 
     for (auto& t : trig)
-      static_cast<TH2Poly*>(qaHistogramsByTrigger[t][key + t])
-          ->Fill(c.X(), c.Y(), q);
+          static_cast<TH2Poly*>(qaHistogramsByTrigger[t][key + t])
+              ->Fill(cx, cy, q);
 
     m_mbdQ += q;
     ++(p->get_arm() ? nFiredN : nFiredS);

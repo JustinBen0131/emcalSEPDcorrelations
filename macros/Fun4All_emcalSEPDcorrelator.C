@@ -105,15 +105,15 @@ void Fun4All_emcalSEPDcorrelator(const int nEvents = 0,
     // ----------------------------------------------------------------------
     // 1.  REGISTER THE GEOMETRY SUBSYSTEMS  <<< NEW
     //     – Calorimeters (CEMC/IHCAL/OHCAL)
-        CaloGeomInit *geoInit = new CaloGeomInit("CaloGeomInit");
-        geoInit->Verbosity(0);                 // or =1 for one‑line summary
-        geoInit->UseDetailedTowerGeom(true);   // <-- critical: tower‑level
-        se->registerSubsystem(geoInit);
+    CaloGeomInit *geoInit = new CaloGeomInit("CaloGeomInit");
+    geoInit->Verbosity(0);                 // or =1 for one‑line summary
+    geoInit->UseDetailedTowerGeom(true);   // <-- critical: tower‑level
+    se->registerSubsystem(geoInit);
 
     //     – MBD (hexagonal PMT map)
-        MbdGeomReco *mbdGeo = new MbdGeomReco();
-        mbdGeo->Verbosity(0);
-        se->registerSubsystem(mbdGeo);
+    MbdGeomReco *mbdGeo = new MbdGeomReco();
+    mbdGeo->Verbosity(0);
+    se->registerSubsystem(mbdGeo);
 
     //     – sEPD geometry is already embedded in every DST  no extra module
     // ----------------------------------------------------------------------
