@@ -14,7 +14,7 @@ set -euo pipefail
 ########################  FIXED PATHS  ########################################
 USER="$(id -un)"                       # still useful for local tests
 PROJECT_BASE="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
-MACRO_DIR="${PROJECT_BASE}/macro"
+MACRO_DIR="${PROJECT_BASE}/macros"
 SCRATCH_BASE="/sphenix/u/${USER}/scratch/TriggerAnalysis"  # minimal local scratch
 
 DEFAULT_DEST="/sphenix/tg/tg01/bulk/jbennett/emcalSEPDcorrelations"

@@ -41,17 +41,37 @@ static std::map<std::string,std::string> g_dbNameToFolderName = {
     {"Photon 5 GeV + MBD NS >= 2, vtx < 10 cm","Photon_5_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm"}
 };
 
-// The exact order we want in the CSV
+
 static const std::vector<std::string> g_triggersOfInterest = {
+    // ---- MBD only ---------------------------------------------------------
     "MBD_NandS_geq_1",
-    "Jet_6_GeV_plus_MBD_NS_geq_1",
-    "Jet_8_GeV_plus_MBD_NS_geq_1",
-    "Jet_10_GeV_plus_MBD_NS_geq_1",
-    "Jet_12_GeV_plus_MBD_NS_geq_1",
-    "Photon_2_GeV_plus_MBD_NS_geq_1",
-    "Photon_3_GeV_plus_MBD_NS_geq_1",
-    "Photon_4_GeV_plus_MBD_NS_geq_1",
-    "Photon_5_GeV_plus_MBD_NS_geq_1"
+    "MBD_NandS_geq_2",
+    "MBD_NandS_geq_2_vtx_lt_10cm",
+    "MBD_NandS_geq_2_vtx_lt_30cm",
+    "MBD_NandS_geq_2_vtx_lt_60cm",
+
+    // ---- Jet + MBD N&S ≥ 2 -----------------------------------------------
+    "Jet_6_GeV_plus_MBD_NS_geq_2",
+    "Jet_8_GeV_plus_MBD_NS_geq_2",
+    "Jet_10_GeV_plus_MBD_NS_geq_2",
+    "Jet_12_GeV_plus_MBD_NS_geq_2",
+
+    // ---- Jet + MBD N&S ≥ 2  with |z_vtx|<10 cm ---------------------------
+    "Jet_6_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm",
+    "Jet_8_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm",
+    "Jet_10_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm",
+    "Jet_12_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm",
+
+    // ---- Photon + MBD N&S ≥ 2 --------------------------------------------
+    "Photon_2_GeV_plus_MBD_NS_geq_2",
+    "Photon_3_GeV_plus_MBD_NS_geq_2",
+    "Photon_4_GeV_plus_MBD_NS_geq_2",
+    "Photon_5_GeV_plus_MBD_NS_geq_2",
+
+    // ---- Photon + MBD N&S ≥ 2  with |z_vtx|<10 cm ------------------------
+    "Photon_3_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm",
+    "Photon_4_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm",
+    "Photon_5_GeV_plus_MBD_NS_geq_2_vtx_lt_10cm"
 };
 
 // --------------------------------------------------------------------------
@@ -251,142 +271,105 @@ void summarizeTriggerCountsFromCSV(const std::string& csvFilePath,
 }
 
 // --------------------------------------------------------------------------
-// 6) Optional: Analyze Combinations from the CSV
+// 6)  FAST combination analysis
+//     – enumerates *only* the combinations that actually occur.
+//     – uses a 64‑bit mask instead of std::set keys.
+//     – MAX_ORDER == 0 → no limit (all orders); otherwise limit coincidence size.
 // --------------------------------------------------------------------------
-void analyzeCombinationsFromCSV(const std::string& csvFilePath)
+void analyzeCombinationsFromCSV(const std::string& csvFilePath,
+                                unsigned int MAX_ORDER = 3)   // ← tweak here
 {
-    // We'll do combos of all 9 triggers in g_triggersOfInterest
-    std::vector<std::string> triggers = g_triggersOfInterest;
+    const std::vector<std::string>& triggers = g_triggersOfInterest;
+    const std::size_t N = triggers.size();
+    if (N > 64) {
+        std::cerr << "[ERROR] Too many triggers (" << N
+                  << ") for 64‑bit bitmask. Split the analysis.\n";
+        return;
+    }
 
-    // Read CSV
+    // -------------------------------------------------
+    // 1.  Build runNumber → bitmask of ON triggers
+    // -------------------------------------------------
     std::ifstream file(csvFilePath);
-    if (!file.is_open()) {
-        std::cerr << "[ERROR] Cannot open CSV for combos: " << csvFilePath << std::endl;
-        return;
-    }
-    std::string headerLine;
-    if (!std::getline(file, headerLine)) {
-        std::cerr << "[ERROR] CSV is empty: " << csvFilePath << std::endl;
-        return;
-    }
+    if (!file.is_open()) { std::cerr << "[ERROR] Cannot open " << csvFilePath << "\n"; return; }
 
-    // Parse header => find columns
-    std::vector<std::string> headers;
-    {
-        std::istringstream hdr(headerLine);
-        std::string h;
-        while (std::getline(hdr, h, ',')) {
-            h.erase(0, h.find_first_not_of(" \t\r\n"));
-            h.erase(h.find_last_not_of(" \t\r\n") + 1);
-            headers.push_back(h);
-        }
-    }
-
-    int runNumberCol = -1;
-    std::map<std::string,int> trigToCol;
-    for (size_t c=0; c<headers.size(); c++) {
-        if (headers[c]=="runNumber") {
-            runNumberCol = c;
-        }
-        else {
-            // If it's in triggers, store it
-            for (auto& t: triggers) {
-                if (headers[c]==t) {
-                    trigToCol[t] = (int)c;
-                }
-            }
-        }
-    }
-    if (runNumberCol<0) {
-        std::cerr << "[ERROR] 'runNumber' column not found in CSV." << std::endl;
-        return;
-    }
-
-    // We'll store run => trig => ON/OFF
-    std::map<int,std::map<std::string,std::string>> runTrigStatus;
-    std::vector<int> allRuns;
-
-    // Read each line
     std::string line;
+    if (!std::getline(file, line)) { std::cerr << "[ERROR] Empty CSV\n"; return; }
+
+    /* header → column index */
+    std::vector<std::string> hdr;
+    { std::istringstream iss(line); std::string tok;
+      while (std::getline(iss, tok, ',')) hdr.emplace_back(tok); }
+
+    int runCol = -1;
+    std::vector<int> trigCol(N, -1);
+    for (std::size_t c = 0; c < hdr.size(); ++c) {
+        if (hdr[c] == "runNumber") { runCol = static_cast<int>(c); continue; }
+        for (std::size_t i = 0; i < N; ++i)
+            if (hdr[c] == triggers[i]) trigCol[i] = static_cast<int>(c);
+    }
+    if (runCol < 0) { std::cerr << "[ERROR] runNumber column missing\n"; return; }
+
+    struct ComboInfo { std::size_t count{}; std::vector<int> runs; };
+    std::unordered_map<uint64_t, ComboInfo> combo;   // key = bitmask
+    combo.reserve(4096);
+
     while (std::getline(file, line)) {
         if (line.empty()) continue;
-        std::istringstream iss(line);
-        std::vector<std::string> tokens;
-        std::string t;
-        while (std::getline(iss, t, ',')) {
-            t.erase(0, t.find_first_not_of(" \t\r\n"));
-            t.erase(t.find_last_not_of(" \t\r\n") + 1);
-            tokens.push_back(t);
-        }
-        if (tokens.size()!=headers.size()) continue;
-        int runNo = std::stoi(tokens[runNumberCol]);
-        allRuns.push_back(runNo);
+        std::vector<std::string> tok; tok.reserve(hdr.size());
+        std::istringstream iss(line); std::string t;
+        while (std::getline(iss, t, ',')) tok.emplace_back(t);
 
-        for (auto& trName : triggers) {
-            auto it = trigToCol.find(trName);
-            if (it==trigToCol.end()) {
-                // column not found => OFF
-                runTrigStatus[runNo][trName] = "OFF";
-            } else {
-                runTrigStatus[runNo][trName] = tokens[it->second];
-            }
+        const int runNo = std::stoi(tok[runCol]);
+
+        uint64_t mask = 0;
+        for (std::size_t i = 0; i < N; ++i)
+            if (trigCol[i] >= 0 && tok[trigCol[i]] == "ON")
+                mask |= (1ULL << i);
+
+        /* iterate over all non‑zero sub‑sets of mask */
+        for (uint64_t sub = mask; sub; sub = (sub - 1) & mask) {
+#ifdef __cpp_lib_int_pow2     /* C++20 popcount */
+            unsigned bits = std::popcount(sub);
+#else                           /* GCC/Clang builtin */
+            unsigned bits = __builtin_popcountll(sub);
+#endif
+            if (MAX_ORDER && bits > MAX_ORDER) continue;
+
+            auto &info = combo[sub];
+            ++info.count;
+            info.runs.push_back(runNo);
         }
     }
     file.close();
 
-    // Generate combos
-    int n = (int)triggers.size();
-    int total = (1<<n);
-    std::map<std::set<std::string>,std::vector<int>> comboToRuns;
+    // -------------------------------------------------
+    // 2.  Dump statistics (sorted by subset size then lexicographically)
+    // -------------------------------------------------
+    std::vector<std::pair<uint64_t, ComboInfo>> vec(combo.begin(), combo.end());
+    std::sort(vec.begin(), vec.end(), [](auto &a, auto &b) {
+#ifdef __cpp_lib_int_pow2
+        unsigned sa = std::popcount(a.first), sb = std::popcount(b.first);
+#else
+        unsigned sa = __builtin_popcountll(a.first), sb = __builtin_popcountll(b.first);
+#endif
+        return (sa != sb) ? sa < sb : a.first < b.first;
+    });
 
-    for (int mask=1; mask<total; mask++) {
-        std::set<std::string> combo;
-        for (int i=0; i<n; i++) {
-            if (mask&(1<<i)) {
-                combo.insert(triggers[i]);
-            }
-        }
-        // check each run => if all triggers in combo == ON
-        for (int rn : allRuns) {
-            bool allOn = true;
-            for (auto& trig : combo) {
-                if (runTrigStatus[rn][trig]!="ON") {
-                    allOn=false;
-                    break;
-                }
-            }
-            if (allOn) {
-                comboToRuns[combo].push_back(rn);
-            }
-        }
-    }
+    std::cout << "\nSummary of Trigger Combinations"
+              << (MAX_ORDER ? " (order ≤ " + std::to_string(MAX_ORDER) + ")" : "")
+              << ":\n";
+    for (auto &kv : vec) {
+        const uint64_t m = kv.first;
+        const ComboInfo &inf = kv.second;
 
-    // Sort combos by size
-    std::vector<std::pair<std::set<std::string>,std::vector<int>>> sorted;
-    for (auto& kv : comboToRuns) {
-        sorted.push_back(kv);
-    }
-    std::sort(sorted.begin(), sorted.end(),
-              [](auto& a, auto& b){
-                  if (a.first.size()!=b.first.size()) {
-                      return a.first.size()<b.first.size();
-                  }
-                  return a.first < b.first;
-              });
-
-    // Print
-    std::cout << "\nSummary of Trigger Combinations:\n";
-    for (auto& kv : sorted) {
-        const auto& combo = kv.first;
-        const auto& runs  = kv.second;
         std::cout << "Combination: ";
-        for (auto& c : combo) {
-            std::cout << c << " ";
-        }
-        std::cout << "\nNumber of runs: " << runs.size() << "\nRun numbers: ";
-        for (size_t i=0; i<runs.size(); i++) {
-            std::cout << runs[i] << " ";
-            if ((i+1)%10==0) std::cout << "\n             ";
+        for (std::size_t i = 0; i < N; ++i)
+            if (m & (1ULL << i)) std::cout << triggers[i] << " ";
+        std::cout << "\nNumber of runs: " << inf.count << "\nRun numbers: ";
+        for (std::size_t i = 0; i < inf.runs.size(); ++i) {
+            std::cout << inf.runs[i] << " ";
+            if ((i + 1) % 10 == 0) std::cout << "\n             ";
         }
         std::cout << "\n-------------------------------------\n";
     }

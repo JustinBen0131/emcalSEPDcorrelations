@@ -1,4 +1,12 @@
 #pragma once
+#if defined(__CINT__) || defined(__CLING__)
+R__ADD_INCLUDE_PATH($OFFLINE_MAIN/include)
+#endif
+
+#if defined(__CLING__)
+#pragma cling add_include_path("$ENV{OFFLINE_MAIN}/include")
+#endif
+
 #if ROOT_VERSION_CODE >= ROOT_VERSION(6,00,0)
 #include <fun4all/SubsysReco.h>
 #include <fun4all/Fun4AllServer.h>
@@ -31,8 +39,10 @@
 #include <calotrigger/TriggerRunInfoReco.h>
 #include "/sphenix/user/patsfan753/tutorials/tutorials/CaloDataAnaRun24pp/clusterIsoCopy_src/ClusterIso.h"
 
-#include <calotreegen/caloTreeGen.h>
-#include "/sphenix/u/patsfan753/scratch/TriggerAnalysis/src/JetTriggerPlotter.h"
+#include <calorimeters/CaloGeomInit.h>
+#include <mbd/MbdGeomReco.h>             // MbdGeomReco
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"        // your analysis module
+
 #include <Calo_Calib.C>
 
 R__LOAD_LIBRARY(libfun4all.so)
@@ -43,6 +53,7 @@ R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
 R__LOAD_LIBRARY(libcalotrigger.so)
+R__LOAD_LIBRARY(libmbd_io.so)
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
 
@@ -120,7 +131,7 @@ void Fun4All_emcalSEPDcorrelator(const int nEvents = 0,
     se->registerSubsystem(triggerruninforeco);
     
     auto* correlator = new emcal_sepdCorrelator(inName);    // writes to rootOut
-    correlator->setVzCut(30.0);
+    correlator->setVzCut(10.0);
     correlator->enableVzCut();    // (re)enable – default true
     correlator->setVerbose(3);
     se->registerSubsystem(correlator);

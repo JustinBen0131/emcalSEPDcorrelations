@@ -91,7 +91,7 @@ class emcal_sepdCorrelator : public SubsysReco
   // ––– run‑wide ----------------------------------------------------------
   int         m_runNumber  = -1;
   bool        verbose      = true;
-  double      m_vzCut      = 30.;      // [cm]
+  double      m_vzCut      = 10.;      // [cm]
   bool        m_useVzCut   = true;
   const GlobalVertex* m_vtx {nullptr};
   double m_vx {0.}, m_vy {0.}, m_vz {0.};
