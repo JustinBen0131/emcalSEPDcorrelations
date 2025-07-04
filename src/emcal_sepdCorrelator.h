@@ -23,7 +23,9 @@
 
 //––– sPHENIX objects ––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <calobase/TowerInfoContainer.h>
+#include <calobase/TowerInfoDefs.h>
 #include <calobase/RawTowerGeomContainer.h>
+#include <calobase/RawTowerGeom.h>        // ← new: brings in get_eta()
 #include <calobase/RawClusterContainer.h>
 #include <globalvertex/GlobalVertexMap.h>
 #include <mbd/MbdGeom.h>
@@ -38,6 +40,8 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
+
 using HistMap = std::map<std::string,TObject*>;
 
 //==========================================================================
@@ -69,7 +73,7 @@ class emcal_sepdCorrelator : public SubsysReco
   //=======================================================================
   void createHistos_Data();                                  // main booker
   TH2Poly* makeMbdHitmap(const std::string&, MbdGeom*, int arm);
-  TH2Poly* makeEpdHitmap(const std::string&,            int arm);
+  TH2Poly* makeEpdHitmap(const std::string& name, EpdGeom* geom, int arm);
 
   //=======================================================================
   // 2)  Per‑event helpers (called in process_event)
@@ -89,6 +93,9 @@ class emcal_sepdCorrelator : public SubsysReco
   bool        verbose      = true;
   double      m_vzCut      = 30.;      // [cm]
   bool        m_useVzCut   = true;
+  const GlobalVertex* m_vtx {nullptr};
+  double m_vx {0.}, m_vy {0.}, m_vz {0.};
+    
   std::string Outfile;                 // ROOT output
 
   TFile*            out   = nullptr;
@@ -132,13 +139,54 @@ class emcal_sepdCorrelator : public SubsysReco
   void bookChargeQA            (const std::string& trig, HistMap& H);
   void bookEnergyChargeCorrel  (const std::string& trig, HistMap& H);
   void bookPi0MassSpectra      (const std::string& trig, HistMap& H);
+  void bookEventPlaneCentralityQA (const std::string& trig, HistMap& H);
+  void   fillCentralityQA         (const std::vector<std::string>& trig);
+  void   fillEventPlaneQA         (const std::vector<std::string>& trig);
     
-  double m_sepdQ = 0., m_mbdQ = 0., m_vz = 0.;
+  double m_sepdQ = 0., m_mbdQ = 0.;
+  double m_psi2_N = 0., m_psi2_S = 0.;        ///< Ψ₂ from North/South sEPD
+
+  //----------------------------------------------------------------
+  // --- per‑arm ( 0 = South / η < 0 , 1 = North / η > 0 ) caches
+  //----------------------------------------------------------------
+  double m_sepdQ_arm [2] {0., 0.};   ///< ΣQ  sEPD  (ADC counts)
+  double m_mbdQ_arm  [2] {0., 0.};   ///< ΣQ  MBD   (ADC counts)
+  double m_cemcEt_arm[2] {0., 0.};   ///< ΣEₜ CEMC  (GeV)
+  double m_ihcalEt_arm[2]{0., 0.};   ///< ΣEₜ IHCAL (GeV)
+  double m_ohcalEt_arm[2]{0., 0.};   ///< ΣEₜ OHCAL (GeV)
 
   // ––– utility -----------------------------------------------------------
   static std::string invKey(float ptLo,float ptHi,
                             float minE,float maxChi,float maxAsy);
 };
 //==========================================================================
+//──────────────── mapping helpers ─────────────────────────────────────────
+/** Map EMCal tower (ieta,iphi) to  sector 0–63 */
+static inline int sector_from_idx(unsigned int ieta, unsigned int iphi)
+{
+  if (iphi >= 256) return -1;
+  const int base = iphi / 8;                 // 8 φ bins per sector slice
+  return (ieta < 48) ? 32 + base             // bottom half
+                     :           base;       // top half
+}
+
+/** Map tower (ieta,iphi) to  IB number 0–5 */
+static inline int ib_from_idx(unsigned int ieta, unsigned int /*iphi*/)
+{
+  if      (ieta <  8) return 5;
+  else if (ieta < 16) return 4;
+  else if (ieta < 24) return 3;
+  else if (ieta < 32) return 2;
+  else if (ieta < 40) return 1;
+  else if (ieta < 48) return 0;
+  else if (ieta < 56) return 0;
+  else if (ieta < 64) return 1;
+  else if (ieta < 72) return 2;
+  else if (ieta < 80) return 3;
+  else if (ieta < 88) return 4;
+  else if (ieta < 96) return 5;
+  return -1;
+}
+
 
 #endif  // EMCALSEPDCORRELATOR_H

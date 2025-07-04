@@ -114,19 +114,16 @@ void Fun4All_emcalSEPDcorrelator(const int nEvents = 0,
     MbdGeomReco *mbdGeo = new MbdGeomReco();
     mbdGeo->Verbosity(0);
     se->registerSubsystem(mbdGeo);
-
-    //     – sEPD geometry is already embedded in every DST  no extra module
-    // ----------------------------------------------------------------------
+    
+    TriggerRunInfoReco *triggerruninforeco = new TriggerRunInfoReco();
+    triggerruninforeco->Verbosity(0);
+    se->registerSubsystem(triggerruninforeco);
     
     auto* correlator = new emcal_sepdCorrelator(inName);    // writes to rootOut
     correlator->setVzCut(30.0);
     correlator->enableVzCut();    // (re)enable – default true
     correlator->setVerbose(3);
     se->registerSubsystem(correlator);
-    
-    TriggerRunInfoReco *triggerruninforeco = new TriggerRunInfoReco();
-    triggerruninforeco->Verbosity(0);
-    se->registerSubsystem(triggerruninforeco);
 
     Fun4AllInputManager *in = new Fun4AllDstInputManager("DSTcalo");
 

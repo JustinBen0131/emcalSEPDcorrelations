@@ -8,6 +8,8 @@
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <fun4all/Fun4AllServer.h>
 #include <phool/getClass.h>
+#include <TProfile.h>
+#include <CLHEP/Vector/ThreeVector.h>
 
 //––– Other ROOT headers ----------------------------------------------------
 #include <TDirectory.h>
@@ -16,6 +18,11 @@
 #include <globalvertex/GlobalVertex.h>   // full definition of GlobalVertex
 #include <calobase/TowerInfo.h>   // full definition of TowerInfo
 #include <iostream>
+#include <mbd/MbdPmtHit.h>
+#include <calobase/RawCluster.h>    // full definition of RawClust
+#include <calobase/RawClusterUtility.h>
+#include <calobase/TowerInfoDefs.h>
+#include <epd/EpdGeom.h>
 
 //–––––––– helpers ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #define COUT_BLUE(MSG) \
@@ -98,13 +105,31 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
 
     /* MBD */
     H["h_MBD_Hitmap_South_"+trig] = makeMbdHitmap("h_MBD_Hitmap_South_"+trig,
-                                                  mbdg, 0);
+                                                    mbdg, 0);
     H["h_MBD_Hitmap_North_"+trig] = makeMbdHitmap("h_MBD_Hitmap_North_"+trig,
-                                                  mbdg, 1);
+                                                    mbdg, 1);
 
     /* sEPD */
-    H["h_sEPD_Hitmap_South_"+trig] = makeEpdHitmap("h_sEPD_Hitmap_South_"+trig,0);
-    H["h_sEPD_Hitmap_North_"+trig] = makeEpdHitmap("h_sEPD_Hitmap_North_"+trig,1);
+    H["h_sEPD_Hitmap_South_"+trig] = makeEpdHitmap("h_sEPD_Hitmap_South_"+trig,epdg,0);
+    H["h_sEPD_Hitmap_North_"+trig] = makeEpdHitmap("h_sEPD_Hitmap_North_"+trig,epdg,1);
+
+    /* EMCal map (256 × 96) */
+    H["h_EMC_EtaPhiMap_"+trig] =
+          new TH2F(("h_EMC_EtaPhiMap_"+trig).c_str(),
+                   "CEMC tower map;#phi (0–255);#eta (0–95)",
+                   256,0,256, 96,0,96);
+
+    /* IHCal map ( 64 × 24) */
+    H["h_IHCAL_EtaPhiMap_"+trig] =
+          new TH2F(("h_IHCAL_EtaPhiMap_"+trig).c_str(),
+                   "IHCAL tower map;#phi (0–63);#eta (0–23)",
+                   64,0,64, 24,0,24);
+
+    /* OHCal map ( 64 × 24) */
+    H["h_OHCAL_EtaPhiMap_"+trig] =
+          new TH2F(("h_OHCAL_EtaPhiMap_"+trig).c_str(),
+                   "OHCAL tower map;#phi (0–63);#eta (0–23)",
+                   64,0,64, 24,0,24);
   }
   out->cd();
 }
@@ -164,6 +189,14 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
                              nC,0,cMax,nE,0,eMax);
   H["h_MBD_vs_OHCAL"]=book2(("h_MBD_vs_OHCAL_"+trig).c_str(),"MBD ΣQ vs OHCAL ΣE",
                              nC,0,cMax,nE,0,eMax);
+    
+  // --- NEW per-arm maps ---------------------------------------------------
+  H["h_SEPD_S_vs_CEMC_South"] = book2(("h_SEPD_S_vs_CEMC_South_"+trig).c_str(),
+                                        "ΣQ_{sEPD South}  vs  ΣEₜ_{CEMC η<0}",
+                                        nC,0,cMax, nE,0,eMax);
+  H["h_SEPD_N_vs_CEMC_North"] = book2(("h_SEPD_N_vs_CEMC_North_"+trig).c_str(),
+                                        "ΣQ_{sEPD North}  vs  ΣEₜ_{CEMC η>0}",
+                                        nC,0,cMax, nE,0,eMax);
 }
 
 //–––– helper: π0 invariant‑mass spectra ––––––––––––––––––––––––––––––––––
@@ -179,6 +212,31 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
           const std::string k = invKey(pt.first,pt.second,Emin,chi,a)+"_"+trig;
           H[k] = new TH1F(k.c_str(),"m_{#gamma#gamma};GeV/c^{2}",nM,0,mMax);
         }
+}
+
+// -------------------------------------------------------------------------
+// bookEventPlaneCentralityQA – all histograms used below             EP-CENT
+// -------------------------------------------------------------------------
+void emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig,
+                                                      HistMap& H)
+{
+  /* --- 1. plain ΣQ --------------------------------------------------- */
+  H["h_Qsum_MBD"]  = new TH1F(("h_Qsum_MBD_"+trig).c_str(),
+                              "MBD ΣQ;ΣQ_{MBD} [ADC]",  600,0,1200);
+  H["h_Qsum_sEPD"] = new TH1F(("h_Qsum_sEPD_"+trig).c_str(),
+                              "sEPD ΣQ;ΣQ_{sEPD} [ADC]",600,0,1200);
+
+  /* --- 2. cross‑detector map ----------------------------------------- */
+  H["h_Qsum_MBD_vs_sEPD"] = new TH2F(("h_Qsum_MBD_vs_sEPD_"+trig).c_str(),
+                                     "ΣQ_{MBD} vs ΣQ_{sEPD};ΣQ_{MBD};ΣQ_{sEPD}",
+                                     300,0,1200, 300,0,1200);
+
+  /* --- 3. event‑plane distributions ---------------------------------- */
+  H["h_Psi2_sEPD"]   = new TH1F(("h_Psi2_sEPD_"+trig).c_str(),
+                                "sEPD Ψ_{2};Ψ_{2} [rad]", 120,-TMath::Pi(),TMath::Pi());
+  H["h_Psi2_res_vs_Qsum"] = new TProfile(("h_Psi2_res_vs_Qsum_"+trig).c_str(),
+                                  "cos 2(Ψ_{N}-Ψ_{S}) vs ΣQ_{sEPD};ΣQ_{sEPD};⟨cos2ΔΨ⟩",
+                                  12,0,1200,"s");
 }
 
 
@@ -201,7 +259,8 @@ void emcal_sepdCorrelator::createHistos_Data()
     bookChargeQA           (trig, H);
     bookEnergyChargeCorrel (trig, H);
     bookPi0MassSpectra     (trig, H);
-
+    bookEventPlaneCentralityQA(trig, H);   // <<< EP‑CENT QA
+      
     out->cd();
   }
 }
@@ -232,6 +291,65 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
+bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
+{
+  /* ── grab the primary vertex ───────────────────────────────────────── */
+  GlobalVertexMap* vmap = findNode::getClass<GlobalVertexMap>(top,"GlobalVertexMap");
+
+  m_vtx = nullptr; m_vx = m_vy = m_vz = 0.;
+
+  if (!vmap) {
+    LOG(1, CLR_YELLOW, "  – GlobalVertexMap node **missing** → skip event");
+    return false;
+  }
+  if (vmap->empty()) {
+    LOG(2, CLR_YELLOW, "  – GlobalVertexMap is **empty** → skip event");
+    return false;
+  }
+
+  m_vtx = vmap->begin()->second;          // cache the pointer
+  if (!m_vtx) {                           // extra safety
+    LOG(1, CLR_YELLOW, "  – vertex pointer null → skip event");
+    return false;
+  }
+
+  m_vx = m_vtx->get_x();
+  m_vy = m_vtx->get_y();
+  m_vz = m_vtx->get_z();
+
+  if (m_useVzCut && std::fabs(m_vz) >= m_vzCut) {
+    LOG(2, CLR_YELLOW, "  – |vz| = " << std::fabs(m_vz)
+                                     << " cm exceeds cut (" << m_vzCut << ") → skip");
+    return false;
+  }
+    
+  /* calorimeter nodes -------------------------------------------------- */
+  m_calo.clear();
+  for (const auto& ci : m_caloInfo)
+  {
+    const std::string node = std::get<0>(ci),
+                      geo  = std::get<1>(ci),
+                      lbl  = std::get<2>(ci);
+
+    auto* tw = findNode::getClass<TowerInfoContainer>   (top, node);
+    auto* ge = findNode::getClass<RawTowerGeomContainer>(top, geo);
+    if (!tw || !ge)
+    { LOG(2, CLR_YELLOW, "  – missing " << lbl << " nodes → skip"); return false; }
+
+    m_calo[lbl] = { tw, ge, 0. };
+  }
+
+  /* remaining detectors ------------------------------------------------ */
+  m_sepd     = findNode::getClass<TowerInfoContainer>(top,"TOWERS_SEPD");
+  m_mbdpmts  = findNode::getClass<MbdPmtContainer>   (top,"MbdPmtContainer");
+  m_mbdgeom  = findNode::getClass<MbdGeom>           (top,"MbdGeom");
+  m_epdgeom  = findNode::getClass<EpdGeom>           (top,"EpdGeom");
+  m_clus     = findNode::getClass<RawClusterContainer>(top,"CLUSTERINFO_CEMC");
+
+  const bool ok = (m_sepd && m_mbdpmts && m_mbdgeom && m_epdgeom);
+  if (!ok) LOG(2, CLR_YELLOW, "  – missing SEPD/MBD geometry → skip");
+  return ok;
+}
 
 // ════════════════════════════════════════════════════════════════════════
 //  Geometry helpers – TH2Poly booking
@@ -280,165 +398,225 @@ TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
   return h;
 }
 
-//––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 TH2Poly* emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
-                                             int /*arm*/)
+                                             EpdGeom* geom,
+                                             int       arm)   // 0 = S, 1 = N
 {
   auto* h = new TH2Poly();
   h->SetNameTitle(name.c_str(), ";x (cm);y (cm)");
-    
-  LOG(2, CLR_BLUE, "    ↳ makeEpdHitmap(\"" << name << "\")");
+  LOG(2, CLR_BLUE, "    ↳ makeEpdHitmap(\"" << name << "\")  arm=" << (arm?"North":"South"));
 
-  constexpr int    NR   = 16;        // radial rings
-  constexpr int    NPhi = 12;        // azimuthal sectors
-  constexpr double Rmax = 15.5;      // cm
-  const double     dR   = Rmax / NR;
-
-  std::size_t nAdded = 0;
-
-  for (int ir = 0; ir < NR; ++ir)
+  if (!geom)
   {
-    const double r0 = ir * dR;
-    const double r1 = (ir + 1) * dR;
-
-    for (int ip = 0; ip < NPhi; ++ip)
-    {
-      const double p0 = ip       * TMath::TwoPi() / NPhi;
-      const double p1 = (ip + 1) * TMath::TwoPi() / NPhi;
-
-      double x[5]{}, y[5]{};
-      x[0] = r0 * std::cos(p0);  y[0] = r0 * std::sin(p0);
-      x[1] = r1 * std::cos(p0);  y[1] = r1 * std::sin(p0);
-      x[2] = r1 * std::cos(p1);  y[2] = r1 * std::sin(p1);
-      x[3] = r0 * std::cos(p1);  y[3] = r0 * std::sin(p1);
-      x[4] = x[0];               y[4] = y[0];
-
-      h->AddBin(4, x, y);
-      ++nAdded;
-    }
+    LOG(1, CLR_YELLOW, "      [WARN] EpdGeom is nullptr – map left empty");
+    return h;
   }
 
-  LOG(3, CLR_GREEN, "      → " << nAdded << " polar‑bins booked");
+  /* one polygon per physical tile (256 tiles per arm) ------------------ */
+  std::size_t nAdded = 0;
+
+  for (unsigned tile = 0; tile < 256; ++tile)
+  {
+    const unsigned id = arm*256 + tile;     // packed ID expected by EpdGeom
+
+    /* the offline geometry delivers the 4 tile corners in local order   *
+     * (ix = 0…3).  Corner 4 closes the polygon.                         */
+    double x[5]{}, y[5]{};
+    /* tile centre returned by EpdGeom ----------------------------------- */
+    const double r_cen  = geom->get_r (id);
+    const double phi_cen= geom->get_phi(id);
+    const double x_cen  = r_cen * std::cos(phi_cen);
+    const double y_cen  = r_cen * std::sin(phi_cen);
+
+    /* build a tiny square (≈4 cm side) around the centre ---------------- */
+    const double d = 2.0;               // half‑side length  [cm]
+    x[0] = x_cen - d;  y[0] = y_cen - d;
+    x[1] = x_cen + d;  y[1] = y_cen - d;
+    x[2] = x_cen + d;  y[2] = y_cen + d;
+    x[3] = x_cen - d;  y[3] = y_cen + d;
+    x[4] = x[0];       y[4] = y[0];
+
+    /* guard against uninitialised tiles (beam-pipe hole, etc.) */
+    if (std::isnan(x[0]) || std::isnan(y[0])) continue;
+
+    h->AddBin(4, x, y);
+    ++nAdded;
+  }
+
+  LOG(3, CLR_GREEN, "      → " << nAdded << " tile-bins booked");
   return h;
 }
 
-// ════════════════════════════════════════════════════════════════════════
-//  fetchNodes – fills per‑event caches, applies vertex cut
-// ════════════════════════════════════════════════════════════════════════
-bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
-{
-  LOG(3, CLR_BLUE, "[fetchNodes] grabbing event nodes");
-
-  auto* vmap = findNode::getClass<GlobalVertexMap>(top,"GlobalVertexMap");
-  if (!vmap || vmap->empty())
-  { LOG(2, CLR_YELLOW, "  – no vertex → skip event"); return false; }
-
-  m_vz = vmap->begin()->second->get_z();
-  if (m_useVzCut && std::fabs(m_vz) >= m_vzCut)
-  { LOG(2, CLR_YELLOW, "  – |vz| = " << m_vz << " cm > cut → skip"); return false; }
-
-  /* calorimeter nodes -------------------------------------------------- */
-  m_calo.clear();
-  for (const auto& ci : m_caloInfo)
-  {
-    const std::string node = std::get<0>(ci),
-                      geo  = std::get<1>(ci),
-                      lbl  = std::get<2>(ci);
-
-    auto* tw = findNode::getClass<TowerInfoContainer>   (top, node);
-    auto* ge = findNode::getClass<RawTowerGeomContainer>(top, geo);
-    if (!tw || !ge)
-    { LOG(2, CLR_YELLOW, "  – missing " << lbl << " nodes → skip"); return false; }
-
-    m_calo[lbl] = { tw, ge, 0. };
-  }
-
-  /* remaining detectors ------------------------------------------------ */
-  m_sepd     = findNode::getClass<TowerInfoContainer>(top,"TOWERS_SEPD");
-  m_mbdpmts  = findNode::getClass<MbdPmtContainer>   (top,"MbdPmtContainer");
-  m_mbdgeom  = findNode::getClass<MbdGeom>           (top,"MbdGeom");
-  m_epdgeom  = findNode::getClass<EpdGeom>           (top,"EpdGeom");
-  m_clus     = findNode::getClass<RawClusterContainer>(top,"CLUSTERINFO_CEMC");
-
-  const bool ok = (m_sepd && m_mbdpmts && m_mbdgeom && m_epdgeom);
-  if (!ok) LOG(2, CLR_YELLOW, "  – missing SEPD/MBD geometry → skip");
-  return ok;
-}
 
 // ════════════════════════════════════════════════════════════════════════
 //  doCaloQA – tower and cluster spectra
 // ════════════════════════════════════════════════════════════════════════
 void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 {
-  LOG(3, CLR_BLUE, "  [doCaloQA] processing calorimeter towers");
-
-  for (auto& ck : m_calo)
-  {
-    const std::string& lbl = ck.first;
-    TowerInfoContainer* twC = ck.second.tw;
-    double& sumE = ck.second.sumE;
-    std::size_t nHit = 0;
-
-    for (unsigned ch = 0; ch < twC->size(); ++ch)
+    LOG(3, CLR_BLUE, "  [doCaloQA] processing calorimeter towers");
+    
+    for (auto& ck : m_calo)
     {
-      auto* tw = twC->get_tower_at_channel(ch); if (!tw) continue;
-      const double e = tw->get_energy();         if (e <= 0) continue;
-      sumE += e; ++nHit;
+        const std::string& lbl = ck.first;
+        TowerInfoContainer* twC = ck.second.tw;
+        double& sumE = ck.second.sumE;
+        std::size_t nHit = 0;
+        
+        for (unsigned ch = 0; ch < twC->size(); ++ch)
+        {
+            auto* tw = twC->get_tower_at_channel(ch); if (!tw) continue;
+            const double e = tw->get_energy();         if (e <= 0) continue;
+            sumE += e; ++nHit;
+            
+            for (auto& t : trig)
+                static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + lbl])->Fill(e);
+            
+            unsigned int key  = twC->encode_key(ch);                // universal helper
+            unsigned int iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
+            unsigned int ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
+            
+            
+            // ------------------------------------------------------------------
+            //  NEW  :  transverse energy and arm-specific sums
+            // ------------------------------------------------------------------
+            RawTowerGeom* tg = ck.second.g->get_tower_geometry(key);
+            const double eta_t = tg ? tg->get_eta() : 0.;    // falls back to 0 if null
+            const double et    = e / std::cosh(eta_t);       // E_T = E cosh⁻¹ η
 
-      for (auto& t : trig)
-        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + lbl])->Fill(e);
+            if (lbl == "CEMC") {
+              if (eta_t < 0) m_cemcEt_arm[0] += et;   // South
+              else           m_cemcEt_arm[1] += et;   // North
+            }
+            else if (lbl == "IHCAL") {
+              if (eta_t < 0) m_ihcalEt_arm[0] += et;
+              else           m_ihcalEt_arm[1] += et;
+            }
+            else if (lbl == "OHCAL") {
+              if (eta_t < 0) m_ohcalEt_arm[0] += et;
+              else           m_ohcalEt_arm[1] += et;
+            }
+
+            for (auto& t : trig)
+            {
+              if      (lbl == "CEMC")
+                static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_EMC_EtaPhiMap_"+t])
+                    ->Fill(iphi, ieta, e);
+              else if (lbl == "IHCAL")
+                static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_IHCAL_EtaPhiMap_"+t])
+                    ->Fill(iphi, ieta, e);
+              else if (lbl == "OHCAL")
+                static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_OHCAL_EtaPhiMap_"+t])
+                    ->Fill(iphi, ieta, e);
+            }
+        }
+        
+        LOG(3, CLR_GREEN, "    " << lbl << " : " << nHit << " fired, ΣE = " << sumE);
     }
-
-    LOG(3, CLR_GREEN, "    " << lbl << " : " << nHit << " fired, ΣE = " << sumE);
-  }
-
-  /* EMC clusters ------------------------------------------------------- */
-  if (!m_clus) return;
-  std::size_t nClus = m_clus->size();
-  LOG(3, CLR_GREEN, "    EMC clusters : " << nClus);
-
-  for (const auto* cl : *m_clus)
-    for (auto& t : trig)
-      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_clusterE_EMC"])
-          ->Fill(cl->get_energy());
+    
+    /* EMC clusters ------------------------------------------------------- */
+    if (!m_clus) return;
+    RawClusterContainer::ConstRange cr = m_clus->getClusters();
+    std::size_t nClus = std::distance(cr.first, cr.second);
+    LOG(3, CLR_GREEN, "    EMC clusters : " << nClus);
+    
+    for (auto it = cr.first; it != cr.second; ++it)
+    {
+        const RawCluster* cl = it->second;
+        for (auto& t : trig)
+            static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_clusterE_EMC"])
+            ->Fill(cl->get_energy());
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  doSepdQA – integrated charge + polar hit‑map
+//  doSepdQA – sEPD charge, hit-map  *and* event-plane QA          EP-CENT
 // ════════════════════════════════════════════════════════════════════════
 void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 {
   LOG(3, CLR_BLUE, "  [doSepdQA]");
 
+  /* ------------------------------------------------------------------ *
+   * 1) running sums                                                    *
+   * ------------------------------------------------------------------ */
   m_sepdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
+
+  /* Q-vectors for 2-nd harmonic (South / North) ----------------------- */
+  double qxS = 0., qyS = 0.;
+  double qxN = 0., qyN = 0.;
 
   for (unsigned ch = 0; ch < m_sepd->size(); ++ch)
   {
     auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
-    const double q = ti->get_energy();           if (q <= 0) continue;
+    const double w = ti->get_energy();           if (w <= 0) continue;
 
-    const int arm  = (ch < 256 ? 0 : 1);         // 0 S / 1 N
-    const int tile = ch % 256;
-    double x, y, z;  m_epdgeom->GetGlobalPosition(arm, tile, x, y, z);
+    const int  arm  = (ch < 256 ? 0 : 1);        // 0 = South, 1 = North
+    const int  tile = ch % 256;
+    const unsigned id  = static_cast<unsigned>(arm*256 + tile);
 
-    const std::string key = (arm == 0 ? "h_sEPD_Hitmap_South_"
-                                      : "h_sEPD_Hitmap_North_");
+    const double r   = m_epdgeom->get_r  (id);
+    const double phi = m_epdgeom->get_phi(id);   // radians
+    const double x   = r * std::cos(phi);
+    const double y   = r * std::sin(phi);
 
+    /* --- hit-map fill ------------------------------------------------ */
+    const std::string hpfx = (arm==0 ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_");
     for (auto& t : trig)
-      static_cast<TH2Poly*>(qaHistogramsByTrigger[t][key + t])->Fill(x, y, q);
+      static_cast<TH2Poly*>(qaHistogramsByTrigger[t][hpfx + t])->Fill(x, y, w);
 
-    m_sepdQ += q;
-    ++(arm ? nFiredN : nFiredS);
+    /* --- Q-vector accumulation -------------------------------------- */
+    const double c2 = std::cos(2*phi), s2 = std::sin(2*phi);
+    if (arm==0) { qxS += w*c2;  qyS += w*s2;  ++nFiredS; }
+    else        { qxN += w*c2;  qyN += w*s2;  ++nFiredN; }
+
+    m_sepdQ      += w;
+    m_sepdQ_arm[arm] += w;      // NEW – arm‑specific sum
   }
 
+  /* ------------------------------------------------------------------ *
+   * 2) scalar ΣQ histogram                                             *
+   * ------------------------------------------------------------------ */
   for (auto& t : trig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])->Fill(m_sepdQ);
 
+  /* ------------------------------------------------------------------ *
+   * 3) event-plane angles & resolution proxy                           *
+   * ------------------------------------------------------------------ */
+  m_psi2_S = 0.5 * std::atan2(qyS, qxS);      // South   Ψ₂
+  m_psi2_N = 0.5 * std::atan2(qyN, qxN);      // North   Ψ₂
+  const double cos2dPsi = std::cos( 2*(m_psi2_N - m_psi2_S) );
+
+  for (auto& t : trig)
+  {
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_Psi2_sEPD"])
+        ->Fill(m_psi2_S);                     // store South Ψ₂
+    auto  prof = dynamic_cast<TProfile*>( qaHistogramsByTrigger[t]["h_Psi2_res_vs_Qsum"] );
+    if (prof)  prof->Fill(m_sepdQ, cos2dPsi);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 4) verbose printout                                                *
+   * ------------------------------------------------------------------ */
   LOG(3, CLR_GREEN, "    SEPD ΣQ = " << m_sepdQ
                      << "  (South hits: " << nFiredS
                      << ", North hits: " << nFiredN << ")");
 }
+
+
+// -------------------------------------------------------------------------
+// fillCentralityQA – fills ΣQ histos & the correlation             EP-CENT
+// -------------------------------------------------------------------------
+void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig)
+{
+  for (auto& t : trig)
+  {
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_Qsum_MBD"] )->Fill(m_mbdQ);
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_Qsum_sEPD"])->Fill(m_sepdQ);
+    static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_Qsum_MBD_vs_sEPD"])
+        ->Fill(m_mbdQ, m_sepdQ);
+  }
+}
+
 
 // ════════════════════════════════════════════════════════════════════════
 //  doMbdQA – integrated charge + hex hit‑map
@@ -450,22 +628,24 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
   m_mbdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
 
-  for (unsigned ip = 0; ip < m_mbdpmts->get_npmt(); ++ip)
+  const unsigned nPmt = static_cast<unsigned>(m_mbdpmts->get_npmt());
+  for (unsigned ip = 0; ip < nPmt; ++ip)
   {
-    auto* p = m_mbdpmts->get_pmt(ip);
+    MbdPmtHit* p = m_mbdpmts->get_pmt(ip);
     const double q = p->get_q(); if (q <= 0) continue;
     
     double cx = m_mbdgeom->get_x(ip);
     double cy = m_mbdgeom->get_y(ip);
-    const std::string key = (p->get_arm() == 0 ? "h_MBD_Hitmap_South_"
-                                                : "h_MBD_Hitmap_North_");
+    const std::string key = (m_mbdgeom->get_arm(ip) == 0 ? "h_MBD_Hitmap_South_"
+                                                         : "h_MBD_Hitmap_North_");
 
     for (auto& t : trig)
           static_cast<TH2Poly*>(qaHistogramsByTrigger[t][key + t])
               ->Fill(cx, cy, q);
 
-    m_mbdQ += q;
-    ++(p->get_arm() ? nFiredN : nFiredS);
+    m_mbdQ          += q;
+    m_mbdQ_arm[ m_mbdgeom->get_arm(ip) ] += q;   // NEW
+    ++(m_mbdgeom->get_arm(ip) ? nFiredN : nFiredS);
   }
 
   for (auto& t : trig)
@@ -474,6 +654,8 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
   LOG(3, CLR_GREEN, "    MBD ΣQ = " << m_mbdQ
                      << "  (South PMTs: " << nFiredS
                      << ", North PMTs: " << nFiredN << ")");
+    
+  fillCentralityQA(trig);
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -489,10 +671,26 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   struct Clu { TLorentzVector v; float E, pt, chi; };
   std::vector<Clu> cl; cl.reserve(nClus);
 
-  for (const auto* c : *m_clus)
+  // ── build lightweight cluster list ────────────────────────────────────
+  RawClusterContainer::ConstRange cr = m_clus->getClusters();
+  for (auto it = cr.first; it != cr.second; ++it)
   {
-    cl.push_back({{}, c->get_energy(), c->get_pt(), c->get_chi2()});
-    cl.back().v.SetPtEtaPhiE(cl.back().pt, c->get_eta(), c->get_phi(), cl.back().E);
+    const RawCluster* c = it->second;
+
+    const CLHEP::Hep3Vector vtx_vec(m_vx, m_vy, m_vz);
+    const CLHEP::Hep3Vector eVec = RawClusterUtility::GetEVec(*c, vtx_vec);
+    const float  eta = eVec.pseudoRapidity();
+    const float  phi = eVec.phi();
+    const float  pt  = eVec.perp();
+    const float  E   = c->get_energy();
+      
+    Clu tmp;
+    tmp.E   = E;
+    tmp.pt  = pt;
+    tmp.chi = c->get_chi2();
+    tmp.v.SetPtEtaPhiE(pt, eta, phi, E);
+
+    cl.push_back(tmp);
   }
 
   /* count accepted pairs per pT‑bin for a concise summary */
@@ -501,11 +699,12 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   for (std::size_t i = 0; i < cl.size(); ++i)
     for (std::size_t j = i + 1; j < cl.size(); ++j)
     {
-      const float e1 = cl[i].E,  e2 = cl[j].E,
-                  pt1 = cl[i].pt, pt2 = cl[j].pt,
-                  chi1 = cl[i].chi, chi2 = cl[j].chi,
-                  asym = std::fabs(e1 - e2) / (e1 + e2),
-                  mInv = (cl[i].v + cl[j].v).M();
+      const float e1   = cl[i].E,   e2   = cl[j].E;
+      const float pt1  = cl[i].pt,  pt2  = cl[j].pt;
+      const float chi1 = cl[i].chi, chi2 = cl[j].chi;
+
+      const float asym = std::fabs(e1 - e2) / (e1 + e2);
+      const float mInv = (cl[i].v + cl[j].v).M();
 
       for (auto pb : m_ptBins)
       {
@@ -514,15 +713,15 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 
         bool accepted = false;
 
-        for (float Emin  : m_minClusE)
+        for (float Emin : m_minClusE)
           if (e1 >= Emin && e2 >= Emin)
             for (float chiMax : m_chi2Cuts)
               if (chi1 < chiMax && chi2 < chiMax)
                 for (float aMax : m_asymCuts)
                   if (asym < aMax)
                   {
-                    const std::string base = invKey(pb.first,pb.second,
-                                                    Emin,chiMax,aMax);
+                    const std::string base = invKey(pb.first, pb.second,
+                                                    Emin, chiMax, aMax);
 
                     for (auto& t : trig)
                       static_cast<TH1F*>(qaHistogramsByTrigger[t][base + "_" + t])
@@ -545,6 +744,7 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   }
 }
 
+
 // ════════════════════════════════════════════════════════════════════════
 //  fillCorrelations – ΣE / ΣQ detector‑level correlations
 // ════════════════════════════════════════════════════════════════════════
@@ -554,19 +754,39 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
   const double ihc  = m_calo["IHCAL"].sumE;
   const double ohc  = m_calo["OHCAL"].sumE;
 
-  for (auto& t : trig)
-  {
-    auto& H = qaHistogramsByTrigger[t];
+  // ------------------------------------------------------------------
+  //  side-matched correlations  (transverse energy in calorimeters)
+  // ------------------------------------------------------------------
+    for (auto& t : trig)
+    {
+      auto& H = qaHistogramsByTrigger[t];
 
-    static_cast<TH2F*>(H["h_SEPD_vs_CEMC"])->Fill(m_sepdQ, cemc);
-    static_cast<TH2F*>(H["h_SEPD_vs_IHCAL"])->Fill(m_sepdQ, ihc);
-    static_cast<TH2F*>(H["h_SEPD_vs_OHCAL"])->Fill(m_sepdQ, ohc);
-    static_cast<TH2F*>(H["h_SEPD_vs_MBD" ])->Fill(m_sepdQ, m_mbdQ);
+      // --- South (η<0) ----------------------------------------------------
+      static_cast<TH2F*>(H["h_SEPD_S_vs_CEMC_South"])
+          ->Fill(m_sepdQ_arm[0], m_cemcEt_arm[0]);
 
-    static_cast<TH2F*>(H["h_MBD_vs_CEMC"])->Fill(m_mbdQ, cemc);
-    static_cast<TH2F*>(H["h_MBD_vs_IHCAL"])->Fill(m_mbdQ, ihc);
-    static_cast<TH2F*>(H["h_MBD_vs_OHCAL"])->Fill(m_mbdQ, ohc);
-  }
+      // --- North (η>0) ----------------------------------------------------
+      static_cast<TH2F*>(H["h_SEPD_N_vs_CEMC_North"])
+          ->Fill(m_sepdQ_arm[1], m_cemcEt_arm[1]);
+
+      // keep the old global plots for cross-checks
+      static_cast<TH2F*>(H["h_SEPD_vs_CEMC"])
+          ->Fill(m_sepdQ, m_calo["CEMC"].sumE);
+      static_cast<TH2F*>(H["h_SEPD_vs_IHCAL"])
+          ->Fill(m_sepdQ, m_calo["IHCAL"].sumE);
+      static_cast<TH2F*>(H["h_SEPD_vs_OHCAL"])
+          ->Fill(m_sepdQ, m_calo["OHCAL"].sumE);
+      static_cast<TH2F*>(H["h_SEPD_vs_MBD"])
+          ->Fill(m_sepdQ, m_mbdQ);
+
+      static_cast<TH2F*>(H["h_MBD_vs_CEMC"])
+          ->Fill(m_mbdQ, m_calo["CEMC"].sumE);
+      static_cast<TH2F*>(H["h_MBD_vs_IHCAL"])
+          ->Fill(m_mbdQ, m_calo["IHCAL"].sumE);
+      static_cast<TH2F*>(H["h_MBD_vs_OHCAL"])
+          ->Fill(m_mbdQ, m_calo["OHCAL"].sumE);
+    }
+
 
   LOG(3, CLR_BLUE, "  [fillCorrelations]  ΣE(CEMC)=" << cemc
                          << "  ΣE(IHCAL)=" << ihc
@@ -592,7 +812,27 @@ std::string emcal_sepdCorrelator::invKey(float ptLo,float ptHi,
 //==========================================================================
 //  ResetEvent / End / Reset  (unchanged – keep your original)
 //==========================================================================
-int emcal_sepdCorrelator::ResetEvent(PHCompositeNode*) { return Fun4AllReturnCodes::EVENT_OK; }
+// ‑‑‑ in emcal_sepdCorrelator.cc  (completely replace the old method) ‑‑‑
+int emcal_sepdCorrelator::ResetEvent(PHCompositeNode*)
+{
+  //--------------------------------------------------------------------
+  // wipe every per‑event cache so NOTHING bleeds into the next event
+  //--------------------------------------------------------------------
+  std::fill(std::begin(m_sepdQ_arm),  std::end(m_sepdQ_arm),  0.);
+  std::fill(std::begin(m_mbdQ_arm),   std::end(m_mbdQ_arm),   0.);
+  std::fill(std::begin(m_cemcEt_arm), std::end(m_cemcEt_arm), 0.);
+  std::fill(std::begin(m_ihcalEt_arm),std::end(m_ihcalEt_arm),0.);
+  std::fill(std::begin(m_ohcalEt_arm),std::end(m_ohcalEt_arm),0.);
+
+  m_sepdQ   = 0.;
+  m_mbdQ    = 0.;
+  m_psi2_S  = 0.;
+  m_psi2_N  = 0.;
+  for (auto& kv : m_calo) kv.second.sumE = 0.;     // CEMC/IHCAL/OHCAL
+
+  return Fun4AllReturnCodes::EVENT_OK;
+}
+
 int emcal_sepdCorrelator::Reset     (PHCompositeNode*) { return Fun4AllReturnCodes::EVENT_OK; }
 
 int emcal_sepdCorrelator::End(PHCompositeNode*)
@@ -607,7 +847,32 @@ int emcal_sepdCorrelator::End(PHCompositeNode*)
     }
     out->cd();
   }
-  out->Write(); out->Close(); delete out; out=nullptr;
+  out->Write();
+  out->Close();
+  delete out;
+  out = nullptr;
+
+  /* ------------ console table (only if Verbosity() > 0) -------------- */
+  if (Verbosity() > 0)
+  {
+      std::cout << "\n\033[1mHistogram summary\033[0m\n"
+                << "\033[1mTrigger                        │ Histogram                           │  Entries\033[0m\n"
+                << "-------------------------------------------------------------------------------\n";
+
+      for (const auto& tk : qaHistogramsByTrigger)
+        for (const auto& hk : tk.second)
+        {
+          TH1* h = dynamic_cast<TH1*>(hk.second);
+          if (!h) continue;
+          std::cout << std::left  << std::setw(30) << tk.first << " │ "
+                    << std::setw(32) << hk.first   << " │ "
+                    << std::right << std::setw(10) << static_cast<Long64_t>(h->GetEntries())
+                    << '\n';
+        }
+
+      std::cout << "-------------------------------------------------------------------------------\n";
+  }
+
   COUT_BLUE("Done.");
   return Fun4AllReturnCodes::EVENT_OK;
 }
