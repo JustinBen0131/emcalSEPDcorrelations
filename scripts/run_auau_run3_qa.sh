@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 ##############################################################################
 # run_auau_run3_qa.sh
-#   argv[1]  run number                    (e.g. 54128)
-#   argv[2]  chunk .list                   (≤ CHUNK_SIZE lines)
-#   argv[3]  Condor Cluster ID             (for unique file names)
-#   argv[4]  DEST_BASE  (optional)         default → group scratch
-#
-#   Produces TrigPlot_run<run>_c<cluster>_<firstDST>.root in:
-#       DEST_BASE/<run>/
 ##############################################################################
 set -euo pipefail
 
@@ -23,7 +16,8 @@ DEFAULT_DEST="/sphenix/tg/tg01/bulk/jbennett/emcalSEPDcorrelations"
 runNumber="$1"; shift
 fileList="$1"; shift
 clusterID="${1:-0}"; shift
-destBase="${1:-$DEFAULT_DEST}"
+destBase="${1:-$DEFAULT_DEST}"; shift
+evtMax="${5:-0}"
 
 [[ -s "$fileList" ]] || { echo "[FATAL] Empty list file: $fileList" >&2; exit 2; }
 
@@ -44,9 +38,10 @@ firstFile="$(head -n1 "$fileList")"
 baseTag="$(basename "${firstFile%.root}")"
 rootOut="${outDir}/emcal_sepd_analysis_run${runNumber}_c${clusterID}_${baseTag}.root"
 
-echo "[INFO] $(date)  Run=$runNumber  Files=$(wc -l < "$fileList")"
+echo "[INFO] $(date)  Run=$runNumber  Files=$(wc -l < "$fileList")  (evtMax=$evtMax)"
 echo "[INFO] Writing → $rootOut"
 
-root -b -l -q "${MACRO_DIR}/Fun4All_emcalSEPDcorrelator.C(0, \"$fileList\", \"$rootOut\")"
+root -b -l -q \
+    "${MACRO_DIR}/Fun4All_emcalSEPDcorrelator.C(${evtMax},\"${fileList}\",\"${rootOut}\")"
 
 echo "[INFO] Completed $(date)"

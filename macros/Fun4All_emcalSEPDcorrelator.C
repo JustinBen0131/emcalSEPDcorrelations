@@ -47,12 +47,6 @@ R__LOAD_LIBRARY(libjetbase.so)
 R__LOAD_LIBRARY(libcalotrigger.so)
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
-//----------------------------------------------------------------------
-//  Geometry note for maintainers
-//----------------------------------------------------------------------
-#warning "CaloGeomInit & MbdGeomReco are unavailable in ana.495 – geometry "\
-         "is read from the input DST.  Do NOT add those headers/libs here."
-
 //======================================================================
 //  Convenience helpers
 //======================================================================
@@ -142,7 +136,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   auto* correl = new emcal_sepdCorrelator(outRoot);
   correl->setVzCut(10.);
   correl->enableVzCut(true);
-  correl->setVerbose(3);
+  correl->setVerbose(4);
   se->registerSubsystem(correl);
 
   //--------------------------------------------------------------------

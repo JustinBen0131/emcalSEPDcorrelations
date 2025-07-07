@@ -174,10 +174,12 @@ else
 fi
 ##############################################################################
 
-##############################################################################
-# 9. LOCAL MODE – single quick test
-##############################################################################
+# ─────────────────────────────────────────────────────────────
+# 9. LOCAL MODE – single quick test               (✱ modified)
+# ─────────────────────────────────────────────────────────────
 if [[ "$mode" == "local" ]]; then
+  maxEvt="${2:-0}"                           # new (0 ⇒ all events)
+
   firstList="${listFiles[0]}"
   firstRun="${runs[0]}"
   firstDST="$(head -n1 "$firstList")" || { echo "[ERROR] Empty $firstList"; exit 3; }
@@ -187,10 +189,13 @@ if [[ "$mode" == "local" ]]; then
 
   tmpList=$(mktemp "${TMP_LIST_DIR}/local_${firstRun}_XXXX.list")
   echo "$firstDST" > "$tmpList"
-  "${EXEC}" "$firstRun" "$tmpList" 0 "$CONDOR_OUT_BASE"
+
+  #               ↓   ↓           ↓            ↓                ↓ NEW
+  "${EXEC}" "$firstRun" "$tmpList" 0 "$CONDOR_OUT_BASE" "$maxEvt"
   rm -f "$tmpList"
   exit 0
 fi
+
 ##############################################################################
 
 ##############################################################################

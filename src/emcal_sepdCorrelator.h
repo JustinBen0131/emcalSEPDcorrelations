@@ -161,6 +161,28 @@ class emcal_sepdCorrelator : public SubsysReco
                             float minE,float maxChi,float maxAsy);
 };
 bool m_mapsBooked = false;
+
+struct CutStat {
+  std::size_t tested  = 0;   ///< # candidate pairs tested
+  std::size_t passed  = 0;   ///< # pairs that survived all cuts
+};
+/// per‑event scratch pad (cleared in ResetEvent)
+std::map<std::string,CutStat> m_evtStat;
+/// run‑wide accumulation (written in End())
+std::map<std::string,CutStat> m_totStat;
+
+// helper that turns all cut parameters into a unique key
+static std::string
+statKey(float ptLo,float ptHi,float Emin,float chiMax,float aMax);
+
+// ───── inside the class (private or public, as you prefer) ──────────────
+struct TrigStat {               // run‑wide bookkeeping
+  std::size_t tested = 0;       // events where decodeTriggers() succeeded
+  std::size_t fired  = 0;       // events accepted by this trigger
+};
+std::map<std::string,TrigStat>  m_trigStat;
+std::size_t m_evtNoTrig = 0;    // events rejected because no trigger fired
+
 //==========================================================================
 //──────────────── mapping helpers ─────────────────────────────────────────
 /** Map EMCal tower (ieta,iphi) to  sector 0–63 */

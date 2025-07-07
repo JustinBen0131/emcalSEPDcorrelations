@@ -225,6 +225,16 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
           const std::string k = invKey(pt.first,pt.second,Emin,chi,a)+"_"+trig;
           H[k] = new TH1F(k.c_str(),"m_{#gamma#gamma};GeV/c^{2}",nM,0,mMax);
         }
+    
+    
+    // --- NEW: inclusive (pT‑independent) spectra ---------------------------
+  for (float Emin: m_minClusE)
+    for (float chi: m_chi2Cuts)
+      for (float a  : m_asymCuts)
+      {
+          const std::string k = invKey(-1,-1,Emin,chi,a)+"_"+trig; // pt = ‑1 : sentinel
+          H[k] = new TH1F(k.c_str(),"m_{#gamma#gamma};GeV/c^{2}",nM,0,mMax);
+      }
 }
 
 // -------------------------------------------------------------------------
@@ -286,16 +296,40 @@ void emcal_sepdCorrelator::createHistos_Data()
 int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 {
   ++event_count;
-    
   PROGRESS("[event " << std::setw(9) << event_count << "]");
 
   if (!fetchNodes(topNode)) return Fun4AllReturnCodes::ABORTEVENT;
 
   trigAna->decodeTriggers(topNode);
-  std::vector<std::string> act;
+
+  // ─── interrogate every configured trigger ────────────────
+  std::vector<std::string> act;                 // active trigger keys
+  if (Verbosity() >= 3)
+    std::cout << CLR_BLUE << "    Trigger status:\n";
+
   for (auto& kv : triggerNameMap)
-    if (trigAna->didTriggerFire(kv.first)) act.push_back(kv.second);
-  if (act.empty()) return Fun4AllReturnCodes::ABORTEVENT;
+  {
+    const std::string &bitname = kv.first;      // e.g. "MBD N&S >= 2"
+    const std::string &key     = kv.second;     // e.g. "MBD_NandS_geq_2"
+    ++m_trigStat[key].tested;
+
+    const bool fired = trigAna->didTriggerFire(bitname);
+    if (fired) { act.push_back(key); ++m_trigStat[key].fired; }
+
+    if (Verbosity() >= 3)
+      std::cout << "      • " << std::left << std::setw(25) << bitname
+                << " → " << (fired ? CLR_GREEN "FIRED" : CLR_YELLOW "–")
+                << CLR_RESET << '\n';
+  }
+
+  if (act.empty()) {
+    ++m_evtNoTrig;
+    if (Verbosity() >= 3)
+      std::cout << CLR_YELLOW
+                << "      → event skipped: no configured trigger fired\n"
+                << CLR_RESET;
+    return Fun4AllReturnCodes::ABORTEVENT;
+  }
 
   doCaloQA(act);
   doSepdQA(act);
@@ -709,90 +743,106 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  doPi0QA – γγ invariant‑mass spectra  (summary prints only)
+//  doPi0QA – γγ invariant‑mass spectra with verbose, structured logging
 // ════════════════════════════════════════════════════════════════════════
 void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 {
   if (!m_clus || m_clus->size() < 2) return;
 
-  const std::size_t nClus = m_clus->size();
-  LOG(3, CLR_BLUE, "  [doPi0QA] " << nClus << " clusters in event");
-
+  // ---------- build lightweight cluster vector -------------------------
   struct Clu { TLorentzVector v; float E, pt, chi; };
-  std::vector<Clu> cl; cl.reserve(nClus);
+  std::vector<Clu> cl; cl.reserve(m_clus->size());
 
-  // ── build lightweight cluster list ────────────────────────────────────
-  RawClusterContainer::ConstRange cr = m_clus->getClusters();
-  for (auto it = cr.first; it != cr.second; ++it)
+  for (auto [it,end]=m_clus->getClusters(); it!=end; ++it)
   {
     const RawCluster* c = it->second;
-
-    const CLHEP::Hep3Vector vtx_vec(m_vx, m_vy, m_vz);
-    const CLHEP::Hep3Vector eVec = RawClusterUtility::GetEVec(*c, vtx_vec);
-    const float  eta = eVec.pseudoRapidity();
-    const float  phi = eVec.phi();
-    const float  pt  = eVec.perp();
-    const float  E   = c->get_energy();
-      
-    Clu tmp;
-    tmp.E   = E;
-    tmp.pt  = pt;
-    tmp.chi = c->get_chi2();
-    tmp.v.SetPtEtaPhiE(pt, eta, phi, E);
-
-    cl.push_back(tmp);
+    const auto  eVec = RawClusterUtility::GetEVec(*c, {m_vx,m_vy,m_vz});
+    cl.push_back({{}, c->get_energy(), eVec.perp(), c->get_chi2(), {}});
+    cl.back().v.SetPtEtaPhiE(cl.back().pt, eVec.pseudoRapidity(),
+                             eVec.phi(),   cl.back().E);
   }
 
-  /* count accepted pairs per pT‑bin for a concise summary */
-  std::map<std::pair<float,float>, std::size_t> pairCounter;
-
+  // ---------- loop over pairs ------------------------------------------
   for (std::size_t i = 0; i < cl.size(); ++i)
-    for (std::size_t j = i + 1; j < cl.size(); ++j)
+    for (std::size_t j = i+1; j < cl.size(); ++j)
     {
-      const float e1   = cl[i].E,   e2   = cl[j].E;
-      const float pt1  = cl[i].pt,  pt2  = cl[j].pt;
-      const float chi1 = cl[i].chi, chi2 = cl[j].chi;
+      const Clu &c1 = cl[i], &c2 = cl[j];
+      const float mInv = (c1.v + c2.v).M();
+      const float asym = std::fabs(c1.E - c2.E)/(c1.E + c2.E);
 
-      const float asym = std::fabs(e1 - e2) / (e1 + e2);
-      const float mInv = (cl[i].v + cl[j].v).M();
-
-      for (auto pb : m_ptBins)
+      // ========== inclusive block (pT‑independent) =====================
+      for (float Emin  : m_minClusE)
+      for (float chiMx : m_chi2Cuts)
+      for (float aMx   : m_asymCuts)
       {
-        if (pt1 < pb.first || pt1 >= pb.second) continue;
-        if (pt2 < pb.first || pt2 >= pb.second) continue;
+        const std::string keyInc = statKey(-1,-1,Emin,chiMx,aMx);
+        ++m_evtStat[keyInc].tested;
 
-        bool accepted = false;
+        if (c1.E < Emin || c2.E < Emin)                            continue;
+        if (c1.chi > chiMx || c2.chi > chiMx)                      continue;
+        if (asym   > aMx)                                          continue;
 
-        for (float Emin : m_minClusE)
-          if (e1 >= Emin && e2 >= Emin)
-            for (float chiMax : m_chi2Cuts)
-              if (chi1 < chiMax && chi2 < chiMax)
-                for (float aMax : m_asymCuts)
-                  if (asym < aMax)
-                  {
-                    const std::string base = invKey(pb.first, pb.second,
-                                                    Emin, chiMax, aMax);
+        for (auto& t: trig)
+          static_cast<TH1F*>(qaHistogramsByTrigger[t]
+                     [invKey(-1,-1,Emin,chiMx,aMx)+"_"+t])->Fill(mInv);
 
-                    for (auto& t : trig)
-                      static_cast<TH1F*>(qaHistogramsByTrigger[t][base + "_" + t])
-                          ->Fill(mInv);
-                    accepted = true;
-                  }
+        ++m_evtStat[keyInc].passed;
+      }
 
-        if (accepted) ++pairCounter[pb];
+      // ========== pT‑binned block  =====================================
+      for(const auto& pb : m_ptBins)
+      {
+        const float ptLo = pb.first, ptHi = pb.second;
+        const std::string k = statKey(ptLo,ptHi,0,0,0); // dummy for tested count
+        ++m_evtStat[k].tested;   // counts *candidate* pairs in this pT window
+
+        if (c1.pt<ptLo || c1.pt>=ptHi || c2.pt<ptLo || c2.pt>=ptHi) continue;
+
+        for(float Emin: m_minClusE)
+        for(float chiMx: m_chi2Cuts)
+        for(float aMx  : m_asymCuts)
+        {
+          const std::string key = statKey(ptLo,ptHi,Emin,chiMx,aMx);
+          ++m_evtStat[key].tested;
+
+          if (c1.E < Emin || c2.E < Emin)      continue;
+          if (c1.chi > chiMx || c2.chi > chiMx)continue;
+          if (asym   > aMx)                    continue;
+
+          for (auto& t: trig)
+            static_cast<TH1F*>(qaHistogramsByTrigger[t]
+                 [invKey(ptLo,ptHi,Emin,chiMx,aMx)+"_"+t])->Fill(mInv);
+
+          ++m_evtStat[key].passed;
+        }
       }
     }
 
-  /* concise table ------------------------------------------------------ */
-  if (Verbosity() >= 2 && !pairCounter.empty())
+  // ---------- per‑event table  -----------------------------------------
+  if (Verbosity() >= 2)
   {
-    std::cout << CLR_GREEN << "    π0 pairs accepted (per pT bin):";
-    for (const auto& kv : pairCounter)
-      std::cout << "  [" << kv.first.first << "–" << kv.first.second
-                << " GeV] " << kv.second;
-    std::cout << CLR_RESET << std::endl;
+    std::cout << CLR_GREEN
+              << "    π0‑QA summary (this event)\n"
+              << "    cut‑key                                    "
+                 "tested   passed   eff[%]\n"
+              << "    -----------------------------------------------------------\n";
+    for (const auto& kv : m_evtStat)
+    {
+      const auto& s = kv.second;
+      const double eff = s.tested ? 100.*s.passed/s.tested : 0.;
+      std::cout << "    " << std::left << std::setw(40) << kv.first
+                << std::right << std::setw(8) << s.tested
+                << std::setw(9) << s.passed
+                << std::setw(9) << std::fixed << std::setprecision(1) << eff
+                << '\n';
+      m_totStat[kv.first].tested += s.tested;   // accumulate for run summary
+      m_totStat[kv.first].passed += s.passed;
+    }
+    std::cout << CLR_RESET;
   }
 }
+
+
 
 
 // ════════════════════════════════════════════════════════════════════════
@@ -859,6 +909,16 @@ std::string emcal_sepdCorrelator::invKey(float ptLo,float ptHi,
 }
 
 
+std::string emcal_sepdCorrelator::statKey(float ptLo,float ptHi,
+                                          float Emin,float chi,float a)
+{
+  std::ostringstream o;
+  o<<std::fixed<<std::setprecision(1);
+  if(ptLo<0) o<<"allPt";
+  else       o<<"pt"<<ptLo<<"to"<<ptHi;
+  o<<"_E"<<Emin<<"_chi"<<chi<<"_asy"<<a;
+  return o.str();
+}
 //==========================================================================
 //  ResetEvent / End / Reset  (unchanged – keep your original)
 //==========================================================================
@@ -880,6 +940,7 @@ int emcal_sepdCorrelator::ResetEvent(PHCompositeNode*)
   m_psi2_N  = 0.;
   for (auto& kv : m_calo) kv.second.sumE = 0.;     // CEMC/IHCAL/OHCAL
 
+  m_evtStat.clear();
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -923,6 +984,25 @@ int emcal_sepdCorrelator::End(PHCompositeNode*)
       std::cout << "-------------------------------------------------------------------------------\n";
   }
 
+  // ---------- π0‑QA run summary ----------------------------------
+  if(Verbosity()>0 && !m_totStat.empty())
+  {
+      std::cout << "\n\033[1mπ0‑QA cut summary (all events)\033[0m\n"
+                << "\033[1mcut‑key                                    │ "
+                   "tested        passed    eff[%]\033[0m\n"
+                << "--------------------------------------------------------------------------\n";
+      for(const auto& kv : m_totStat)
+      {
+        const auto& s = kv.second;
+        const double eff = s.tested ? 100.*s.passed/s.tested : 0.;
+        std::cout << std::left << std::setw(44) << kv.first << " │ "
+                  << std::right<< std::setw(12)<< s.tested
+                  << std::setw(12)<< s.passed
+                  << std::setw(9) << std::fixed << std::setprecision(2) << eff
+                  << '\n';
+      }
+      std::cout << "--------------------------------------------------------------------------\n";
+  }
   COUT_BLUE("Done.");
   return Fun4AllReturnCodes::EVENT_OK;
 }
