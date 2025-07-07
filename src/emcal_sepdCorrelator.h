@@ -158,59 +158,58 @@ class emcal_sepdCorrelator : public SubsysReco
 
   // ––– utility -----------------------------------------------------------
   static std::string invKey(float ptLo,float ptHi,
-                            float minE,float maxChi,float maxAsy);
-};
-bool m_mapsBooked = false;
+                              float minE,float maxChi,float maxAsy);
+  static std::string statKey(float ptLo,float ptHi,
+                               float Emin,float chiMax,float aMax);
+  };
+  bool m_mapsBooked = false;
 
-struct CutStat {
+  struct CutStat {
   std::size_t tested  = 0;   ///< # candidate pairs tested
   std::size_t passed  = 0;   ///< # pairs that survived all cuts
-};
-/// per‑event scratch pad (cleared in ResetEvent)
-std::map<std::string,CutStat> m_evtStat;
-/// run‑wide accumulation (written in End())
-std::map<std::string,CutStat> m_totStat;
+  };
+  /// per‑event scratch pad (cleared in ResetEvent)
+  std::map<std::string,CutStat> m_evtStat;
+  /// run‑wide accumulation (written in End())
+  std::map<std::string,CutStat> m_totStat;
 
-// helper that turns all cut parameters into a unique key
-static std::string
-statKey(float ptLo,float ptHi,float Emin,float chiMax,float aMax);
 
-// ───── inside the class (private or public, as you prefer) ──────────────
-struct TrigStat {               // run‑wide bookkeeping
-  std::size_t tested = 0;       // events where decodeTriggers() succeeded
-  std::size_t fired  = 0;       // events accepted by this trigger
-};
-std::map<std::string,TrigStat>  m_trigStat;
-std::size_t m_evtNoTrig = 0;    // events rejected because no trigger fired
+  // ───── inside the class (private or public, as you prefer) ──────────────
+  struct TrigStat {               // run‑wide bookkeeping
+    std::size_t tested = 0;       // events where decodeTriggers() succeeded
+    std::size_t fired  = 0;       // events accepted by this trigger
+  };
+  std::map<std::string,TrigStat>  m_trigStat;
+  std::size_t m_evtNoTrig = 0;    // events rejected because no trigger fired
 
-//==========================================================================
-//──────────────── mapping helpers ─────────────────────────────────────────
-/** Map EMCal tower (ieta,iphi) to  sector 0–63 */
-static inline int sector_from_idx(unsigned int ieta, unsigned int iphi)
-{
-  if (iphi >= 256) return -1;
-  const int base = iphi / 8;                 // 8 φ bins per sector slice
-  return (ieta < 48) ? 32 + base             // bottom half
+  //==========================================================================
+  //──────────────── mapping helpers ─────────────────────────────────────────
+  /** Map EMCal tower (ieta,iphi) to  sector 0–63 */
+  static inline int sector_from_idx(unsigned int ieta, unsigned int iphi)
+  {
+    if (iphi >= 256) return -1;
+    const int base = iphi / 8;                 // 8 φ bins per sector slice
+    return (ieta < 48) ? 32 + base             // bottom half
                      :           base;       // top half
-}
+  }
 
-/** Map tower (ieta,iphi) to  IB number 0–5 */
-static inline int ib_from_idx(unsigned int ieta, unsigned int /*iphi*/)
-{
-  if      (ieta <  8) return 5;
-  else if (ieta < 16) return 4;
-  else if (ieta < 24) return 3;
-  else if (ieta < 32) return 2;
-  else if (ieta < 40) return 1;
-  else if (ieta < 48) return 0;
-  else if (ieta < 56) return 0;
-  else if (ieta < 64) return 1;
-  else if (ieta < 72) return 2;
-  else if (ieta < 80) return 3;
-  else if (ieta < 88) return 4;
-  else if (ieta < 96) return 5;
-  return -1;
-}
+  /** Map tower (ieta,iphi) to  IB number 0–5 */
+  static inline int ib_from_idx(unsigned int ieta, unsigned int /*iphi*/)
+  {
+    if      (ieta <  8) return 5;
+    else if (ieta < 16) return 4;
+    else if (ieta < 24) return 3;
+    else if (ieta < 32) return 2;
+    else if (ieta < 40) return 1;
+    else if (ieta < 48) return 0;
+    else if (ieta < 56) return 0;
+    else if (ieta < 64) return 1;
+    else if (ieta < 72) return 2;
+    else if (ieta < 80) return 3;
+    else if (ieta < 88) return 4;
+    else if (ieta < 96) return 5;
+    return -1;
+  }
 
 
 #endif  // EMCALSEPDCORRELATOR_H

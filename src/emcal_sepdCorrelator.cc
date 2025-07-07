@@ -757,7 +757,9 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   {
     const RawCluster* c = it->second;
     const auto  eVec = RawClusterUtility::GetEVec(*c, {m_vx,m_vy,m_vz});
-    cl.push_back({{}, c->get_energy(), eVec.perp(), c->get_chi2(), {}});
+    cl.push_back({{}, static_cast<float>(c->get_energy()),
+                         static_cast<float>(eVec.perp()),
+                         static_cast<float>(c->get_chi2())});
     cl.back().v.SetPtEtaPhiE(cl.back().pt, eVec.pseudoRapidity(),
                              eVec.phi(),   cl.back().E);
   }
