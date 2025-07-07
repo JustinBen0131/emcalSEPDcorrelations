@@ -30,6 +30,7 @@
 
 
 #define CLR_BLUE   "\033[1;34m"
+#define CLR_CYAN   "\033[1;36m"
 #define CLR_GREEN  "\033[1;32m"
 #define CLR_YELLOW "\033[1;33m"
 #define CLR_RESET  "\033[0m"
@@ -40,6 +41,9 @@
          std::cout << colour << msg << CLR_RESET << std::endl; \
   } while (false)
 
+/** Always print, independent of Verbosity() */
+#define PROGRESS(MSG)                                                     \
+  do { std::cout << CLR_CYAN << MSG << CLR_RESET << std::endl; } while (false)
 
 //==========================================================================
 //  ctor
@@ -60,6 +64,7 @@ emcal_sepdCorrelator::emcal_sepdCorrelator(const std::string& outFile)
 //==========================================================================
 int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
 {
+  (void) topNode;                              // silence unused‑parameter warning
   LOG(1, CLR_BLUE, "[Init] emcal_sepdCorrelator – starting");
 
   out     = new TFile(Outfile.c_str(),"RECREATE");
@@ -71,13 +76,21 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
   LOG(1, CLR_GREEN, "[Init] booking scalar QA histograms …");
   createHistos_Data();
 
-  /* 2) detector‑shape hit‑maps ----------------------------------------- */
-  LOG(1, CLR_GREEN, "[Init] booking detector hit‑maps …");
-  bookShapeHitMaps(topNode);
-
   LOG(1, CLR_BLUE, "[Init] emcal_sepdCorrelator – done");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
+int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
+{
+  if (m_mapsBooked) return Fun4AllReturnCodes::EVENT_OK;   // already done
+
+  LOG(1, CLR_GREEN, "[InitRun] geometry is present – booking hit‑maps …");
+  bookShapeHitMaps(topNode);
+  m_mapsBooked = true;
+
+  return Fun4AllReturnCodes::EVENT_OK;
+}
+
 
 //==========================================================================
 //  bookShapeHitMaps – hex (MBD) & polar (sEPD) hit‑maps, one per trigger
@@ -85,7 +98,7 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
 void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
 {
   auto* mbdg = findNode::getClass<MbdGeom>(topNode,"MbdGeom");
-  auto* epdg = findNode::getClass<EpdGeom>(topNode,"EpdGeom");
+  auto* epdg = findNode::getClass<EpdGeom>(topNode,"TOWERGEOM_EPD");
   if (!mbdg || !epdg)
     std::cerr << "[WARN] MbdGeom or EpdGeom missing – hit‑maps will be empty\n";
 
@@ -273,6 +286,8 @@ void emcal_sepdCorrelator::createHistos_Data()
 int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 {
   ++event_count;
+    
+  PROGRESS("[event " << std::setw(9) << event_count << "]");
 
   if (!fetchNodes(topNode)) return Fun4AllReturnCodes::ABORTEVENT;
 
@@ -340,15 +355,50 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   }
 
   /* remaining detectors ------------------------------------------------ */
-  m_sepd     = findNode::getClass<TowerInfoContainer>(top,"TOWERS_SEPD");
-  m_mbdpmts  = findNode::getClass<MbdPmtContainer>   (top,"MbdPmtContainer");
-  m_mbdgeom  = findNode::getClass<MbdGeom>           (top,"MbdGeom");
-  m_epdgeom  = findNode::getClass<EpdGeom>           (top,"EpdGeom");
-  m_clus     = findNode::getClass<RawClusterContainer>(top,"CLUSTERINFO_CEMC");
 
-  const bool ok = (m_sepd && m_mbdpmts && m_mbdgeom && m_epdgeom);
-  if (!ok) LOG(2, CLR_YELLOW, "  – missing SEPD/MBD geometry → skip");
-  return ok;
+  // --- sEPD calibrated tower container ---------------------------------
+  m_sepd = findNode::getClass<TowerInfoContainer>(top, "TOWERINFO_CALIB_SEPD");
+  if (!m_sepd)
+  {
+     LOG(2, CLR_YELLOW, "  – node \"TOWERINFO_CALIB_SEPD\" **missing**");
+  }
+
+  // --- MBD PMT hits -----------------------------------------------------
+  m_mbdpmts = findNode::getClass<MbdPmtContainer>(top, "MbdPmtContainer");
+  if (!m_mbdpmts)
+  {
+      LOG(2, CLR_YELLOW, "  – node \"MbdPmtContainer\" **missing**");
+  }
+
+  // --- MBD offline geometry (RUN node) ---------------------------------
+  m_mbdgeom = findNode::getClass<MbdGeom>(top, "MbdGeom");
+  if (!m_mbdgeom)
+  {
+      LOG(2, CLR_YELLOW, "  – node \"MbdGeom\" **missing** (MBD geometry)");
+  }
+
+  // --- sEPD offline geometry (RUN node) --------------------------------
+  m_epdgeom = findNode::getClass<EpdGeom>(top, "TOWERGEOM_EPD");
+  if (!m_epdgeom)
+  {
+      LOG(2, CLR_YELLOW, "  – node \"TOWERGEOM_EPD\" **missing** (sEPD geometry)");
+  }
+
+  // --- EMC cluster container -------------------------------------------
+  m_clus = findNode::getClass<RawClusterContainer>(top, "CLUSTERINFO_CEMC");
+
+  // ---------------------------------------------------------------------
+  // Require BOTH calibrated tower data and corresponding detector geometries
+  // ---------------------------------------------------------------------
+  const bool ok_sepd = (m_sepd && m_epdgeom);
+  const bool ok_mbd  = (m_mbdpmts && m_mbdgeom);
+
+  if (!ok_sepd || !ok_mbd)
+  {
+      LOG(2, CLR_YELLOW, "  – missing mandatory SEPD and/or MBD nodes → skip event");
+  }
+  return (ok_sepd && ok_mbd);
+
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -550,12 +600,12 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
     const double w = ti->get_energy();           if (w <= 0) continue;
 
-    const int  arm  = (ch < 256 ? 0 : 1);        // 0 = South, 1 = North
-    const int  tile = ch % 256;
-    const unsigned id  = static_cast<unsigned>(arm*256 + tile);
+    /* build the official packed key once ------------------------------ */
+    const unsigned key = TowerInfoDefs::encode_epd(ch);
 
-    const double r   = m_epdgeom->get_r  (id);
-    const double phi = m_epdgeom->get_phi(id);   // radians
+    const int  arm  = TowerInfoDefs::get_epd_arm(key);   // 0 = South, 1 = North
+    const double r   = m_epdgeom->get_r  (key);
+    const double phi = m_epdgeom->get_phi(key);
     const double x   = r * std::cos(phi);
     const double y   = r * std::sin(phi);
 

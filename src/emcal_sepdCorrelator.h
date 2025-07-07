@@ -55,6 +55,7 @@ class emcal_sepdCorrelator : public SubsysReco
 
   // Fun4All hooks ---------------------------------------------------------
   int  Init            (PHCompositeNode*) override;
+  int  InitRun         (PHCompositeNode*) override;
   int  process_event   (PHCompositeNode*) override;
   int  ResetEvent      (PHCompositeNode*) override;
   int  End             (PHCompositeNode*) override;
@@ -159,6 +160,7 @@ class emcal_sepdCorrelator : public SubsysReco
   static std::string invKey(float ptLo,float ptHi,
                             float minE,float maxChi,float maxAsy);
 };
+bool m_mapsBooked = false;
 //==========================================================================
 //──────────────── mapping helpers ─────────────────────────────────────────
 /** Map EMCal tower (ieta,iphi) to  sector 0–63 */

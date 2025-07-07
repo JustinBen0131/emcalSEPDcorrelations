@@ -42,7 +42,7 @@ mkdir -p "$outDir"
 
 firstFile="$(head -n1 "$fileList")"
 baseTag="$(basename "${firstFile%.root}")"
-rootOut="${outDir}/TrigPlot_run${runNumber}_c${clusterID}_${baseTag}.root"
+rootOut="${outDir}/emcal_sepd_analysis_run${runNumber}_c${clusterID}_${baseTag}.root"
 
 echo "[INFO] $(date)  Run=$runNumber  Files=$(wc -l < "$fileList")"
 echo "[INFO] Writing → $rootOut"

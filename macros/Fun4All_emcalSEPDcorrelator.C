@@ -1,170 +1,176 @@
+//======================================================================
+//  Fun4All_emcalSEPDcorrelator.C  – ana.495‑compatible driver
+//  --------------------------------------------------------------------
+//  * No dependency on CaloGeomInit or MbdGeomReco (not shipped with ana).
+//  * Lots of run‑time sanity checks to pinpoint problems quickly.
+//  * Fails hard (std::runtime_error) on any unrecoverable condition.
+//======================================================================
 #pragma once
 #if defined(__CINT__) || defined(__CLING__)
-R__ADD_INCLUDE_PATH($OFFLINE_MAIN/include)
+  R__ADD_INCLUDE_PATH($OFFLINE_MAIN/include)
 #endif
-
 #if defined(__CLING__)
-#pragma cling add_include_path("$ENV{OFFLINE_MAIN}/include")
+  #pragma cling add_include_path("$ENV{OFFLINE_MAIN}/include")
 #endif
 
 #if ROOT_VERSION_CODE >= ROOT_VERSION(6,00,0)
+
+//–––– Standard Fun4All / sPHENIX ––––––––––––––––––––––––––––––––––––––
 #include <fun4all/SubsysReco.h>
 #include <fun4all/Fun4AllServer.h>
-#include <fun4all/Fun4AllInputManager.h>
 #include <fun4all/Fun4AllDstInputManager.h>
 #include <fun4all/Fun4AllUtils.h>
+
 #include <ffamodules/CDBInterface.h>
-#include <fun4all/Fun4AllDstOutputManager.h>
-#include <fun4all/Fun4AllOutputManager.h>
 #include <calotrigger/TriggerRunInfoReco.h>
-#include <caloreco/CaloTowerStatus.h>
 
 #include <phool/recoConsts.h>
 #include <phool/PHRandomSeed.h>
-#include <phool/recoConsts.h>
 
-#include <jetbase/FastJetAlgo.h>
-#include <jetbase/JetReco.h>
-#include <jetbase/TowerJetInput.h>
-#include <g4jets/TruthJetInput.h>
+// analysis module
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"
 
-#include <jetbackground/CopyAndSubtractJets.h>
-#include <jetbackground/DetermineTowerBackground.h>
-#include <jetbackground/DetermineTowerRho.h>
-#include <jetbackground/FastJetAlgoSub.h>
-#include <jetbackground/RetowerCEMC.h>
-#include <jetbackground/SubtractTowers.h>
-#include <jetbackground/SubtractTowersCS.h>
-#include <jetbackground/TowerRho.h>
-#include <calotrigger/TriggerRunInfoReco.h>
-#include "/sphenix/user/patsfan753/tutorials/tutorials/CaloDataAnaRun24pp/clusterIsoCopy_src/ClusterIso.h"
+// C / C++
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
 
-#include <calorimeters/CaloGeomInit.h>
-#include <mbd/MbdGeomReco.h>             // MbdGeomReco
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"        // your analysis module
-
-#include <Calo_Calib.C>
-
+//–––– ROOT libraries –––––––––––––––––––––––––––––––––––––––––––––––––––
 R__LOAD_LIBRARY(libfun4all.so)
 R__LOAD_LIBRARY(libffarawobjects.so)
 R__LOAD_LIBRARY(libcaloTreeGen.so)
-R__LOAD_LIBRARY(libcalo_reco.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
 R__LOAD_LIBRARY(libcalotrigger.so)
-R__LOAD_LIBRARY(libmbd_io.so)
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
+//----------------------------------------------------------------------
+//  Geometry note for maintainers
+//----------------------------------------------------------------------
+#warning "CaloGeomInit & MbdGeomReco are unavailable in ana.495 – geometry "\
+         "is read from the input DST.  Do NOT add those headers/libs here."
 
-static const bool WANT_VERBOSE = false;
- 
-void Fun4All_emcalSEPDcorrelator(const int nEvents = 0,
-                         const char *listFile = "input_files.list",
-                         const char *inName = "commissioning.root")
+//======================================================================
+//  Convenience helpers
+//======================================================================
+namespace detail
 {
+  /// Throw a nicely formatted exception on unrecoverable error
+  [[noreturn]] void bail(const std::string& msg)
+  {
+    std::ostringstream oss;
+    oss << "\n[FATAL] Fun4All_emcalSEPDcorrelator :: " << msg << '\n';
+    throw std::runtime_error(oss.str());
+  }
 
-    Fun4AllServer *se = Fun4AllServer::instance();
-    if (WANT_VERBOSE) {
-        std::cout << "[DEBUG] Fun4AllServer instance acquired: " << se << std::endl;
-    }
-    gSystem->Load("libg4dst");
-    
-    // Basic run config
-    recoConsts *rc = recoConsts::instance();
-    if (WANT_VERBOSE) {
-        std::cout << "[DEBUG] Setting CDB_GLOBALTAG to 'ProdA_2024'..." << std::endl;
-    }
-    rc->set_StringFlag("CDB_GLOBALTAG", "ProdA_2024");
-    
-    // Read the first filename to extract the run number
-    if (WANT_VERBOSE) {
-        std::cout << "[DEBUG] Attempting to open listFile: " << listFile << std::endl;
-    }
-    std::ifstream infile(listFile);
-    std::string firstFilename;
-    if (!infile.is_open())
-    {
-        std::cerr << "[ERROR] Could not open input file list: " << listFile << std::endl;
-        return;
-    }
-    if (!std::getline(infile, firstFilename))
-    {
-        std::cerr << "[ERROR] Input file list is empty: " << listFile << std::endl;
-        return;
-    }
-    std::cout << "[DEBUG] First filename read: " << firstFilename << std::endl;
-    
-    int runnumber = -1;  // Declare at an outer scope
-    // Extract run number from the first filename
-    std::pair<int, int> runseg = Fun4AllUtils::GetRunSegment(firstFilename);
-    runnumber = runseg.first;
-    int segnumber = runseg.second;
-    if (WANT_VERBOSE) {
-        std::cout << "[DEBUG] Extracted run: " << runnumber
-        << " segment: " << segnumber << std::endl;
-    }
-
-    if (runnumber <= 0)
-    {
-        std::cerr << "[ERROR] Invalid run number extracted from first file: "
-        << runnumber << ". Exiting..." << std::endl;
-        return;
-    }
-    rc->set_uint64Flag("TIMESTAMP", runnumber);
-    
-    // ----------------------------------------------------------------------
-    // 1.  REGISTER THE GEOMETRY SUBSYSTEMS  <<< NEW
-    //     – Calorimeters (CEMC/IHCAL/OHCAL)
-    CaloGeomInit *geoInit = new CaloGeomInit("CaloGeomInit");
-    geoInit->Verbosity(0);                 // or =1 for one‑line summary
-    geoInit->UseDetailedTowerGeom(true);   // <-- critical: tower‑level
-    se->registerSubsystem(geoInit);
-
-    //     – MBD (hexagonal PMT map)
-    MbdGeomReco *mbdGeo = new MbdGeomReco();
-    mbdGeo->Verbosity(0);
-    se->registerSubsystem(mbdGeo);
-    
-    TriggerRunInfoReco *triggerruninforeco = new TriggerRunInfoReco();
-    triggerruninforeco->Verbosity(0);
-    se->registerSubsystem(triggerruninforeco);
-    
-    auto* correlator = new emcal_sepdCorrelator(inName);    // writes to rootOut
-    correlator->setVzCut(10.0);
-    correlator->enableVzCut();    // (re)enable – default true
-    correlator->setVerbose(3);
-    se->registerSubsystem(correlator);
-
-    Fun4AllInputManager *in = new Fun4AllDstInputManager("DSTcalo");
-
-
-    infile.clear();
-    infile.seekg(0, std::ios::beg);
-
-    // Read all filenames and add them to the input manager
-    std::string filename;
-    while (std::getline(infile, filename))
-    {
-        if (filename.empty()) continue;
-        in->AddFile(filename.c_str());
-        if (WANT_VERBOSE) {
-            std::cout << "[INFO] Added input file: " << filename << std::endl;
-        }
-
-    }
-    infile.close();
-    se->registerInputManager(in);
-
-    se->run(nEvents);
-    se->End();
-
-    // Now done => exit
-    if (WANT_VERBOSE)
-    {
-      std::cout << "[DEBUG] Done => exiting.\n";
-    }
-    gSystem->Exit(0);
+  /// Trim whitespace from both ends (for robust list‑file parsing)
+  inline std::string trim(std::string s)
+  {
+    const char* ws = " \t\r\n";
+    s.erase(0, s.find_first_not_of(ws));
+    s.erase(s.find_last_not_of(ws) + 1);
+    return s;
+  }
 }
 
-#endif
+//======================================================================
+//  The actual steering macro
+//======================================================================
+void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
+                                 const char* listFile  = "input_files.list",
+                                 const char* outRoot   = "TrigPlot.root",
+                                 const bool  verbose   = false)
+{
+  //--------------------------------------------------------------------
+  // 0.  Banner & basic environment sanity
+  //--------------------------------------------------------------------
+  std::cout << "\n>>> Fun4All_emcalSEPDcorrelator – ana.495 driver <<<\n"
+            << "    Input list : " << listFile  << '\n'
+            << "    Output file: " << outRoot   << '\n'
+            << "    nEvents    : " << nEvents   << (nEvents==0? " (all)\n":"\n");
+
+  Fun4AllServer* se = Fun4AllServer::instance();
+  if (!se) detail::bail("unable to obtain Fun4AllServer instance!");
+
+  //--------------------------------------------------------------------
+  // 1.  Parse the file list & determine run / segment
+  //--------------------------------------------------------------------
+  std::ifstream list(listFile);
+  if (!list.is_open())
+    detail::bail("cannot open input list \"" + std::string(listFile) + "\"");
+
+  std::vector<std::string> files;
+  std::string line;
+  while (std::getline(list, line))
+  {
+    line = detail::trim(line);
+    if (!line.empty()) files.emplace_back(line);
+  }
+  if (files.empty())
+    detail::bail("input list \"" + std::string(listFile) + "\" is empty");
+
+  const std::string& firstFile = files.front();
+  const auto [run, seg]        = Fun4AllUtils::GetRunSegment(firstFile);
+  if (run <= 0)
+    detail::bail("failed to extract run number from first file: " + firstFile);
+
+  if (verbose)
+    std::cout << "[INFO] Run=" << run << "  Seg=" << seg
+              << "  (" << files.size() << " files)\n";
+
+  //--------------------------------------------------------------------
+  // 2.  Global run flags
+  //--------------------------------------------------------------------
+  recoConsts* rc = recoConsts::instance();
+  rc->set_StringFlag("CDB_GLOBALTAG", "ProdA_2024");
+  rc->set_uint64Flag("TIMESTAMP",     run);
+  PHRandomSeed();
+
+  //--------------------------------------------------------------------
+  // 3.  Register subsystems
+  //--------------------------------------------------------------------
+
+  // 3a) Run‑info (always available in ana.495)
+  auto* trigInfo = new TriggerRunInfoReco();
+  trigInfo->Verbosity(verbose ? 1 : 0);
+  se->registerSubsystem(trigInfo);
+
+  // 3b) Your analysis module
+  auto* correl = new emcal_sepdCorrelator(outRoot);
+  correl->setVzCut(10.);
+  correl->enableVzCut(true);
+  correl->setVerbose(3);
+  se->registerSubsystem(correl);
+
+  //--------------------------------------------------------------------
+  // 4.  Input manager
+  //--------------------------------------------------------------------
+  auto* inDST = new Fun4AllDstInputManager("DSTcalo");
+  for (const auto& f : files) inDST->AddFile(f);
+  se->registerInputManager(inDST);
+
+  //--------------------------------------------------------------------
+  // 5.  Run
+  //--------------------------------------------------------------------
+  try
+  {
+    if (verbose) std::cout << "[INFO] Starting event loop …\n";
+    se->run(nEvents);
+    se->End();
+    if (verbose) std::cout << "[INFO] Finished successfully.\n";
+  }
+  catch (const std::exception& e)
+  {
+    detail::bail(std::string("exception in Fun4All: ") + e.what());
+  }
+
+  //--------------------------------------------------------------------
+  // 6.  Clean exit
+  //--------------------------------------------------------------------
+  gSystem->Exit(0);
+}
+
+#endif   // ROOT_VERSION guard
