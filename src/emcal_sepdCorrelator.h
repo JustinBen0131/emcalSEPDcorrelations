@@ -24,7 +24,7 @@
 #include <calobase/TowerInfoContainer.h>
 #include <calobase/TowerInfoDefs.h>
 #include <calobase/RawTowerGeomContainer.h>
-#include <calobase/RawTowerGeom.h>        // ← new: brings in get_eta()
+#include <calobase/RawTowerGeom.h>
 #include <calobase/RawClusterContainer.h>
 #include <globalvertex/GlobalVertexMap.h>
 #include <mbd/MbdGeom.h>
@@ -110,12 +110,12 @@ class emcal_sepdCorrelator : public SubsysReco
            std::map<std::string,TObject*>> qaHistogramsByTrigger;
 
   // ––– cut tables (unchanged) -------------------------------------------
-  const std::vector<float>               m_asymCuts   {0.5f,0.7f};
+  const std::vector<float>               m_asymCuts   {0.7f};
   const std::vector<float>               m_chi2Cuts   {4.f};
-  const std::vector<float>               m_minClusE   {1.f,2.f};
+  const std::vector<float>               m_minClusE   {2.f};
   const std::vector<std::pair<float,float>> m_ptBins {
-        {2,3},{3,4},{4,5},{5,6},{6,7},{7,8},{8,9},{9,10},
-        {10,12},{12,15},{15,20},{20,30} };
+        {2,4},{4,6},{6,8},{8, 10},{10,12},
+        {12,15},{15,20},{20,30} };
 
   // ––– calorimeter convenience list -------------------------------------
   const std::vector<std::tuple<std::string,std::string,std::string>> m_caloInfo {
