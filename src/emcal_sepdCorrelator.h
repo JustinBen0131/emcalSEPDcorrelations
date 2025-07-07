@@ -3,7 +3,6 @@
 #define EMCALSEPDCORRELATOR_H
 //==========================================================================
 //  sPHENIX EMCal × sEPD × MBD correlator – headers
-//  Author:  <your name>          (world‑class clean‑room version)
 //  ------------------------------------------------------------------
 //  PUBLIC  :  unchanged Fun4All module interface.
 //  PRIVATE :  book‑once helpers  |  per‑event helpers  |  caches.
