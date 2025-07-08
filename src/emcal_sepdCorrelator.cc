@@ -138,15 +138,15 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
 
     /* EMCal / HCal (η,φ) maps */
     H["h_EMC_EtaPhiMap_" + trig]  = new TH2F(("h_EMC_EtaPhiMap_"  + trig).c_str(),
-                                             "CEMC tower map;#phi (0–255);#eta (0–95)",
+                                             "CEMC tower map;#phi (0...255);#eta (0...95)",
                                              256, 0, 256, 96, 0, 96);
 
     H["h_IHCAL_EtaPhiMap_" + trig] = new TH2F(("h_IHCAL_EtaPhiMap_" + trig).c_str(),
-                                              "IHCAL tower map;#phi (0–63);#eta (0–23)",
+                                              "IHCAL tower map;#phi (0...63);#eta (0...23)",
                                               64, 0, 64, 24, 0, 24);
 
     H["h_OHCAL_EtaPhiMap_" + trig] = new TH2F(("h_OHCAL_EtaPhiMap_" + trig).c_str(),
-                                              "OHCAL tower map;#phi (0–63);#eta (0–23)",
+                                              "OHCAL tower map;#phi (0...63);#eta (0...23)",
                                               64, 0, 64, 24, 0, 24);
   }
   out->cd();
@@ -191,28 +191,28 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig, HistM
   const int nC = 120; const double cMax = 60.;
   const int nE = 120; const double eMax = 60.;
 
-  H["h_SEPD_vs_CEMC"] = book2(("h_SEPD_vs_CEMC_" + trig).c_str(),  "sEPD Q vs CEMC ΣE",
+  H["h_SEPD_vs_CEMC"] = book2(("h_SEPD_vs_CEMC_" + trig).c_str(),  "sEPD Q vs CEMC #SigmaE",
                               nC, 0, cMax, nE, 0, eMax);
-  H["h_SEPD_vs_IHCAL"] = book2(("h_SEPD_vs_IHCAL_" + trig).c_str(),"sEPD Q vs IHCAL ΣE",
+  H["h_SEPD_vs_IHCAL"] = book2(("h_SEPD_vs_IHCAL_" + trig).c_str(),"sEPD Q vs IHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_SEPD_vs_OHCAL"] = book2(("h_SEPD_vs_OHCAL_" + trig).c_str(),"sEPD Q vs OHCAL ΣE",
+  H["h_SEPD_vs_OHCAL"] = book2(("h_SEPD_vs_OHCAL_" + trig).c_str(),"sEPD Q vs OHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_SEPD_vs_MBD"]   = book2(("h_SEPD_vs_MBD_"  + trig).c_str(),"sEPD Q vs MBD ΣQ",
+  H["h_SEPD_vs_MBD"]   = book2(("h_SEPD_vs_MBD_"  + trig).c_str(),"sEPD Q vs MBD #SigmaQ",
                                nC, 0, cMax, nC, 0, cMax);
 
-  H["h_MBD_vs_CEMC"]   = book2(("h_MBD_vs_CEMC_" + trig).c_str(), "MBD ΣQ vs CEMC ΣE",
+  H["h_MBD_vs_CEMC"]   = book2(("h_MBD_vs_CEMC_" + trig).c_str(), "MBD #SigmaQ vs CEMC #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_MBD_vs_IHCAL"]  = book2(("h_MBD_vs_IHCAL_" + trig).c_str(),"MBD ΣQ vs IHCAL ΣE",
+  H["h_MBD_vs_IHCAL"]  = book2(("h_MBD_vs_IHCAL_" + trig).c_str(),"MBD #SigmaQ vs IHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_MBD_vs_OHCAL"]  = book2(("h_MBD_vs_OHCAL_" + trig).c_str(),"MBD ΣQ vs OHCAL ΣE",
+  H["h_MBD_vs_OHCAL"]  = book2(("h_MBD_vs_OHCAL_" + trig).c_str(),"MBD #SigmaQ vs OHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
 
   /* NEW: arm‑specific CEMC–sEPD correlations (E_T arm‑matched) */
   H["h_SEPD_S_vs_CEMC_South"] = book2(("h_SEPD_S_vs_CEMC_South_" + trig).c_str(),
-                                      "ΣQ_{sEPD South}  vs  ΣEₜ_{CEMC η<0}",
+                                      "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC η<0}",
                                       nC, 0, cMax, nE, 0, eMax);
   H["h_SEPD_N_vs_CEMC_North"] = book2(("h_SEPD_N_vs_CEMC_North_" + trig).c_str(),
-                                      "ΣQ_{sEPD North}  vs  ΣEₜ_{CEMC η>0}",
+                                      "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC η>0}",
                                       nC, 0, cMax, nE, 0, eMax);
 }
 
@@ -241,25 +241,25 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig, HistMap& 
 
 void emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig, HistMap& H)
 {
-  /* 1. ΣQ spectra */
+  /* 1. #SigmaQ spectra */
   H["h_Qsum_MBD"]  = new TH1F(("h_Qsum_MBD_"  + trig).c_str(),
-                              "MBD ΣQ;ΣQ_{MBD} [ADC]",   600, 0, 1200);
+                              "MBD #SigmaQ;#SigmaQ_{MBD} [ADC]",   600, 0, 1200);
   H["h_Qsum_sEPD"] = new TH1F(("h_Qsum_sEPD_" + trig).c_str(),
-                              "sEPD ΣQ;ΣQ_{sEPD} [ADC]", 600, 0, 1200);
+                              "sEPD #SigmaQ;#SigmaQ_{sEPD} [ADC]", 600, 0, 1200);
 
-  /* 2. detector‑to‑detector ΣQ map */
+  /* 2. detector‑to‑detector #SigmaQ map */
   H["h_Qsum_MBD_vs_sEPD"] = new TH2F(("h_Qsum_MBD_vs_sEPD_" + trig).c_str(),
-                                     "ΣQ_{MBD} vs ΣQ_{sEPD};ΣQ_{MBD};ΣQ_{sEPD}",
+                                     "#Sigma Q_{MBD} vs #Sigma Q_{sEPD};#Sigma Q_{MBD};#Sigma Q_{sEPD}",
                                      300, 0, 1200, 300, 0, 1200);
 
-  /* 3. Ψ₂ distributions & resolution proxy */
+  /* 3. #Psi₂ distributions & resolution proxy */
   H["h_Psi2_sEPD"] =
-      new TH1F(("h_Psi2_sEPD_" + trig).c_str(), "sEPD Ψ_{2};Ψ_{2} [rad]",
+      new TH1F(("h_Psi2_sEPD_" + trig).c_str(), "sEPD #Psi_{2};#Psi_{2} [rad]",
                120, -TMath::Pi(), TMath::Pi());
 
   H["h_Psi2_res_vs_Qsum"] =
       new TProfile(("h_Psi2_res_vs_Qsum_" + trig).c_str(),
-                   "cos 2(Ψ_{N}-Ψ_{S}) vs ΣQ_{sEPD};ΣQ_{sEPD};⟨cos2ΔΨ⟩",
+                   "cos 2(#Psi_{N}-#Psi_{S}) vs #Sigma Q_{sEPD};#Sigma Q_{sEPD};#langle cos2Δ#Psi #rangle",
                    12, 0, 1200, "s");
 }
 
@@ -284,6 +284,10 @@ void emcal_sepdCorrelator::createHistos_Data()
     bookPi0MassSpectra(trig, H);
     bookEventPlaneCentralityQA(trig, H);
 
+    H["h_vertexZ"] = new TH1F(("h_vertexZ_" + trig).c_str(),
+                                "Primary vertex z;z_{vtx} [cm]",
+                                240, -60., 60.);
+      
     out->cd();
   }
 }
@@ -328,7 +332,21 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
                 << CLR_RESET;
     return Fun4AllReturnCodes::ABORTEVENT;
   }
+    
+  /* ---- raw z‑vertex distribution (filled before vz cut) -------------- */
+  for (const auto& t : activeTrig)
+      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])->Fill(m_vz);
 
+    /* ---- now enforce the vz cut ---------------------------------------- */
+  if (m_useVzCut && std::fabs(m_vz) >= m_vzCut)
+  {
+      LOG(2, CLR_YELLOW, "      |vz| = " << std::fabs(m_vz)
+                         << " cm exceeds cut (" << m_vzCut << ") → skip");
+      return Fun4AllReturnCodes::ABORTEVENT;
+  }
+
+
+    
   /* detector‑level QA & correlations */
   doCaloQA(activeTrig);
   doSepdQA(activeTrig);
@@ -357,13 +375,6 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   m_vx = m_vtx->get_x();
   m_vy = m_vtx->get_y();
   m_vz = m_vtx->get_z();
-
-  if (m_useVzCut && std::fabs(m_vz) >= m_vzCut)
-  {
-    LOG(2, CLR_YELLOW, "  – |vz| = " << std::fabs(m_vz)
-                                     << " cm exceeds cut (" << m_vzCut << ") → skip");
-    return false;
-  }
 
   /* ––– calorimeter towers & geometry –––––––––––––––––––––––––––––––– */
   m_calo.clear();
@@ -399,49 +410,58 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   return true;
 }
 
-//==========================================================================
-//  Geometry helpers – TH2Poly booking
-//==========================================================================
+//---------------------------------------------------------------
+//  Geometry helper – NO overlaps, works for any beam configuration
+//---------------------------------------------------------------
 TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
-                                             MbdGeom* geom,
-                                             int arm)   // 0 = South, 1 = North
+                                             const MbdGeom*  geom,
+                                             int             arm)      // 0=S,1=N
 {
-  auto* h = new TH2Poly();
-  h->SetNameTitle(name.c_str(), ";x (cm);y (cm)");
+  auto* h = new TH2Poly(name.c_str(), ";x (cm);y (cm)", 0,0,0,0);
+  if (!geom) return h;                           // nothing we can do
 
-  LOG(2, CLR_BLUE, "    ↳ makeMbdHitmap(\"" << name << "\")  arm=" << (arm ? "North" : "South"));
+  //----------------------------------------------------------------
+  // 1) collect all PMT centres of this arm
+  //----------------------------------------------------------------
+  std::vector<std::pair<double,double>> pos;  pos.reserve(64);
+  for (unsigned ip = 0; ip < geom->get_npmt(); ++ip)
+    if (geom->get_arm(ip) == arm)
+      pos.emplace_back(geom->get_x(ip), geom->get_y(ip));
 
-  if (!geom)
+  if (pos.empty()) return h;
+
+  //----------------------------------------------------------------
+  // 2) derive safe hex‑radius  (flat‑to‑flat = √3·r)               |
+  //    r = 0.97·d / √3  (3 % safety margin → never overlaps)       |
+  //----------------------------------------------------------------
+  double dMin = 1e9;
+  for (std::size_t i = 0; i < pos.size(); ++i)
+    for (std::size_t j = i + 1; j < pos.size(); ++j)
+      dMin = std::min(dMin,
+                      std::hypot(pos[i].first - pos[j].first,
+                                 pos[i].second - pos[j].second));
+
+  const double r = 0.97 * dMin / std::sqrt(3.0);   // apothem = r·cos30°
+
+  //----------------------------------------------------------------
+  // 3) book one regular hexagon per PMT  (flat‑top orientation)
+  //----------------------------------------------------------------
+  h->SetFloat();                                   // allow shared edges
+  double x[6], y[6];
+  const double phi0 = 0.0;                         // first vertex at 0°
+  for (const auto& [cx, cy] : pos)
   {
-    LOG(1, CLR_YELLOW, "      [WARN] MbdGeom is nullptr – map left empty");
-    return h;
-  }
-
-  std::size_t nAdded = 0;
-  const double r = 3.0;   // approximate tile radius [cm]
-
-  for (unsigned ip = 0; ip < 128; ++ip)   // 64 PMTs per arm
-  {
-    if (geom->get_arm(ip) != arm) continue;
-
-    const double cx = geom->get_x(ip), cy = geom->get_y(ip);
-    if (std::isnan(cx) || std::isnan(cy)) continue;
-
-    double x[7]{}, y[7]{};
     for (int k = 0; k < 6; ++k)
     {
-      const double ang = TMath::Pi()/6. + k * TMath::Pi()/3.;
+      const double ang = phi0 + k * M_PI / 3.0;
       x[k] = cx + r * std::cos(ang);
       y[k] = cy + r * std::sin(ang);
     }
-    x[6] = x[0];  y[6] = y[0];
-
-    h->AddBin(6, x, y);
-    ++nAdded;
+    h->AddBin(6, x, y);                            // TH2Poly closes polygon
   }
-  LOG(3, CLR_GREEN, "      → " << nAdded << " hex‑bins booked");
   return h;
 }
+
 
 TH2Poly* emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
                                              EpdGeom* geom,
@@ -540,7 +560,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
       }
     } // tower loop
 
-    LOG(3, CLR_GREEN, "    " << lbl << " : " << nHit << " fired, ΣE = " << sumE);
+    LOG(3, CLR_GREEN, "    " << lbl << " : " << nHit << " fired, #SigmaE = " << sumE);
   }
 
   /* EMC clusters */
@@ -592,7 +612,7 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     m_sepdQ_arm[arm]  += w;
   }
 
-  /* scalar ΣQ */
+  /* scalar #SigmaQ */
   for (auto& t : trig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])->Fill(m_sepdQ);
 
@@ -608,7 +628,7 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
         ->Fill(m_sepdQ, cos2dPsi);
   }
 
-  LOG(3, CLR_GREEN, "    SEPD ΣQ = " << m_sepdQ
+  LOG(3, CLR_GREEN, "    SEPD #SigmaQ = " << m_sepdQ
                      << "  (South hits: " << nFiredS
                      << ", North hits: " << nFiredN << ")");
 }
@@ -645,7 +665,7 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
   for (auto& t : trig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_charge_MBD"])->Fill(m_mbdQ);
 
-  LOG(3, CLR_GREEN, "    MBD ΣQ = " << m_mbdQ
+  LOG(3, CLR_GREEN, "    MBD #SigmaQ = " << m_mbdQ
                      << "  (South PMTs: " << nFiredS
                      << ", North PMTs: " << nFiredN << ")");
 
@@ -653,7 +673,7 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
 }
 
 //==========================================================================
-//  fillCentralityQA – ΣQ histos & correlation map (MBD ↔ sEPD)
+//  fillCentralityQA – #SigmaQ histos & correlation map (MBD ↔ sEPD)
 //==========================================================================
 void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig)
 {
@@ -854,7 +874,7 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 }
 
 //==========================================================================
-//  fillCorrelations – ΣE / ΣQ detector‑level correlations
+//  fillCorrelations – #SigmaE / #SigmaQ detector‑level correlations
 //==========================================================================
 void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig)
 {
@@ -881,9 +901,9 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
     static_cast<TH2F*>(H["h_MBD_vs_OHCAL"])->Fill(m_mbdQ, m_calo["OHCAL"].sumE);
   }
 
-  LOG(3, CLR_BLUE, "  [fillCorrelations]  ΣE(CEMC)=" << cemc
-                         << "  ΣE(IHCAL)=" << m_calo["IHCAL"].sumE
-                         << "  ΣE(OHCAL)=" << m_calo["OHCAL"].sumE);
+  LOG(3, CLR_BLUE, "  [fillCorrelations]  #SigmaE(CEMC)=" << cemc
+                         << "  #SigmaE(IHCAL)=" << m_calo["IHCAL"].sumE
+                         << "  #SigmaE(OHCAL)=" << m_calo["OHCAL"].sumE);
 }
 
 //==========================================================================

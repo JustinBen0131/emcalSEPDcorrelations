@@ -73,7 +73,7 @@ class emcal_sepdCorrelator : public SubsysReco
   // 1) One‑time booking helpers
   // ======================================================================
   void      createHistos_Data();                          // main booker
-  TH2Poly*  makeMbdHitmap(const std::string&, MbdGeom*, int arm);
+  TH2Poly*  makeMbdHitmap(const std::string&, const MbdGeom*, int arm);
   TH2Poly*  makeEpdHitmap(const std::string& name, EpdGeom* geom, int arm);
 
   // ======================================================================
