@@ -209,10 +209,10 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig, HistM
 
   /* NEW: arm‑specific CEMC–sEPD correlations (E_T arm‑matched) */
   H["h_SEPD_S_vs_CEMC_South"] = book2(("h_SEPD_S_vs_CEMC_South_" + trig).c_str(),
-                                      "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC η<0}",
+                                      "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
                                       nC, 0, cMax, nE, 0, eMax);
   H["h_SEPD_N_vs_CEMC_North"] = book2(("h_SEPD_N_vs_CEMC_North_" + trig).c_str(),
-                                      "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC η>0}",
+                                      "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
                                       nC, 0, cMax, nE, 0, eMax);
 }
 

@@ -627,19 +627,24 @@ void analyzeRun24auau()
       // -------- histogram loop
       TIter itH(dTrig->GetListOfKeys());
       while(auto* kh=dynamic_cast<TKey*>(itH())){
-        std::unique_ptr<TObject> obj(kh->ReadObj());
-        bool handled=false;
-        for(auto& h : qa)
-          if(h->process(obj.get())) { handled=true; break; }
+          // -- read object; let ROOT / the TFile keep ownership
+          TObject *obj = kh->ReadObj();
 
-        if(!handled){
-          fs::path misc = trigBase/"Misc"; ensure_dir(misc);
-          if(obj->InheritsFrom(TH2::Class()))
-            saveHist2D(static_cast<TH2*>(obj.get()), misc/(string(obj->GetName())+".png"));
-          else if(obj->InheritsFrom(TH1::Class()))
-            saveHist1D(static_cast<TH1*>(obj.get()), misc/(string(obj->GetName())+".png"));
-          log::warn("Saved unmatched histogram → Misc/"+string(obj->GetName())+".png");
-        }
+          bool handled = false;
+          for (auto &h : qa)
+            if (h->process(obj)) { handled = true; break; }
+
+          if (!handled) {
+            fs::path misc = trigBase / "Misc";  ensure_dir(misc);
+            if (obj->InheritsFrom(TH2::Class()))
+              saveHist2D(static_cast<TH2*>(obj),
+                         misc / (string(obj->GetName()) + ".png"));
+            else if (obj->InheritsFrom(TH1::Class()))
+              saveHist1D(static_cast<TH1*>(obj),
+                         misc / (string(obj->GetName()) + ".png"));
+            log::warn("Saved unmatched histogram → Misc/"
+                      + string(obj->GetName()) + ".png");
+          }
       } // hist loop
     } // trigger loop
 
