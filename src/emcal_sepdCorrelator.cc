@@ -1,7 +1,6 @@
 //==========================================================================
-//  sPHENIX EMCal × sEPD × MBD correlator – implementation
+//  sPHENIX EMCal × sEPD × MBD correlator
 //==========================================================================
-
 #include "emcal_sepdCorrelator.h"
 
 //––– Fun4All / PHOOL -------------------------------------------------------
@@ -564,7 +563,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
             
             
             // ------------------------------------------------------------------
-            //  NEW  :  transverse energy and arm-specific sums
+            //  transverse energy and arm-specific sums
             // ------------------------------------------------------------------
             RawTowerGeom* tg = ck.second.g->get_tower_geometry(key);
             const double eta_t = tg ? tg->get_eta() : 0.;    // falls back to 0 if null
@@ -746,185 +745,200 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
 
 // ════════════════════════════════════════════════════════════════════════
 //  doPi0QA – γγ invariant‑mass spectra with live progress feedback
-//           and minor speed‑ups that preserve all physics logic
+//           plus per‑cut loss diagnostics
 // ════════════════════════════════════════════════════════════════════════
 void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 {
+  // ────────────────────────────── early exits ───────────────────────────
   if (!m_clus || m_clus->size() < 2) return;
 
-  /* ------------------------------------------------------------------ *
-   * 1) build a pre‑filtered local cache of clusters                    *
-   * ------------------------------------------------------------------ */
-  const float  EminMin  = *std::min_element(m_minClusE.begin(),  m_minClusE.end());
-  const float  chi2Max  = *std::max_element(m_chi2Cuts.begin(),  m_chi2Cuts.end());
-  const float  asymMax  = *std::max_element(m_asymCuts.begin(),  m_asymCuts.end());
+  /* 1. build a pre‑filtered cache of clusters -------------------------- */
+  const float EminMin = *std::min_element(m_minClusE.begin(),  m_minClusE.end());
+  const float chi2Max = *std::max_element(m_chi2Cuts.begin(),  m_chi2Cuts.end());
+  const float asymMax = *std::max_element(m_asymCuts.begin(),  m_asymCuts.end());
 
   struct Clu { TLorentzVector v; float E, pt, chi; };
   std::vector<Clu> cl; cl.reserve(m_clus->size());
 
-  for (auto [it, end] = m_clus->getClusters(); it != end; ++it)
+  for (auto [it,end] = m_clus->getClusters(); it != end; ++it)
   {
     const RawCluster* c = it->second;
-    if (c->get_energy() < EminMin || c->get_chi2() > chi2Max) continue;  // early veto
+    if (c->get_energy() < EminMin || c->get_chi2() > chi2Max) continue;
 
-    const auto eVec = RawClusterUtility::GetEVec(*c, {m_vx, m_vy, m_vz});
+    const auto eVec = RawClusterUtility::GetEVec(*c,{m_vx,m_vy,m_vz});
     cl.push_back({{}, static_cast<float>(c->get_energy()),
                        static_cast<float>(eVec.perp()),
                        static_cast<float>(c->get_chi2())});
-
     cl.back().v.SetPtEtaPhiE(cl.back().pt,
                              eVec.pseudoRapidity(),
                              eVec.phi(),
                              cl.back().E);
   }
-  if (cl.size() < 2) return;               // nothing left
+  if (cl.size() < 2) return;
 
-  /* ------------------------------------------------------------------ *
-   * 2) announce workload                                               *
-   * ------------------------------------------------------------------ */
-  const std::size_t totalPairs = (cl.size() * (cl.size() - 1)) / 2;
+  /* 2. announce workload ---------------------------------------------- */
+  const std::size_t totalPairs = cl.size() * (cl.size() - 1) / 2;
   std::cout << CLR_CYAN << "    [doPi0QA] will analyse "
             << totalPairs << " cluster pairs" << CLR_RESET << std::endl;
 
-  /* ------------------------------------------------------------------ *
-   * 3) parallel pair scan                                              *
-   * ------------------------------------------------------------------ */
+  /* 3. parallel pair scan --------------------------------------------- */
   constexpr std::size_t reportEvery = 50'000;
   std::atomic<std::size_t> pairCnt{0};
 
-  /* local (thread‑private) statistics & histogram pointers ------------ */
-  #ifdef _OPENMP
-    #pragma omp parallel default(shared)
-  #endif
+#ifdef _OPENMP
+  #pragma omp parallel default(shared)
+#endif
   {
     std::map<std::string,CutStat> evtStatLocal;
 
-    #ifdef _OPENMP
-        #pragma omp for schedule(dynamic,256)
-    #endif
-    for (std::size_t idx = 0; idx < cl.size() * (cl.size() - 1) / 2; ++idx)
+#ifdef _OPENMP
+    #pragma omp for schedule(dynamic,256)
+#endif
+    for (std::size_t idx = 0; idx < totalPairs; ++idx)
     {
-      std::size_t i = static_cast<std::size_t>(
-          (std::sqrt(8.0 * idx + 1) - 1) / 2);       // invert triangular index
-      std::size_t j = idx - i * (i + 1) / 2 + i + 1;
+      /* triangular index → (i,j) -------------------------------------- */
+      const std::size_t i = static_cast<std::size_t>(
+            (std::sqrt(8.0*idx + 1) - 1) / 2);
+      const std::size_t j = idx - i*(i+1)/2 + i + 1;
 
       const Clu &c1 = cl[i], &c2 = cl[j];
       const float asym = std::fabs(c1.E - c2.E) / (c1.E + c2.E);
-      if (asym > asymMax) { ++pairCnt; continue; }   // global asym veto
+      if (asym > asymMax) { ++pairCnt; continue; }          // global veto
 
-      /* --- inclusive block ---------------------------------------- */
-      for (float Emin : m_minClusE)
+      /* ---- inclusive (pT‑independent) grid -------------------------- */
+      for (float Emin  : m_minClusE)
       for (float chiMx : m_chi2Cuts)
-      for (float aMx : m_asymCuts)
+      for (float aMx   : m_asymCuts)
       {
-        const std::string keyInc = statKey(-1,-1,Emin,chiMx,aMx);
-        auto &st = evtStatLocal[keyInc]; ++st.tested;
+        const std::string key = statKey(-1,-1,Emin,chiMx,aMx);
+        auto& st = evtStatLocal[key]; ++st.tested;
 
-        if (c1.E < Emin || c2.E < Emin)        continue;
-        if (c1.chi > chiMx || c2.chi > chiMx)  continue;
-        if (asym   > aMx)                      continue;
+        bool ok = true;
+        if (c1.E < Emin || c2.E < Emin)      { ++st.failE;   ok = false; }
+        else
+        if (c1.chi > chiMx || c2.chi > chiMx){ ++st.failChi; ok = false; }
+        else
+        if (asym   > aMx)                    { ++st.failAsy; ok = false; }
+
+        if (!ok) continue;
 
         const float mInv = (c1.v + c2.v).M();
-        for (auto &t : trig)
+        for (auto& t : trig)
           static_cast<TH1F*>( qaHistogramsByTrigger[t]
-                    [invKey(-1,-1,Emin,chiMx,aMx)+"_"+t] )->Fill(mInv);
+                     [invKey(-1,-1,Emin,chiMx,aMx)+"_"+t] )->Fill(mInv);
         ++st.passed;
       }
 
-      /* --- pT‑binned block ---------------------------------------- */
-      for (const auto &pb : m_ptBins)
+      /* ---- pT‑binned grid ------------------------------------------- */
+      for (const auto& pb : m_ptBins)
       {
         const float ptLo = pb.first, ptHi = pb.second;
-        const std::string kAll = statKey(ptLo,ptHi,0,0,0);
-        auto &stAll = evtStatLocal[kAll]; ++stAll.tested;
-
         if (c1.pt < ptLo || c1.pt >= ptHi ||
-            c2.pt < ptLo || c2.pt >= ptHi) continue;
+            c2.pt < ptLo || c2.pt >= ptHi) continue;        // pT veto
 
-        for (float Emin : m_minClusE)
+        for (float Emin  : m_minClusE)
         for (float chiMx : m_chi2Cuts)
-        for (float aMx  : m_asymCuts)
+        for (float aMx   : m_asymCuts)
         {
           const std::string key = statKey(ptLo,ptHi,Emin,chiMx,aMx);
-          auto &st = evtStatLocal[key]; ++st.tested;
+          auto& st = evtStatLocal[key]; ++st.tested;
 
-          if (c1.E < Emin || c2.E < Emin)      continue;
-          if (c1.chi > chiMx || c2.chi > chiMx)continue;
-          if (asym   > aMx)                    continue;
+          bool ok = true;
+          if (c1.E < Emin || c2.E < Emin)      { ++st.failE;   ok = false; }
+          else
+          if (c1.chi > chiMx || c2.chi > chiMx){ ++st.failChi; ok = false; }
+          else
+          if (asym   > aMx)                    { ++st.failAsy; ok = false; }
+
+          if (!ok) continue;
 
           const float mInv = (c1.v + c2.v).M();
-          for (auto &t : trig)
+          for (auto& t : trig)
             static_cast<TH1F*>( qaHistogramsByTrigger[t]
-                    [invKey(ptLo,ptHi,Emin,chiMx,aMx)+"_"+t] )->Fill(mInv);
+                       [invKey(ptLo,ptHi,Emin,chiMx,aMx)+"_"+t] )->Fill(mInv);
           ++st.passed;
         }
       }
 
-      /* ---- live progress (single thread) -------------------------- */
-    #ifdef _OPENMP
+      /* ---- live progress bar ---------------------------------------- */
+#ifdef _OPENMP
       if ((++pairCnt % reportEvery) == 0 && omp_get_thread_num() == 0)
-    #else
+#else
       if ((++pairCnt % reportEvery) == 0)
-    #endif
+#endif
       {
-        const double pct = 100.0 * static_cast<double>(pairCnt) /
-                           static_cast<double>(totalPairs);
+        const double pct = 100.*static_cast<double>(pairCnt)/totalPairs;
         std::cout << CLR_CYAN << "    [doPi0QA] processed "
                   << pairCnt << " / " << totalPairs
                   << " (" << std::fixed << std::setprecision(1) << pct << "%)\r"
                   << CLR_RESET << std::flush;
       }
-    }   // omp for
+    } // pair loop
 
-    /* --- merge thread‑local statistics ----------------------------- */
-  #ifdef _OPENMP
+    /* ---- merge local stats ----------------------------------------- */
+#ifdef _OPENMP
     #pragma omp critical
-  #endif
+#endif
     {
-      for (auto &kv : evtStatLocal)
+      for (const auto& kv : evtStatLocal)
       {
-        m_evtStat[kv.first].tested += kv.second.tested;
-        m_evtStat[kv.first].passed += kv.second.passed;
+        m_evtStat[kv.first].tested  += kv.second.tested;
+        m_evtStat[kv.first].failE   += kv.second.failE;
+        m_evtStat[kv.first].failChi += kv.second.failChi;
+        m_evtStat[kv.first].failAsy += kv.second.failAsy;
+        m_evtStat[kv.first].passed  += kv.second.passed;
       }
     }
-  }     // omp parallel
+  } // omp parallel
 
-  /* clear the “\r” progress line and print final summary -------------- */
+  /* 3.d  final progress line ------------------------------------------- */
   std::cout << CLR_CYAN << "    [doPi0QA] finished "
             << totalPairs << " / " << totalPairs << " (100.0%)            "
             << CLR_RESET << std::endl;
 
-  /* ------------------------------------------------------------------ *
-   * 4) optional per‑event summary (unchanged)                          *
-   * ------------------------------------------------------------------ */
-  if (Verbosity() >= 2)
+  /* 4. diagnostic table (Verbosity ≥ 2) -------------------------------- */
+  if (Verbosity() < 2) return;
+
+  auto pretty = [](const std::string& k)
   {
-    std::cout << CLR_GREEN
-              << "    π0‑QA summary (this event)\n"
-              << "    cut‑key                                    "
-                 "tested   passed   eff[%]\n"
-              << "    -----------------------------------------------------------\n";
-    for (const auto& kv : m_evtStat)
-    {
-      const auto& s = kv.second;
-      const double eff = s.tested ? 100. * s.passed / s.tested : 0.;
-      std::cout << "    " << std::left << std::setw(40) << kv.first
-                << std::right << std::setw(8) << s.tested
-                << std::setw(9) << s.passed
-                << std::setw(9) << std::fixed << std::setprecision(1) << eff
-                << '\n';
-      m_totStat[kv.first].tested += s.tested;
-      m_totStat[kv.first].passed += s.passed;
-    }
-    std::cout << CLR_RESET;
+    float pLo,pHi,E,chi,a;
+    if (k.rfind("allPt",0)==0)
+    { sscanf(k.c_str(),"allPt_E%f_chi%f_asy%f",&E,&chi,&a);
+      return std::make_tuple(std::string("all"),E,chi,a); }
+
+    sscanf(k.c_str(),"pt%fto%f_E%f_chi%f_asy%f",&pLo,&pHi,&E,&chi,&a);
+    std::ostringstream oss; oss<<std::fixed<<std::setprecision(1)<<pLo<<"–"<<pHi;
+    return std::make_tuple(oss.str(),E,chi,a);
+  };
+
+  std::cout << CLR_GREEN
+            << "    π0‑QA summary (this event)\n"
+            << "    pT[GeV] │ Emin │ χ²max │ αmax │   tested │  failE │ failχ² │ failα │ passed │ eff[%]\n"
+            << "    ─────────┼──────┼───────┼──────┼──────────┼────────┼────────┼────────┼────────┼───────\n";
+
+  for (const auto& [key,st] : m_evtStat)
+  {
+    std::string pt; float Emin,chi,a;
+    std::tie(pt,Emin,chi,a) = pretty(key);
+    const double eff = st.tested ? 100.*st.passed / st.tested : 0.;
+
+    printf("    %-8s │ %4.1f │ %5.1f │ %4.1f │ %8zu │ %6zu │ %6zu │ %6zu │ %6zu │ %5.1f\n",
+           pt.c_str(), Emin, chi, a,
+           st.tested, st.failE, st.failChi, st.failAsy, st.passed, eff);
+
+    /* accumulate run‑wide stats -------------------------------------- */
+    m_totStat[key].tested  += st.tested;
+    m_totStat[key].failE   += st.failE;
+    m_totStat[key].failChi += st.failChi;
+    m_totStat[key].failAsy += st.failAsy;
+    m_totStat[key].passed  += st.passed;
   }
+  std::cout << CLR_RESET;
 }
 
-
-
-// ════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 //  fillCorrelations – ΣE / ΣQ detector‑level correlations
-// ════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig)
 {
   const double cemc = m_calo["CEMC" ].sumE;
@@ -1023,63 +1037,96 @@ int emcal_sepdCorrelator::ResetEvent(PHCompositeNode*)
 
 int emcal_sepdCorrelator::Reset     (PHCompositeNode*) { return Fun4AllReturnCodes::EVENT_OK; }
 
+// --- in emcal_sepdCorrelator.cc ---
 int emcal_sepdCorrelator::End(PHCompositeNode*)
 {
   COUT_BLUE("Writing output…");
-  if(!out||!out->IsOpen()) return Fun4AllReturnCodes::ABORTEVENT;
-  for(auto& tk:qaHistogramsByTrigger){
-    TDirectory* d=out->mkdir(tk.first.c_str()); d->cd();
-    for(auto& hk:tk.second){
-      TH1* h=dynamic_cast<TH1*>(hk.second);
-      if(h && h->GetEntries()) h->Write();
+
+  /* ------------------------------------------------------------------ *
+   * 0.  quick sanity check on the TFile                                *
+   * ------------------------------------------------------------------ */
+  if (!out || !out->IsOpen())
+    return Fun4AllReturnCodes::ABORTEVENT;
+
+  /* ------------------------------------------------------------------ *
+   * 1.  dump every non-empty histogram into its trigger sub-directory  *
+   *     (re-use an existing directory when it is already there)        *
+   * ------------------------------------------------------------------ */
+  for (auto& tk : qaHistogramsByTrigger)
+  {
+    /* get-or-create directory – ROOT 6 safe                            *
+     *   GetDirectory()   : returns ptr if it exists, nullptr otherwise *
+     *   mkdir()          : creates *only* if it never existed          */
+    TDirectory* d = out->GetDirectory(tk.first.c_str());
+    if (!d) d = out->mkdir(tk.first.c_str());             // create once
+    if (!d)                                              // still nullptr?
+    {
+      std::cerr << "[WARN] cannot access TDirectory \"" << tk.first
+                << "\" – histos skipped\n";
+      continue;
     }
-    out->cd();
+    d->cd();
+
+    /* write all histograms that actually contain entries               */
+    for (auto& hk : tk.second)
+    {
+      TH1* h = dynamic_cast<TH1*>(hk.second);
+      if (h && h->GetEntries())
+        h->Write("", TObject::kOverwrite);                // overwrite if needed
+    }
+    out->cd();                                            // back to root dir
   }
+
+  /* ------------------------------------------------------------------ *
+   * 2.  close the file cleanly                                         *
+   * ------------------------------------------------------------------ */
   out->Write();
   out->Close();
   delete out;
   out = nullptr;
 
-  /* ------------ console table (only if Verbosity() > 0) -------------- */
+  /* ------------------------------------------------------------------ *
+   * 3.  optional human-readable summaries                              *
+   * ------------------------------------------------------------------ */
   if (Verbosity() > 0)
   {
-      std::cout << "\n\033[1mHistogram summary\033[0m\n"
-                << "\033[1mTrigger                        │ Histogram                           │  Entries\033[0m\n"
-                << "-------------------------------------------------------------------------------\n";
+    std::cout << "\n\033[1mHistogram summary\033[0m\n"
+              << "\033[1mTrigger                        │ Histogram                           │  Entries\033[0m\n"
+              << "-------------------------------------------------------------------------------\n";
 
-      for (const auto& tk : qaHistogramsByTrigger)
-        for (const auto& hk : tk.second)
-        {
-          TH1* h = dynamic_cast<TH1*>(hk.second);
-          if (!h) continue;
-          std::cout << std::left  << std::setw(30) << tk.first << " │ "
-                    << std::setw(32) << hk.first   << " │ "
-                    << std::right << std::setw(10) << static_cast<Long64_t>(h->GetEntries())
-                    << '\n';
-        }
+    for (const auto& tk : qaHistogramsByTrigger)
+      for (const auto& hk : tk.second)
+      {
+        TH1* h = dynamic_cast<TH1*>(hk.second);
+        if (!h) continue;
+        std::cout << std::left  << std::setw(30) << tk.first << " │ "
+                  << std::setw(32) << hk.first   << " │ "
+                  << std::right << std::setw(10) << static_cast<Long64_t>(h->GetEntries())
+                  << '\n';
+      }
+    std::cout << "-------------------------------------------------------------------------------\n";
 
-      std::cout << "-------------------------------------------------------------------------------\n";
-  }
-
-  // ---------- π0‑QA run summary ----------------------------------
-  if(Verbosity()>0 && !m_totStat.empty())
-  {
-      std::cout << "\n\033[1mπ0‑QA cut summary (all events)\033[0m\n"
-                << "\033[1mcut‑key                                    │ "
+    /* π0-QA cut table ------------------------------------------------- */
+    if (!m_totStat.empty())
+    {
+      std::cout << "\n\033[1mπ0-QA cut summary (all events)\033[0m\n"
+                << "\033[1mcut-key                                    │ "
                    "tested        passed    eff[%]\033[0m\n"
                 << "--------------------------------------------------------------------------\n";
-      for(const auto& kv : m_totStat)
+      for (const auto& kv : m_totStat)
       {
-        const auto& s = kv.second;
-        const double eff = s.tested ? 100.*s.passed/s.tested : 0.;
+        const auto& s   = kv.second;
+        const double eff = s.tested ? 100.*s.passed / s.tested : 0.;
         std::cout << std::left << std::setw(44) << kv.first << " │ "
-                  << std::right<< std::setw(12)<< s.tested
-                  << std::setw(12)<< s.passed
-                  << std::setw(9) << std::fixed << std::setprecision(2) << eff
+                  << std::right<< std::setw(12) << s.tested
+                  << std::setw(12) << s.passed
+                  << std::setw(9)  << std::fixed << std::setprecision(2) << eff
                   << '\n';
       }
       std::cout << "--------------------------------------------------------------------------\n";
+    }
   }
+
   COUT_BLUE("Done.");
   return Fun4AllReturnCodes::EVENT_OK;
 }

@@ -16,8 +16,8 @@ DEFAULT_DEST="/sphenix/tg/tg01/bulk/jbennett/emcalSEPDcorrelations"
 runNumber="$1"; shift
 fileList="$1"; shift
 clusterID="${1:-0}"; shift
-destBase="${1:-$DEFAULT_DEST}"; shift
-evtMax="${5:-0}"
+destBase="${1:-$DEFAULT_DEST}"; shift     # now one arg left → evtMax
+evtMax="${1:-0}"                          # <- fixes the limit
 
 [[ -s "$fileList" ]] || { echo "[FATAL] Empty list file: $fileList" >&2; exit 2; }
 
