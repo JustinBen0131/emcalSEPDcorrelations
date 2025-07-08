@@ -418,49 +418,54 @@ TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
                                              int             arm)      // 0=S,1=N
 {
   auto* h = new TH2Poly(name.c_str(), ";x (cm);y (cm)", 0,0,0,0);
-  if (!geom) return h;                           // nothing we can do
+  if (!geom) return h;
 
   //----------------------------------------------------------------
   // 1) collect all PMT centres of this arm
   //----------------------------------------------------------------
   std::vector<std::pair<double,double>> pos;  pos.reserve(64);
-  for (unsigned ip = 0; ip < geom->get_npmt(); ++ip)
-    if (geom->get_arm(ip) == arm)
-      pos.emplace_back(geom->get_x(ip), geom->get_y(ip));
 
+  /* *** FIX: loop over the known channel range, not get_npmt() *** */
+  for (unsigned ip = 0; ip < 128; ++ip) {           // 64 PMTs per arm
+    if (geom->get_arm(ip) != arm) continue;
+
+    const double cx = geom->get_x(ip);
+    const double cy = geom->get_y(ip);
+    if (std::isnan(cx) || std::isnan(cy)) continue;
+
+    pos.emplace_back(cx, cy);
+  }
   if (pos.empty()) return h;
 
   //----------------------------------------------------------------
-  // 2) derive safe hex‑radius  (flat‑to‑flat = √3·r)               |
-  //    r = 0.97·d / √3  (3 % safety margin → never overlaps)       |
+  // 2) derive safe hex‑radius  (flat‑to‑flat = √3·r)
   //----------------------------------------------------------------
-  double dMin = 1e9;
+  double dMin = std::numeric_limits<double>::max();
   for (std::size_t i = 0; i < pos.size(); ++i)
     for (std::size_t j = i + 1; j < pos.size(); ++j)
       dMin = std::min(dMin,
                       std::hypot(pos[i].first - pos[j].first,
                                  pos[i].second - pos[j].second));
 
-  const double r = 0.97 * dMin / std::sqrt(3.0);   // apothem = r·cos30°
+  const double r = 0.97 * dMin / std::sqrt(3.0);   // 3 % safety margin
 
   //----------------------------------------------------------------
   // 3) book one regular hexagon per PMT  (flat‑top orientation)
   //----------------------------------------------------------------
-  h->SetFloat();                                   // allow shared edges
+  h->SetFloat();                                    // sum if edges touch
   double x[6], y[6];
-  const double phi0 = 0.0;                         // first vertex at 0°
   for (const auto& [cx, cy] : pos)
   {
-    for (int k = 0; k < 6; ++k)
-    {
-      const double ang = phi0 + k * M_PI / 3.0;
+    for (int k = 0; k < 6; ++k) {
+      const double ang = k * M_PI / 3.0;            // 0°,60°,…
       x[k] = cx + r * std::cos(ang);
       y[k] = cy + r * std::sin(ang);
     }
-    h->AddBin(6, x, y);                            // TH2Poly closes polygon
+    h->AddBin(6, x, y);
   }
   return h;
 }
+
 
 
 TH2Poly* emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,

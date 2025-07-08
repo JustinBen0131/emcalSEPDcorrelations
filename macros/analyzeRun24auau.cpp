@@ -182,6 +182,73 @@ void saveEtaPhiMapWithGrid(TH2* h,const fs::path& out)
   TLine eq(0,48,256,48); eq.SetLineColor(kBlack); eq.SetLineWidth(2); eq.Draw();
   ensure_dir(out.parent_path()); c.SaveAs(out.string().c_str());
 }
+
+// ------------ HCal geometry helpers  ----------------------------------
+// 64 phi bins  → sector = iphi / 4   (16 sectors, numbered 0…15)
+// 24 eta bins  → plate  = ieta / 4   (6 interface‑board plates)
+static inline int hcal_sector_from_idx(unsigned /*ieta*/, unsigned iphi)
+{ return (iphi < 64) ? iphi / 4 : -1; }
+
+static inline int hcal_plate_from_idx(unsigned ieta, unsigned /*iphi*/)
+{ return (ieta < 24) ? ieta / 4 : -1; }
+
+// (optional) flag malfunctioning plates – currently none are masked
+inline bool isBadHcalPlate(int /*sector*/, int /*plate*/) { return false; }
+
+// ----------------------------------------------------------------------
+//  saveHcalEtaPhiWithGrid  – IHCal / OHCal map, sector & plate overlay
+// ----------------------------------------------------------------------
+void saveHcalEtaPhiWithGrid(TH2* h, const fs::path& outPNG,
+                            const std::string& detLabel)   // "IHCal" / "OHCal"
+{
+  std::unique_ptr<TH2> h2(static_cast<TH2*>(h->Clone(
+                             Form("%s_clone",h->GetName()))));
+  h2->SetDirectory(nullptr);
+  h2->SetStats(0);
+  h2->SetContour(99);                    // 99‑step smooth palette
+  h2->SetMinimum(1.0);                   // white under‑flow = masked
+
+  // --- future‑proof bad‑plate mask ------------------------------------
+  for (int iphi = 0; iphi < 64; ++iphi)
+    for (int ieta = 0; ieta < 24; ++ieta)
+      if (isBadHcalPlate(hcal_sector_from_idx(ieta,iphi),
+                         hcal_plate_from_idx(ieta,iphi)))
+        h2->SetBinContent(h2->GetXaxis()->FindBin(iphi),
+                          h2->GetYaxis()->FindBin(ieta), -9999.);
+
+  gStyle->SetOptStat(0);
+  TCanvas c(Form("c%s",detLabel.c_str()),
+            Form("%s η‑φ",detLabel.c_str()), 1300, 800);
+  c.SetRightMargin(0.16);
+  h2->SetTitle(Form("%s η‑φ hit‑map;Tower ϕ index;Tower η index",
+                    detLabel.c_str()));
+  h2->Draw("COLZ");
+
+  // --- grid lines ------------------------------------------------------
+  for (int g = 0; g <= 64; g += 4) { TLine l(g, 0, g, 24); l.SetLineStyle(3);
+                                     l.SetLineColor(kWhite); l.Draw(); }
+  for (int g = 0; g <= 24; g += 4) { TLine l(0, g, 64, g); l.SetLineStyle(3);
+                                     l.SetLineColor(kWhite); l.Draw(); }
+
+  // --- labels: sector number (red), plate number (black) --------------
+  TLatex lab; lab.SetTextAlign(22); lab.SetNDC(false);
+
+  lab.SetTextSize(0.030); lab.SetTextColor(kRed);
+  for (int sec = 0; sec < 16; ++sec) {
+    double x = sec * 4 + 2;           // centre of the sector
+    lab.DrawLatex(x, 22.5, Form("S%d", sec));
+  }
+  lab.SetTextSize(0.035); lab.SetTextColor(kBlack);
+  for (int pl = 0; pl < 6; ++pl) {
+    double y = pl * 4 + 2;
+    lab.DrawLatex(-3.3, y, Form("%d", pl));        // left‑hand margin
+  }
+
+  ensure_dir(outPNG.parent_path());
+  c.SaveAs(outPNG.string().c_str());
+}
+
+
 void saveHist1D(TH1* h,const fs::path& out){ TCanvas c; h->SetStats(0); h->Draw(); ensure_dir(out.parent_path()); c.SaveAs(out.string().c_str()); }
 void saveHist2D(TH2* h,const fs::path& out){ TCanvas c; h->SetStats(0); h->Draw("COLZ"); ensure_dir(out.parent_path()); c.SaveAs(out.string().c_str()); }
 
@@ -346,26 +413,41 @@ public:
 
   bool process(TObject* obj) override
   {
-    if(!obj->InheritsFrom(TH1::Class())) return false;
+    if (!obj->InheritsFrom(TH1::Class())) return false;
 
-    string hname = obj->GetName();
-    bool isI = (hname.find("h_IHCAL_")==0);
-    bool isO = (hname.find("h_OHCAL_")==0);
-    if(!isI && !isO) return false;
+    const std::string hname = obj->GetName();
+    const bool isI = (hname.rfind("h_IHCAL_",0) == 0);
+    const bool isO = (hname.rfind("h_OHCAL_",0) == 0);
+    if (!isI && !isO) return false;                 // nothing for us
 
-    fs::path subDir = outDir/(isI? "IHCal":"OHCal");
+    // ---------------------------------- directory routing
+    const fs::path subDir = outDir / (isI ? "IHCal" : "OHCal");
     ensure_dir(subDir);
-    fs::path outPng = subDir/(hname+".png");
+    const fs::path outPng = subDir / (hname + ".png");
 
-    if(obj->InheritsFrom(TH2::Class()))
-      saveHist2D(static_cast<TH2*>(obj),outPng);
-    else
-      saveHist1D(static_cast<TH1*>(obj),outPng);
+    // ---------------------------------- hit‑map vs. scalar spectrum
+    const bool isEtaPhi = (hname.find("_EtaPhiMap_") != std::string::npos);
 
-    log::info(string(isI?"IHCal":"OHCal")+" saved "+outPng.string());
+    try {
+      if (isEtaPhi && obj->InheritsFrom(TH2::Class())) {
+        saveHcalEtaPhiWithGrid(static_cast<TH2*>(obj), outPng,
+                               isI ? "IHCal" : "OHCal");
+      } else if (obj->InheritsFrom(TH2::Class())) {
+        saveHist2D(static_cast<TH2*>(obj), outPng);
+      } else {
+        saveHist1D(static_cast<TH1*>(obj), outPng);
+      }
+      log::info(std::string(isI ? "IHCal" : "OHCal") +
+                " saved " + outPng.string());
+    }
+    catch (const std::exception& e) {
+      log::err(std::string(isI ? "IHCal" : "OHCal") +
+               " failed for " + hname + ": " + e.what());
+    }
     return true;
   }
 };
+
 
 // --------------------------  sEPD QA  ----------------------------------
 class SepdQA : public TriggerQA {
@@ -390,6 +472,9 @@ public:
 // ---------------------------  MBD QA  ----------------------------------
 class MbdQA : public TriggerQA {
 public:
+  struct Pair { TH2* south = nullptr; TH2* north = nullptr; };   // <-- moved here
+  static std::unordered_map<std::string, Pair> cache;            // forward declaration
+   
   using TriggerQA::TriggerQA;
 
   bool process(TObject* obj) override
@@ -421,9 +506,6 @@ public:
     const bool isSouth = (hname.find("_South_") != std::string::npos);
     const std::string cacheKey = trigger;              // one cache per trigger
 
-    struct Pair { TH2* south = nullptr; TH2* north = nullptr; };
-    static std::unordered_map<std::string, Pair> cache;
-
     Pair& p = cache[cacheKey];
     if (isSouth) p.south = hCl; else p.north = hCl;
 
@@ -436,7 +518,7 @@ public:
     //--------------------------------------------------------------------
     // 3.  Both maps present → make the side‑by‑side canvas
     //--------------------------------------------------------------------
-    fs::path outPng = outDir / "MBD_Hitmap_SouthNorth_" + trigger + ".png";
+    fs::path outPng = outDir / ("MBD_Hitmap_SouthNorth_" + trigger + ".png");
     gStyle->SetOptStat(0);
 
     TCanvas c("cMBD", "MBD South & North Hit‑Maps", 1100, 600);
@@ -463,8 +545,6 @@ public:
     //--------------------------------------------------------------------
     // 5.  Clean‑up the cache entry
     //--------------------------------------------------------------------
-    delete p.south;
-    delete p.north;
     cache.erase(cacheKey);
     return true;
   }
