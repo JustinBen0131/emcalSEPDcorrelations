@@ -181,15 +181,28 @@ void emcal_sepdCorrelator::bookChargeQA(const std::string& trig, HistMap& H)
                                 "MBD PMT charge sum;Q [ADC]", nbQ, 0, qMax);
 }
 
-void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig, HistMap& H)
+/* ----------------------------------------------------------------------
+ * bookEnergyChargeCorrel  – detector–detector ΣE / ΣQ correlation maps
+ *                     >>> dynamic axes, never overflows <<<
+ * -------------------------------------------------------------------- */
+void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
+                                                  HistMap&           H)
 {
+  /* helper that produces an auto‑extending TH2F */
   auto book2 = [&](const char* n, const char* t,
                    int nx, double x0, double x1,
                    int ny, double y0, double y1)
-  { return new TH2F(n, t, nx, x0, x1, ny, y0, y1); };
+  {
+    TH2F* h = new TH2F(n, t, nx, x0, x1, ny, y0, y1);
+    h->SetCanExtend(TH1::kAllAxes);    // <‑‑‑ *** key line ***
+    return h;
+  };
 
-  const int nC = 120; const double cMax = 60.;
-  const int nE = 120; const double eMax = 60.;
+  /* initial range = 0 … 1200 with 5‑unit bins; grows further if needed */
+  const int    nC   = 240;         // charge axis  (5 ADC per bin)
+  const double cMax = 1200.;       // covers central Au+Au
+  const int    nE   = 240;         // energy axis  (5 GeV per bin)
+  const double eMax = 1200.;       // covers ΣEt for all subsystems
 
   H["h_SEPD_vs_CEMC"] = book2(("h_SEPD_vs_CEMC_" + trig).c_str(),  "sEPD Q vs CEMC #SigmaE",
                               nC, 0, cMax, nE, 0, eMax);

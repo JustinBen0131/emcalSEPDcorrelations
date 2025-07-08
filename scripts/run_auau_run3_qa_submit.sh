@@ -11,7 +11,6 @@
 #   condorTest                : like “condor” but after first run only
 #   splitRunList <file.txt>   : create segment files (no submission)
 #
-#  Project layout (fixed)
 #  ───────────────────────────────────────────────────────────────────────────
 #   PROJECT_BASE
 #     ├── dst_list/               (input *.list files – one per run)

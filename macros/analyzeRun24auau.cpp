@@ -116,6 +116,45 @@ static inline int ib_from_idx(unsigned ieta,unsigned)
   else if(ieta<80) return 3; else if(ieta<88) return 4; else if(ieta<96) return 5;
   return -1;
 }
+// ----------------------------------------------------------------------
+//  Draw an 8×8 IB grid and label ∙ sector & IB number
+// ----------------------------------------------------------------------
+inline void drawIBGridAndLabels()
+{
+  // draw solid black grid lines every 8 towers
+  for (int i = 0; i <= 256; i += 8) {
+    TLine *l = new TLine(i, 0, i, 96);
+    l->SetLineColor(kBlack);
+    l->Draw();
+  }
+  for (int j = 0; j <= 96; j += 8) {
+    TLine *l = new TLine(0, j, 256, j);
+    l->SetLineColor(kBlack);
+    l->Draw();
+  }
+
+  // labels
+  TLatex latSec; latSec.SetNDC(false);
+  latSec.SetTextSize(0.018); latSec.SetTextAlign(22); latSec.SetTextColor(kRed);
+
+  TLatex latIB ; latIB .SetNDC(false);
+  latIB .SetTextSize(0.025); latIB .SetTextAlign(22); latIB .SetTextColor(kRed);
+
+  for (int s = 0; s < 64; ++s) {
+    const double xCentre = (s % 32) * 8 + 4.0;            // middle of sector
+    const double ySector = (s < 32) ? 72.0 : 24.0;        // write S# once
+
+    latSec.DrawLatex(xCentre, ySector, Form("S%d", s));
+
+    for (int ib = 0; ib < 6; ++ib) {
+      const double yCentre = (s < 32)
+                               ? (48 + ib * 8 + 4)
+                               : ((5 - ib) * 8 + 4);
+      latIB.DrawLatex(xCentre, yCentre, Form("%d", ib));
+    }
+  }
+}
+
 
 // ----------------------------------------------------------------------
 //                    BAD‑INTERFACE‑BOARD  (CEMC)
@@ -336,46 +375,48 @@ public:
   using TriggerQA::TriggerQA;
 
 private:
+  // --------------------------------------------------------------------
+  //  Mask bad IBs, draw hit‑map with IB grid & labels, save as PNG
+  // --------------------------------------------------------------------
   void drawEtaPhiWithMask(TH2* h, const fs::path& outPNG)
   {
-    std::unique_ptr<TH2> h2(dynamic_cast<TH2*>(h->Clone(Form("%s_clone",h->GetName()))));
+    // ---- clone (so we can modify it) ---------------------------------
+    std::unique_ptr<TH2> h2(
+        static_cast<TH2*>(h->Clone(Form("%s_clone", h->GetName()))));
     h2->SetDirectory(nullptr);
 
-    // --- zero out bad boards
-    for(int phi=0; phi<256; ++phi){
-      for(int eta=0; eta<96; ++eta){
-        int sector=sector_from_idx(eta,phi);
-        int ib    =ib_from_idx(eta,phi);
-        if(isBadBoard(sector,ib))
+    // ---- mask every tower that belongs to a bad IB -------------------
+    for (int phi = 0; phi < 256; ++phi) {
+      for (int eta = 0; eta < 96;  ++eta) {
+        const int sec = sector_from_idx(eta, phi);
+        const int ib  = ib_from_idx    (eta, phi);
+        if (isBadBoard(sec, ib))
           h2->SetBinContent(h2->GetXaxis()->FindBin(phi),
                             h2->GetYaxis()->FindBin(eta), -9999.);
       }
     }
-    h2->SetContour(99); h2->SetMinimum(1.0);
+
+    // ---- cosmetics ----------------------------------------------------
+    h2->SetContour(99);
+    h2->SetMinimum(1.0);                // < 1  ⇒ white
 
     gStyle->SetOptStat(0);
-    TCanvas c("cCEMC","CEMC η‑φ",1600,1200);
+    TCanvas c("cCEMC", "CEMC η‑φ", 1600, 1200);
     c.SetRightMargin(0.15);
+
     h2->SetTitle(Form("%s – bad IBs masked", h->GetTitle()));
     h2->GetXaxis()->SetTitle("Tower ϕ index");
     h2->GetYaxis()->SetTitle("Tower η index");
     h2->Draw("COLZ");
 
-    for(int i=0;i<=256;i+=8){ TLine l(i,0,i,96); l.Draw(); }
-    for(int j=0;j<=96; j+=8){ TLine l(0,j,256,j); l.Draw(); }
+    // ---- white line separating North / South -------------------------
+    TLine eq(0, 48, 256, 48);
+    eq.SetLineColor(kWhite);  eq.SetLineWidth(2);  eq.Draw();
 
-    TLatex latSec; latSec.SetTextSize(0.018); latSec.SetTextAlign(22); latSec.SetTextColor(kRed);
-    TLatex latIB ; latIB .SetTextSize(0.025); latIB .SetTextAlign(22); latIB .SetTextColor(kRed);
-    for(int s=0;s<64;++s){
-      double xC=(s%32)*8+4;
-      double yC=(s<32)? 72. : 24.;
-      latSec.DrawLatex(xC,yC,Form("S%d",s));
-      for(int ib=0; ib<6; ++ib){
-        double yIB=(s<32)? (48+ib*8+4) : ((5-ib)*8+4);
-        latIB.DrawLatex(xC,yIB,Form("%d",ib));
-      }
-    }
+    // ---- IB grid + labels (black grid, red text) ---------------------
+    drawIBGridAndLabels();
 
+    // ---- write file ---------------------------------------------------
     ensure_dir(outPNG.parent_path());
     c.SaveAs(outPNG.string().c_str());
   }
@@ -383,24 +424,27 @@ private:
 public:
   bool process(TObject* obj) override
   {
-    if(!obj->InheritsFrom(TH1::Class())) return false;
+    // we only handle EMCal histograms
+    if (!obj->InheritsFrom(TH1::Class())) return false;
 
-    string hname=obj->GetName();
-    bool etaPhi = (hname.find("h_EMC_EtaPhiMap_")==0);
-    if(!etaPhi && hname.find("h_EMC_")!=0) return false;
+    const std::string hname = obj->GetName();
+    const bool isEtaPhi     = hname.rfind("h_EMC_EtaPhiMap_", 0) == 0;
+    if (!isEtaPhi && hname.rfind("h_EMC_", 0) != 0) return false;
 
-    fs::path outPng = outDir/(hname+".png");
-    try{
-      if(etaPhi && obj->InheritsFrom(TH2::Class()))
-        drawEtaPhiWithMask(static_cast<TH2*>(obj),outPng);
-      else if(obj->InheritsFrom(TH2::Class()))
-        saveHist2D(static_cast<TH2*>(obj),outPng);
+    const fs::path outPng = outDir / (hname + ".png");
+
+    try {
+      if (isEtaPhi && obj->InheritsFrom(TH2::Class()))
+        drawEtaPhiWithMask(static_cast<TH2*>(obj), outPng);
+      else if (obj->InheritsFrom(TH2::Class()))
+        saveHist2D(static_cast<TH2*>(obj), outPng);
       else
-        saveHist1D(static_cast<TH1*>(obj),outPng);
+        saveHist1D(static_cast<TH1*>(obj), outPng);
 
-      log::info("EMCal saved "+outPng.string());
-    }catch(const std::exception& e){
-      log::err("EMCal failed for "+hname+": "+e.what());
+      log::info("EMCal saved " + outPng.string());
+    }
+    catch (const std::exception& e) {
+      log::err("EMCal failed for " + hname + ": " + e.what());
     }
     return true;
   }
@@ -627,12 +671,17 @@ void analyzeRun24auau()
       // -------- histogram loop
       TIter itH(dTrig->GetListOfKeys());
       while(auto* kh=dynamic_cast<TKey*>(itH())){
-          // -- read object; let ROOT / the TFile keep ownership
           TObject *obj = kh->ReadObj();
+
+          /* -------------------------------------------------------------- */
+          /*  DETACH: tell ROOT that ‘obj’ no longer belongs to the file    */
+          if (obj->InheritsFrom(TH1::Class()))
+              static_cast<TH1*>(obj)->SetDirectory(nullptr);   // <———  NEW
+          /* -------------------------------------------------------------- */
 
           bool handled = false;
           for (auto &h : qa)
-            if (h->process(obj)) { handled = true; break; }
+              if (h->process(obj)) { handled = true; break; }
 
           if (!handled) {
             fs::path misc = trigBase / "Misc";  ensure_dir(misc);
