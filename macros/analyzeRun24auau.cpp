@@ -200,43 +200,68 @@ protected:
   fs::path outDir;
 };
 
-// --------------------------- π0 / correlations -------------------------
+// ---------------------------  π0 (EMCal) QA  ---------------------------
 class Pi0QA : public TriggerQA {
 public:
-  Pi0QA(const string& trg, const fs::path& out, std::ofstream& csvStream) :
-      TriggerQA(trg,out), csv(csvStream) {}
+  Pi0QA(const string& trg, const fs::path& emcDir, std::ofstream& csvStream)
+    : TriggerQA(trg, emcDir), csv(csvStream) {}
 
   bool process(TObject* obj) override
   {
-    string hname = obj->GetName();
-    if(hname.rfind("mInv_",0)!=0 || !obj->InheritsFrom(TH1::Class())) return false;
+    const string hname = obj->GetName();
+    if (hname.rfind("mInv_",0) != 0 || !obj->InheritsFrom(TH1::Class()))
+      return false;                                        // not ours
 
-    CutKey ck; if(!decodeInvName(hname,ck)) return false;
+    CutKey ck; if (!decodeInvName(hname, ck)) return false;
 
-    fs::path dirPath = outDir /
+    // …/<trigger>/EMCal/pi0QA/E2p0_Chi4p0_Asym0p7/pT_2p0_to_4p0/
+    fs::path dirPath = outDir / "pi0QA" /
                        ("E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy));
-    if(ck.pLo>=0&&ck.pHi>=0) dirPath /= ("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
+    if (ck.pLo>=0 && ck.pHi>=0)
+        dirPath /= ("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
     ensure_dir(dirPath);
 
     TH1* h = static_cast<TH1*>(obj);
     auto [ok,pars] = fitInvariantMass(h);
 
     TCanvas c; h->SetStats(0); h->Draw();
-    if(ok){
-      TF1* f = h->GetFunction("fTotal"); f->SetLineColor(kRed); f->Draw("SAME");
+    if (ok) {
+      TF1* f = h->GetFunction("fTotal");
+      f->SetLineColor(kRed); f->Draw("SAME");
       csv << ck.trigger << "," << ck.E << "," << ck.chi << "," << ck.asy << ","
           << ck.pLo << "," << ck.pHi << ","
           << pars[0] << "," << pars[1] << "," << pars[2] << "," << pars[3] << ","
           << pars[4] << "," << pars[5] << "," << pars[6] << "," << pars[7] << "\n";
     }
+
     fs::path pngPath = dirPath / (hname + ".png");
     c.SaveAs(pngPath.string().c_str());
-    log::info("Correlations saved " + pngPath.string());
+    log::info("π0‑QA saved " + pngPath.string());
     return true;
   }
 private:
   std::ofstream& csv;
 };
+
+// -----------------------  Detector–Detector Correlations  --------------
+class CorrelQA : public TriggerQA {
+public:
+  using TriggerQA::TriggerQA;               // ctor reuse
+
+  bool process(TObject* obj) override
+  {
+    // Accept *only* 2‑D histograms with "_vs_" in the name
+    const string hname = obj->GetName();
+    if (!obj->InheritsFrom(TH2::Class()) || hname.find("_vs_") == string::npos)
+        return false;
+
+    fs::path outPng = outDir / (hname + ".png");
+    saveHist2D(static_cast<TH2*>(obj), outPng);
+    log::info("Correlations saved " + outPng.string());
+    return true;
+  }
+};
+
 
 // ---------------------------  EMCal QA  --------------------------------
 class EmcalQA : public TriggerQA {
@@ -503,7 +528,8 @@ void analyzeRun24auau()
       // -------- create trigger output skeleton
       fs::path trigBase = fs::path(kOutputBase)/trig;
       ensure_dir(trigBase/"Correlations");
-      ensure_dir(trigBase/"EMCal");
+      ensure_dir(trigBase/"EMCal");               // ← as before
+      ensure_dir(trigBase/"EMCal/pi0QA");         // ← new root for π0 sub‑folders
       ensure_dir(trigBase/"IHCal");
       ensure_dir(trigBase/"OHCal");
       ensure_dir(trigBase/"MBD");
@@ -511,11 +537,12 @@ void analyzeRun24auau()
 
       // -------- instantiate QA handlers
       std::vector<std::unique_ptr<TriggerQA>> qa;
-      qa.emplace_back(std::make_unique<Pi0QA>(trig,trigBase/"Correlations",csv));
-      qa.emplace_back(std::make_unique<EmcalQA>(trig,trigBase/"EMCal"));
-      qa.emplace_back(std::make_unique<HcalQA>(trig,trigBase));
-      qa.emplace_back(std::make_unique<SepdQA>(trig,trigBase/"sEPD"));
-      qa.emplace_back(std::make_unique<MbdQA >(trig,trigBase/"MBD"));
+      qa.emplace_back(std::make_unique<Pi0QA >(trig, trigBase/"EMCal",      csv));
+      qa.emplace_back(std::make_unique<CorrelQA>(trig, trigBase/"Correlations"));
+      qa.emplace_back(std::make_unique<EmcalQA >(trig, trigBase/"EMCal"));
+      qa.emplace_back(std::make_unique<HcalQA  >(trig, trigBase));
+      qa.emplace_back(std::make_unique<SepdQA  >(trig, trigBase/"sEPD"));
+      qa.emplace_back(std::make_unique<MbdQA   >(trig, trigBase/"MBD"));
 
       // -------- histogram loop
       TIter itH(dTrig->GetListOfKeys());
