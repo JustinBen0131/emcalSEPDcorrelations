@@ -27,6 +27,7 @@
 #include <mbd/MbdGeom.h>
 #include <mbd/MbdPmtContainer.h>
 #include <epd/EpdGeom.h>
+#include <centrality_io/EpdCentrality.h>
 
 //––– STL ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <string>
@@ -67,6 +68,7 @@ class emcal_sepdCorrelator : public SubsysReco
   void setRunNumber(int r)       { m_runNumber = r;         }
   void setVzCut    (double c)    { m_vzCut = std::fabs(c);  }
   void enableVzCut (bool f = true) { m_useVzCut = f;        }
+  void setCentralityEdges(const std::vector<int>& e) { m_centEdges = e; }
 
  private:
   // ======================================================================
@@ -95,7 +97,11 @@ class emcal_sepdCorrelator : public SubsysReco
   double      m_vzCut       = 10.;        // [cm]
   bool        m_useVzCut    = true;
   const GlobalVertex* m_vtx {nullptr};
-  double m_vx {0.}, m_vy {0.}, m_vz {0.};
+  double m_vx {0.}, m_vy {0.}, m_vz {0.};\
+    
+  std::vector<int> m_centEdges {0,10,20,30,40,50,60};
+  int                         m_centPercent   = -1;   // 0…99 from EpdCentrality
+  std::map<std::string,int>   m_centIdxCache;         // "0_10" → 0, etc.
 
   std::string       Outfile;              // ROOT output file name
   TFile*            out      = nullptr;

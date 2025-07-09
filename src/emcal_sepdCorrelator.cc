@@ -4,7 +4,7 @@
 //==========================================================================
 
 #include "emcal_sepdCorrelator.h"
-
+å
 //––– Fun4All / PHOOL -------------------------------------------------------
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <fun4all/Fun4AllServer.h>
@@ -26,6 +26,7 @@
 #include <calobase/RawClusterUtility.h>
 #include <mbd/MbdPmtHit.h>
 #include <epd/EpdGeom.h>
+#include <centrality_io/EpdCentrality.h>
 
 // Standard C++ -------------------------------------------------------------
 #include <atomic>
@@ -183,74 +184,157 @@ void emcal_sepdCorrelator::bookChargeQA(const std::string& trig, HistMap& H)
 
 /* ----------------------------------------------------------------------
  * bookEnergyChargeCorrel  – detector–detector ΣE / ΣQ correlation maps
- *                     >>> dynamic axes, never overflows <<<
+ *                           (global   +   centrality‑tagged clones)
  * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
                                                   HistMap&           H)
 {
-  /* helper that produces an auto‑extending TH2F */
+  /* helper that produces an auto‑extending TH2F ------------------------- */
   auto book2 = [&](const char* n, const char* t,
                    int nx, double x0, double x1,
                    int ny, double y0, double y1)
   {
     TH2F* h = new TH2F(n, t, nx, x0, x1, ny, y0, y1);
-    h->SetCanExtend(TH1::kAllAxes);    // <‑‑‑ *** key line ***
+    h->SetCanExtend(TH1::kAllAxes);
     return h;
   };
 
-  /* initial range = 0 … 1200 with 5‑unit bins; grows further if needed */
-  const int    nC   = 240;         // charge axis  (5 ADC per bin)
-  const double cMax = 1200.;       // covers central Au+Au
-  const int    nE   = 240;         // energy axis  (5 GeV per bin)
-  const double eMax = 1200.;       // covers ΣEt for all subsystems
+  /* axis presets – identical to the original implementation ------------- */
+  const int    nC   = 240;               // charge axis   (5 ADC  per bin)
+  const double cMax = 1200.;             // covers ΣQ for central Au+Au
+  const int    nE   = 240;               // energy axis   (5 GeV per bin)
+  const double eMax = 1200.;             // covers ΣEt for all subsystems
 
-  H["h_SEPD_vs_CEMC"] = book2(("h_SEPD_vs_CEMC_" + trig).c_str(),  "sEPD Q vs CEMC #SigmaE",
+  /* --------------------------------------------------------------------
+   * 1)  keep the *original* un‑binned histograms (exact names preserved)
+   * ------------------------------------------------------------------ */
+  H["h_SEPD_vs_CEMC"] = book2(("h_SEPD_vs_CEMC_" + trig).c_str(),
+                              "sEPD Q vs CEMC #SigmaE",
                               nC, 0, cMax, nE, 0, eMax);
-  H["h_SEPD_vs_IHCAL"] = book2(("h_SEPD_vs_IHCAL_" + trig).c_str(),"sEPD Q vs IHCAL #SigmaE",
+  H["h_SEPD_vs_IHCAL"] = book2(("h_SEPD_vs_IHCAL_" + trig).c_str(),
+                               "sEPD Q vs IHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_SEPD_vs_OHCAL"] = book2(("h_SEPD_vs_OHCAL_" + trig).c_str(),"sEPD Q vs OHCAL #SigmaE",
+  H["h_SEPD_vs_OHCAL"] = book2(("h_SEPD_vs_OHCAL_" + trig).c_str(),
+                               "sEPD Q vs OHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_SEPD_vs_MBD"]   = book2(("h_SEPD_vs_MBD_"  + trig).c_str(),"sEPD Q vs MBD #SigmaQ",
+  H["h_SEPD_vs_MBD"]   = book2(("h_SEPD_vs_MBD_"  + trig).c_str(),
+                               "sEPD Q vs MBD #SigmaQ",
                                nC, 0, cMax, nC, 0, cMax);
 
-  H["h_MBD_vs_CEMC"]   = book2(("h_MBD_vs_CEMC_" + trig).c_str(), "MBD #SigmaQ vs CEMC #SigmaE",
+  H["h_MBD_vs_CEMC"]   = book2(("h_MBD_vs_CEMC_" + trig).c_str(),
+                               "MBD #SigmaQ vs CEMC #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_MBD_vs_IHCAL"]  = book2(("h_MBD_vs_IHCAL_" + trig).c_str(),"MBD #SigmaQ vs IHCAL #SigmaE",
+  H["h_MBD_vs_IHCAL"]  = book2(("h_MBD_vs_IHCAL_" + trig).c_str(),
+                               "MBD #SigmaQ vs IHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
-  H["h_MBD_vs_OHCAL"]  = book2(("h_MBD_vs_OHCAL_" + trig).c_str(),"MBD #SigmaQ vs OHCAL #SigmaE",
+  H["h_MBD_vs_OHCAL"]  = book2(("h_MBD_vs_OHCAL_" + trig).c_str(),
+                               "MBD #SigmaQ vs OHCAL #SigmaE",
                                nC, 0, cMax, nE, 0, eMax);
 
-  /* NEW: arm‑specific CEMC–sEPD correlations (E_T arm‑matched) */
   H["h_SEPD_S_vs_CEMC_South"] = book2(("h_SEPD_S_vs_CEMC_South_" + trig).c_str(),
                                       "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
                                       nC, 0, cMax, nE, 0, eMax);
   H["h_SEPD_N_vs_CEMC_North"] = book2(("h_SEPD_N_vs_CEMC_North_" + trig).c_str(),
                                       "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
                                       nC, 0, cMax, nE, 0, eMax);
+
+  /* --------------------------------------------------------------------
+   * 2)  centrality‑binned clones – one per {lo,hi} range the user gave
+   * ------------------------------------------------------------------ */
+  auto addClone = [&](const std::string& base,
+                      int lo, int hi,
+                      const char* title,
+                      int nx,double x0,double x1,
+                      int ny,double y0,double y1)
+  {
+    std::ostringstream key;
+    key << base << '_' << lo << '_' << hi << '_' << trig;
+    H[key.str()] = book2(key.str().c_str(), title, nx,x0,x1, ny,y0,y1);
+
+    /* remember the index so we can look it up quickly at fill time */
+    std::ostringstream tag; tag << '_' << lo << '_' << hi;
+    m_centIdxCache[tag.str()] = 1;        // value unused – we only need the key
+  };
+
+  /* loop over consecutive edges: [e0,e1), [e1,e2), … ------------------- */
+  for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+  {
+    const int lo = m_centEdges[i];
+    const int hi = m_centEdges[i + 1];
+
+    addClone("h_SEPD_vs_CEMC", lo,hi,
+             "sEPD Q vs CEMC #SigmaE", nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_vs_IHCAL",lo,hi,
+             "sEPD Q vs IHCAL #SigmaE",nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_vs_OHCAL",lo,hi,
+             "sEPD Q vs OHCAL #SigmaE",nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_vs_MBD",  lo,hi,
+             "sEPD Q vs MBD #SigmaQ",  nC,0,cMax, nC,0,cMax);
+
+    addClone("h_MBD_vs_CEMC", lo,hi,
+             "MBD #SigmaQ vs CEMC #SigmaE", nC,0,cMax, nE,0,eMax);
+    addClone("h_MBD_vs_IHCAL",lo,hi,
+             "MBD #SigmaQ vs IHCAL #SigmaE",nC,0,cMax, nE,0,eMax);
+    addClone("h_MBD_vs_OHCAL",lo,hi,
+             "MBD #SigmaQ vs OHCAL #SigmaE",nC,0,cMax, nE,0,eMax);
+
+    addClone("h_SEPD_S_vs_CEMC_South",lo,hi,
+             "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
+             nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_N_vs_CEMC_North",lo,hi,
+             "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
+             nC,0,cMax, nE,0,eMax);
+  }
 }
 
-void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig, HistMap& H)
+
+/* ----------------------------------------------------------------------
+ * bookPi0MassSpectra – π0 invariant–mass spectra
+ *                      (global  +  centrality‑tagged clones)
+ * -------------------------------------------------------------------- */
+void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
+                                              HistMap&           H)
 {
-  const int nM = 150; const double mMax = 1.5;
-  /* pT‑binned spectra */
+  const int    nM   = 150;
+  const double mMax = 1.5;    // [GeV/c²]
+
+  auto addHist = [&](const std::string& baseKey)
+  {
+    /* 1) always keep the original (centrality‑independent) spectrum */
+    const std::string hNameGlobal = baseKey + "_" + trig;
+    H[hNameGlobal] = new TH1F(hNameGlobal.c_str(),
+                              "m_{#gamma#gamma};GeV/c^{2}",
+                              nM, 0., mMax);
+
+    /* 2) add one clone for every user‑defined {lo,hi} percentile bin */
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+    {
+      const int lo = m_centEdges[i];
+      const int hi = m_centEdges[i + 1];
+
+      std::ostringstream name;
+      name << baseKey << '_' << lo << '_' << hi << '_' << trig;
+
+      H[name.str()] = new TH1F(name.str().c_str(),
+                               "m_{#gamma#gamma};GeV/c^{2}",
+                               nM, 0., mMax);
+    }
+  };
+
+  /* ---- pT‑binned spectra ----------------------------------------------- */
   for (auto pt : m_ptBins)
     for (float Emin : m_minClusE)
       for (float chi : m_chi2Cuts)
         for (float a : m_asymCuts)
-        {
-          const std::string k = invKey(pt.first, pt.second, Emin, chi, a) + "_" + trig;
-          H[k] = new TH1F(k.c_str(), "m_{#gamma#gamma};GeV/c^{2}", nM, 0, mMax);
-        }
+          addHist(invKey(pt.first, pt.second, Emin, chi, a));
 
-  /* inclusive pT‑independent spectra */
+  /* ---- inclusive (all‑pT) spectra -------------------------------------- */
   for (float Emin : m_minClusE)
     for (float chi : m_chi2Cuts)
       for (float a : m_asymCuts)
-      {
-        const std::string k = invKey(-1, -1, Emin, chi, a) + "_" + trig; // pT = -1 sentinel
-        H[k] = new TH1F(k.c_str(), "m_{#gamma#gamma};GeV/c^{2}", nM, 0, mMax);
-      }
+        addHist(invKey(-1, -1, Emin, chi, a));      // pT = −1 sentinel
 }
+
 
 void emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig, HistMap& H)
 {
@@ -358,11 +442,12 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
       return Fun4AllReturnCodes::ABORTEVENT;
   }
 
-
     
   /* detector‑level QA & correlations */
   doCaloQA(activeTrig);
   doSepdQA(activeTrig);
+  m_centPercent = EpdCentrality::getCentrality(m_sepdQ_arm[0], m_sepdQ_arm[1]);
+    
   doMbdQA (activeTrig);
   doPi0QA (activeTrig);
   fillCorrelations(activeTrig);
@@ -703,16 +788,15 @@ void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig
   }
 }
 
-//==========================================================================
-//  doPi0QA – γγ invariant‑mass spectra with live progress feedback
-//            (identical logic as before, but defined only once)
-//==========================================================================
+/* ----------------------------------------------------------------------
+ * doPi0QA – γγ invariant‑mass spectra (global + centrality‑tagged)
+ * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 {
-  // --- early exits --------------------------------------------------------
+  /* ---------- early exits ------------------------------------------------ */
   if (!m_clus || m_clus->size() < 2) return;
 
-  /* 1. build a pre‑filtered cache of clusters ---------------------------- */
+  /* ---------- build a filtered cluster cache ---------------------------- */
   const float EminMin = *std::min_element(m_minClusE.begin(), m_minClusE.end());
   const float chi2Max = *std::max_element(m_chi2Cuts.begin(), m_chi2Cuts.end());
   const float asymMax = *std::max_element(m_asymCuts.begin(), m_asymCuts.end());
@@ -736,14 +820,21 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   }
   if (cl.size() < 2) return;
 
-  /* 2. announce workload ------------------------------------------------- */
-  const std::size_t totalPairs = cl.size() * (cl.size() - 1) / 2;
-  std::cout << CLR_CYAN << "    [doPi0QA] will analyse "
-            << totalPairs << " cluster pairs" << CLR_RESET << std::endl;
+  /* ---------- map percentile → {lo,hi} tag ------------------------------ */
+  int lo = 0, hi = 100;
+  if (m_centPercent >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centPercent >= m_centEdges[i] &&
+          m_centPercent <  m_centEdges[i + 1])
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
 
-  /* 3. parallel pair scan ------------------------------------------------ */
-  constexpr std::size_t reportEvery = 50'000;
+  std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;   // "_20_40"
+  const std::string centTag = tagSS.str();
+
+  /* ---------- loop over cluster pairs ----------------------------------- */
+  const std::size_t totalPairs = cl.size() * (cl.size() - 1) / 2;
   std::atomic<std::size_t> pairCnt{0};
+  constexpr std::size_t reportEvery = 50'000;
 
 #ifdef _OPENMP
   #pragma omp parallel default(shared)
@@ -757,78 +848,97 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
     for (std::size_t idx = 0; idx < totalPairs; ++idx)
     {
       /* triangular index → (i,j) */
-      const std::size_t i = static_cast<std::size_t>((std::sqrt(8.0 * idx + 1) - 1) / 2);
-      const std::size_t j = idx - i * (i + 1) / 2 + i + 1;
+      const std::size_t i = static_cast<std::size_t>((std::sqrt(8.0*idx+1)-1)/2);
+      const std::size_t j = idx - i*(i+1)/2 + i + 1;
 
       const Clu &c1 = cl[i], &c2 = cl[j];
       const float asym = std::fabs(c1.E - c2.E) / (c1.E + c2.E);
-      if (asym > asymMax) { ++pairCnt; continue; }   // global veto
+      if (asym > asymMax) { ++pairCnt; continue; }            // global veto
 
-      /* ---- inclusive (pT independent) grid --------------------------- */
-      for (float Emin : m_minClusE)
-      for (float chiMx : m_chi2Cuts)
-      for (float aMx : m_asymCuts)
+      /* ---- helper that fills both histogram flavours ---------------- */
+      auto fillBoth = [&](const std::string& baseKey,
+                          const std::vector<std::string>& trigList,
+                          float mInv)
       {
-        const std::string key = statKey(-1, -1, Emin, chiMx, aMx);
+        for (const auto& t : trigList)
+        {
+          auto& H = qaHistogramsByTrigger[t];
+
+          /* global spectrum */
+          const std::string gKey = baseKey + "_" + t;
+          auto itG = H.find(gKey);
+          if (itG != H.end())
+            static_cast<TH1F*>(itG->second)->Fill(mInv);
+
+          /* centrality‑tagged clone */
+          const std::string cKey = baseKey + centTag + "_" + t;
+          auto itC = H.find(cKey);
+          if (itC != H.end())
+            static_cast<TH1F*>(itC->second)->Fill(mInv);
+        }
+      };
+
+      /* ---- inclusive (all‑pT) spectra -------------------------------- */
+      for (float Emin : m_minClusE)
+      for (float chiMx: m_chi2Cuts)
+      for (float aMx  : m_asymCuts)
+      {
+        const std::string key = statKey(-1,-1,Emin,chiMx,aMx);
         auto& st = evtStatLocal[key]; ++st.tested;
 
-        bool ok = true;
-        if (c1.E < Emin || c2.E < Emin)          { ++st.failE;   ok = false; }
-        else if (c1.chi > chiMx || c2.chi > chiMx){ ++st.failChi; ok = false; }
-        else if (asym > aMx)                     { ++st.failAsy; ok = false; }
+        bool pass = (c1.E >= Emin && c2.E >= Emin) &&
+                    (c1.chi <= chiMx && c2.chi <= chiMx) &&
+                    (asym <= aMx);
 
-        if (!ok) continue;
+        if (!pass) { if (!pass) { if (c1.E < Emin || c2.E < Emin) ++st.failE;
+                                  else if (c1.chi > chiMx || c2.chi > chiMx) ++st.failChi;
+                                  else ++st.failAsy; }
+                      continue; }
 
         const float mInv = (c1.v + c2.v).M();
-        for (auto& t : trig)
-          static_cast<TH1F*>(qaHistogramsByTrigger[t]
-                   [invKey(-1, -1, Emin, chiMx, aMx) + "_" + t])->Fill(mInv);
+        fillBoth(invKey(-1,-1,Emin,chiMx,aMx), trig, mInv);
         ++st.passed;
       }
 
-      /* ---- pT‑binned grid ------------------------------------------- */
+      /* ---- pT‑binned spectra ---------------------------------------- */
       for (const auto& pb : m_ptBins)
       {
         const float ptLo = pb.first, ptHi = pb.second;
         if (c1.pt < ptLo || c1.pt >= ptHi ||
-            c2.pt < ptLo || c2.pt >= ptHi) continue;   // pT veto
+            c2.pt < ptLo || c2.pt >= ptHi) continue;
 
         for (float Emin : m_minClusE)
-        for (float chiMx : m_chi2Cuts)
-        for (float aMx : m_asymCuts)
+        for (float chiMx: m_chi2Cuts)
+        for (float aMx  : m_asymCuts)
         {
-          const std::string key = statKey(ptLo, ptHi, Emin, chiMx, aMx);
+          const std::string key = statKey(ptLo,ptHi,Emin,chiMx,aMx);
           auto& st = evtStatLocal[key]; ++st.tested;
 
-          bool ok = true;
-          if (c1.E < Emin || c2.E < Emin)          { ++st.failE;   ok = false; }
-          else if (c1.chi > chiMx || c2.chi > chiMx){ ++st.failChi; ok = false; }
-          else if (asym > aMx)                     { ++st.failAsy; ok = false; }
+          bool pass = (c1.E >= Emin && c2.E >= Emin) &&
+                      (c1.chi <= chiMx && c2.chi <= chiMx) &&
+                      (asym <= aMx);
 
-          if (!ok) continue;
+          if (!pass) { if (c1.E < Emin || c2.E < Emin) ++st.failE;
+                       else if (c1.chi > chiMx || c2.chi > chiMx) ++st.failChi;
+                       else ++st.failAsy;
+                       continue; }
 
           const float mInv = (c1.v + c2.v).M();
-          for (auto& t : trig)
-            static_cast<TH1F*>(qaHistogramsByTrigger[t]
-                     [invKey(ptLo, ptHi, Emin, chiMx, aMx) + "_" + t])->Fill(mInv);
+          fillBoth(invKey(ptLo,ptHi,Emin,chiMx,aMx), trig, mInv);
           ++st.passed;
         }
       }
 
-      /* ---- live progress bar ---------------------------------------- */
+      /* ---- progress counter ----------------------------------------- */
 #ifdef _OPENMP
       if ((++pairCnt % reportEvery) == 0 && omp_get_thread_num() == 0)
 #else
       if ((++pairCnt % reportEvery) == 0)
 #endif
-      {
-        const double pct = 100. * static_cast<double>(pairCnt) / totalPairs;
         std::cout << CLR_CYAN << "    [doPi0QA] processed "
-                  << pairCnt << " / " << totalPairs
-                  << " (" << std::fixed << std::setprecision(1) << pct << "%)\r"
+                  << pairCnt << " / " << totalPairs << " pairs\r"
                   << CLR_RESET << std::flush;
-      }
-    } // pair loop
+    } // end pair loop
 
     /* ---- merge local stats ----------------------------------------- */
 #ifdef _OPENMP
@@ -845,84 +955,88 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
       }
     }
   } // end parallel region
-
-  /* 3.d  final progress line ------------------------------------------- */
-  std::cout << CLR_CYAN << "    [doPi0QA] finished "
-            << totalPairs << " / " << totalPairs << " (100.0%)            "
-            << CLR_RESET << std::endl;
-
-  /* 4. optional per‑event diagnostics (verbosity ≥ 2) ------------------ */
-  if (Verbosity() < 2) return;
-
-  auto pretty = [](const std::string& k)
-  {
-    float pLo, pHi, E, chi, a;
-    if (k.rfind("allPt", 0) == 0)
-    { sscanf(k.c_str(), "allPt_E%f_chi%f_asy%f", &E, &chi, &a);
-      return std::make_tuple(std::string("all"), E, chi, a); }
-
-    sscanf(k.c_str(), "pt%fto%f_E%f_chi%f_asy%f", &pLo, &pHi, &E, &chi, &a);
-    std::ostringstream oss; oss << std::fixed << std::setprecision(1) << pLo << "–" << pHi;
-    return std::make_tuple(oss.str(), E, chi, a);
-  };
-
-  std::cout << CLR_GREEN
-            << "    π0‑QA summary (this event)\n"
-            << "    pT[GeV] │ Emin │ χ²max │ αmax │   tested │  failE │ failχ² │ failα │ passed │ eff[%]\n"
-            << "    ─────────┼──────┼───────┼──────┼──────────┼────────┼────────┼────────┼────────┼───────\n";
-
-  for (const auto& [key, st] : m_evtStat)
-  {
-    std::string pt; float Emin, chi, a;
-    std::tie(pt, Emin, chi, a) = pretty(key);
-    const double eff = st.tested ? 100. * st.passed / st.tested : 0.;
-
-    printf("    %-8s │ %4.1f │ %5.1f │ %4.1f │ %8zu │ %6zu │ %6zu │ %6zu │ %6zu │ %5.1f\n",
-           pt.c_str(), Emin, chi, a,
-           st.tested, st.failE, st.failChi, st.failAsy, st.passed, eff);
-
-    /* accumulate run‑wide stats */
-    m_totStat[key].tested  += st.tested;
-    m_totStat[key].failE   += st.failE;
-    m_totStat[key].failChi += st.failChi;
-    m_totStat[key].failAsy += st.failAsy;
-    m_totStat[key].passed  += st.passed;
-  }
-  std::cout << CLR_RESET;
 }
 
-//==========================================================================
-//  fillCorrelations – #SigmaE / #SigmaQ detector‑level correlations
-//==========================================================================
+
+/* ----------------------------------------------------------------------
+ * fillCorrelations – ΣE / ΣQ detector‑level correlations
+ *                    (writes to global‑AND‑centrality histograms)
+ * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig)
 {
-  const double cemc = m_calo["CEMC"].sumE;
+  const double cemc  = m_calo["CEMC"].sumE;
+  const double ihcal = m_calo["IHCAL"].sumE;
+  const double ohcal = m_calo["OHCAL"].sumE;
 
-  for (auto& t : trig)
+  /* ----- determine which {lo,hi} slice this event belongs to ---------- */
+  int lo = 0, hi = 100;                                    // fallback
+  if (m_centPercent >= 0)
+  {
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centPercent >= m_centEdges[i] &&
+          m_centPercent <  m_centEdges[i + 1])
+      {
+        lo = m_centEdges[i];
+        hi = m_centEdges[i + 1];
+        break;
+      }
+  }
+  std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;
+  const std::string tag = tagSS.str();                     // e.g. "_10_20"
+
+  /* --------------------------------------------------------------------
+   * loop over all active triggers and fill both histogram sets
+   * ------------------------------------------------------------------ */
+  for (const auto& t : trig)
   {
     auto& H = qaHistogramsByTrigger[t];
 
-    /* arm‑matched plots */
+    /* ---- 2.1  arm‑matched histos ----------------------------------- */
     static_cast<TH2F*>(H["h_SEPD_S_vs_CEMC_South"])
         ->Fill(m_sepdQ_arm[0], m_cemcEt_arm[0]);
     static_cast<TH2F*>(H["h_SEPD_N_vs_CEMC_North"])
         ->Fill(m_sepdQ_arm[1], m_cemcEt_arm[1]);
 
-    /* original global plots */
-    static_cast<TH2F*>(H["h_SEPD_vs_CEMC"])->Fill(m_sepdQ, cemc);
-    static_cast<TH2F*>(H["h_SEPD_vs_IHCAL"])->Fill(m_sepdQ, m_calo["IHCAL"].sumE);
-    static_cast<TH2F*>(H["h_SEPD_vs_OHCAL"])->Fill(m_sepdQ, m_calo["OHCAL"].sumE);
-    static_cast<TH2F*>(H["h_SEPD_vs_MBD"  ])->Fill(m_sepdQ, m_mbdQ);
+    /* ---- 2.2  global (all‑events) histos --------------------------- */
+    static_cast<TH2F*>(H["h_SEPD_vs_CEMC"])->Fill(m_sepdQ,  cemc);
+    static_cast<TH2F*>(H["h_SEPD_vs_IHCAL"])->Fill(m_sepdQ,  ihcal);
+    static_cast<TH2F*>(H["h_SEPD_vs_OHCAL"])->Fill(m_sepdQ,  ohcal);
+    static_cast<TH2F*>(H["h_SEPD_vs_MBD"]  )->Fill(m_sepdQ,  m_mbdQ);
 
-    static_cast<TH2F*>(H["h_MBD_vs_CEMC"])->Fill(m_mbdQ, cemc);
-    static_cast<TH2F*>(H["h_MBD_vs_IHCAL"])->Fill(m_mbdQ, m_calo["IHCAL"].sumE);
-    static_cast<TH2F*>(H["h_MBD_vs_OHCAL"])->Fill(m_mbdQ, m_calo["OHCAL"].sumE);
+    static_cast<TH2F*>(H["h_MBD_vs_CEMC"] )->Fill(m_mbdQ,   cemc);
+    static_cast<TH2F*>(H["h_MBD_vs_IHCAL"])->Fill(m_mbdQ,   ihcal);
+    static_cast<TH2F*>(H["h_MBD_vs_OHCAL"])->Fill(m_mbdQ,   ohcal);
+
+    /* ---- 2.3  centrality‑binned clones ----------------------------- */
+    auto tryFill = [&](const std::string& base,
+                       double x, double y)
+    {
+      const std::string key = base + tag + '_' + t;   // matches booking
+      auto it = H.find(key);
+      if (it != H.end()) static_cast<TH2F*>(it->second)->Fill(x, y);
+    };
+
+    tryFill("h_SEPD_vs_CEMC", m_sepdQ, cemc);
+    tryFill("h_SEPD_vs_IHCAL",m_sepdQ, ihcal);
+    tryFill("h_SEPD_vs_OHCAL",m_sepdQ, ohcal);
+    tryFill("h_SEPD_vs_MBD",  m_sepdQ, m_mbdQ);
+
+    tryFill("h_MBD_vs_CEMC",  m_mbdQ,  cemc);
+    tryFill("h_MBD_vs_IHCAL", m_mbdQ,  ihcal);
+    tryFill("h_MBD_vs_OHCAL", m_mbdQ,  ohcal);
+
+    tryFill("h_SEPD_S_vs_CEMC_South", m_sepdQ_arm[0], m_cemcEt_arm[0]);
+    tryFill("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1], m_cemcEt_arm[1]);
   }
 
-  LOG(3, CLR_BLUE, "  [fillCorrelations]  #SigmaE(CEMC)=" << cemc
-                         << "  #SigmaE(IHCAL)=" << m_calo["IHCAL"].sumE
-                         << "  #SigmaE(OHCAL)=" << m_calo["OHCAL"].sumE);
+  LOG(3, CLR_BLUE,
+      "  [fillCorrelations] ΣE(CEMC)=" << cemc
+      << "  ΣE(IHCAL)="       << ihcal
+      << "  ΣE(OHCAL)="       << ohcal
+      << "  cent="            << m_centPercent
+      << "%  slice="          << lo << "–" << hi << '%');
 }
+
 
 //==========================================================================
 //  trivial helpers
