@@ -508,6 +508,7 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   m_mbdpmts  = findNode::getClass<MbdPmtContainer  >(top, "MbdPmtContainer");
   m_mbdgeom  = findNode::getClass<MbdGeom         >(top, "MbdGeom");
   m_epdgeom  = findNode::getClass<EpdGeom         >(top, "TOWERGEOM_EPD");
+  m_epmap    = findNode::getClass<EventplaneinfoMap>(top, "EventplaneinfoMap");
   m_clus     = findNode::getClass<RawClusterContainer>(top, "CLUSTERINFO_CEMC");
 
   const bool ok_sepd = (m_sepd && m_epdgeom);
@@ -732,10 +733,34 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
   for (auto& t : trig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])->Fill(m_sepdQ);
 
-  /* event‑plane angles & resolution proxy */
-  m_psi2_S = 0.5 * std::atan2(qyS, qxS);
-  m_psi2_N = 0.5 * std::atan2(qyN, qxN);
+  /* --- event‑plane angles & resolution proxy ------------------------- */
+  if (m_epmap && !m_epmap->empty())
+  {
+      auto epdS = m_epmap->get(EventplaneinfoMap::sEPDS);   // South arm
+      auto epdN = m_epmap->get(EventplaneinfoMap::sEPDN);   // North arm
+      if (epdS && epdN)
+      {
+        const auto q2S = epdS->get_qvector(2);
+        const auto q2N = epdN->get_qvector(2);
+
+        Eventplaneinfov1 helper;            // provides GetPsi()
+        m_psi2_S = helper.GetPsi(q2S.first, q2S.second, 2);
+        m_psi2_N = helper.GetPsi(q2N.first, q2N.second, 2);
+      }
+      else
+      {   // fall back if one arm is missing
+        m_psi2_S = 0.5 * std::atan2(qyS, qxS);
+        m_psi2_N = 0.5 * std::atan2(qyN, qxN);
+      }
+    }
+    else     // EP map missing – keep the old estimate
+    {
+      m_psi2_S = 0.5 * std::atan2(qyS, qxS);
+      m_psi2_N = 0.5 * std::atan2(qyN, qxN);
+  }
+
   const double cos2dPsi = std::cos(2 * (m_psi2_N - m_psi2_S));
+
 
   for (auto& t : trig)
   {

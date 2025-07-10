@@ -28,6 +28,7 @@
 #include <mbd/MbdPmtContainer.h>
 #include <epd/EpdGeom.h>
 #include <centrality/CentralityInfo.h>
+#include <eventplaneinfo/EventplaneinfoMap.h>
 
 //––– STL ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <string>
@@ -138,6 +139,7 @@ class emcal_sepdCorrelator : public SubsysReco
   MbdPmtContainer*     m_mbdpmts  = nullptr;
   MbdGeom*             m_mbdgeom  = nullptr;
   EpdGeom*             m_epdgeom  = nullptr;
+  EventplaneinfoMap*   m_epmap    = nullptr;   // pointer to EventplaneinfoMap
   RawClusterContainer* m_clus     = nullptr;
 
   // --- helpers that book sets of histograms -------------------------------
