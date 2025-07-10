@@ -174,26 +174,45 @@ fi
 ##############################################################################
 
 # ─────────────────────────────────────────────────────────────
-# 9. LOCAL MODE – single quick test               (✱ modified)
+# 9. LOCAL MODE – single quick test (run-number aware)
+#      Usage:  ./run_auau_run3_qa_submit.sh local <runNr> [maxEvt]
 # ─────────────────────────────────────────────────────────────
 if [[ "$mode" == "local" ]]; then
-  maxEvt="${2:-0}"                           # new (0 ⇒ all events)
+  # -----------------------------------------------------------
+  #  • $limitSwitch  → mandatory run number (e.g. 54128)
+  #  • $3            → optional maxEvt (0 = all, default)
+  # -----------------------------------------------------------
+  if [[ -z "$limitSwitch" || ! "$limitSwitch" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR]   local mode needs an explicit run number!" >&2
+    echo "          Example:  $0 local 54128 100"              >&2
+    exit 1
+  fi
 
-  firstList="${listFiles[0]}"
-  firstRun="${runs[0]}"
-  firstDST="$(head -n1 "$firstList")" || { echo "[ERROR] Empty $firstList"; exit 3; }
+  runNumber=$(printf "%05d" "$limitSwitch")
+  maxEvt="${3:-0}"
 
-  echo "[INFO] Local mode – Run=$firstRun"
+  listFile="${DST_LIST_DIR}/DST_CALO_run2auau_new_2024p007-000${runNumber}.list"
+  if [[ ! -f "$listFile" || ! -s "$listFile" ]]; then
+    echo "[ERROR]   List-file for run ${runNumber} not found or empty:" >&2
+    echo "          $listFile" >&2
+    exit 2
+  fi
+
+  firstDST=$(head -n1 "$listFile")
+  echo "[INFO] Local mode – Run=${runNumber}"
   echo "[INFO] First DST  : $firstDST"
+  echo "[INFO] maxEvt     : $maxEvt (0 → all)"
 
-  tmpList=$(mktemp "${TMP_LIST_DIR}/local_${firstRun}_XXXX.list")
+  tmpList=$(mktemp "${TMP_LIST_DIR}/local_${runNumber}_XXXX.list")
   echo "$firstDST" > "$tmpList"
 
-  #               ↓   ↓           ↓            ↓                ↓ NEW
-  "${EXEC}" "$firstRun" "$tmpList" 0 "$CONDOR_OUT_BASE" "$maxEvt"
+  #               ↓ runNr      ↓ one-line list   ↓ job tag    ↓ out base     ↓ maxEvt
+  "${EXEC}" "$runNumber" "$tmpList" 0 "$CONDOR_OUT_BASE" "$maxEvt"
+
   rm -f "$tmpList"
   exit 0
 fi
+
 
 ##############################################################################
 

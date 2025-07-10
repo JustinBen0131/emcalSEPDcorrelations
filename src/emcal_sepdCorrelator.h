@@ -98,7 +98,8 @@ class emcal_sepdCorrelator : public SubsysReco
   double      m_vzCut       = 10.;        // [cm]
   bool        m_useVzCut    = true;
   const GlobalVertex* m_vtx {nullptr};
-  double m_vx {0.}, m_vy {0.}, m_vz {0.};\
+  double m_vx {0.}, m_vy {0.}, m_vz {0.};
+  std::vector<unsigned> m_epdKey;
     
   std::vector<int> m_centEdges {0,10,20,30,40,50,60};
   int                         m_centBin   = -1;   // 0…99

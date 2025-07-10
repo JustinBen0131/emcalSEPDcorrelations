@@ -17,6 +17,10 @@
 #include <TMath.h>
 #include <TH2Poly.h>
 #include <CLHEP/Vector/ThreeVector.h>
+//––– CDB access ------------------------------------------------------------
+#include <cdbobjects/CDBTTree.h>        // <-- defines CDBTTree
+#include <ffamodules/CDBInterface.h>     // <-- gives you CDBInterface::instance()
+
 
 //––– sPHENIX objects -------------------------------------------------------
 #include <globalvertex/GlobalVertex.h>
@@ -104,6 +108,18 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   LOG(1, CLR_GREEN, "[InitRun] geometry is present – booking hit‑maps …");
   bookShapeHitMaps(topNode);
   m_mapsBooked = true;
+  if (m_epdKey.empty()) {
+      const std::string mapName  = "SEPD_CHANNELMAP";
+      const std::string field    = "epd_channel_map";
+
+      CDBTTree* tree = new CDBTTree(CDBInterface::instance()->getUrl(mapName));
+      m_epdKey.reserve(768);
+      for (int i = 0; i < 768; ++i) {
+        int tile = tree->GetIntValue(i, field);
+        if (tile == 999) continue;                       // empty tile, skip
+        m_epdKey.push_back(TowerInfoDefs::encode_epd(tile));
+      }
+  }
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -709,8 +725,8 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
     const double w = ti->get_energy();           if (w <= 0) continue;
 
-    const unsigned key = TowerInfoDefs::encode_epd(ch);
-    const int arm = TowerInfoDefs::get_epd_arm(key);   // 0 = S, 1 = N
+    const unsigned key = m_epdKey[ch];                  // <─ FIXED
+    const int arm     = TowerInfoDefs::get_epd_arm(key);
     const double r   = m_epdgeom->get_r(key);
     const double phi = m_epdgeom->get_phi(key);
 

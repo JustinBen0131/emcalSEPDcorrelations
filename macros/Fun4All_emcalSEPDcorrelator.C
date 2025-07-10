@@ -23,6 +23,14 @@
 
 #include <ffamodules/CDBInterface.h>
 #include <calotrigger/TriggerRunInfoReco.h>
+#include <epd/EpdReco.h>
+#include <mbd/MbdReco.h>
+#include <globalvertex/GlobalVertexReco.h>
+
+// new – high‑level reconstruction
+#include <eventplaneinfo/EventPlaneReco.h>
+#include <centrality/CentralityReco.h>
+#include <calotrigger/MinimumBiasClassifier.h>   // optional but handy
 
 #include <phool/recoConsts.h>
 #include <phool/PHRandomSeed.h>
@@ -44,6 +52,10 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
+R__LOAD_LIBRARY(libepd.so)
+R__LOAD_LIBRARY(libmbd.so)
+R__LOAD_LIBRARY(libglobalvertex.so)
+R__LOAD_LIBRARY(libeventplaneinfo.so)
 R__LOAD_LIBRARY(libcentrality.so)      // always
 R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
 R__LOAD_LIBRARY(libcalotrigger.so)
@@ -129,12 +141,38 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   // 3.  Register subsystems
   //--------------------------------------------------------------------
   auto cent = new CentralityReco();
+  cent->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54280.root"); // will change run by run
+  cent->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54280.root"); // will change run by run
+  cent->setOverwriteDivs("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54280.root");
   se->registerSubsystem( cent );
     
   // 3a) Run‑info (always available in ana.495)
   auto* trigInfo = new TriggerRunInfoReco();
   trigInfo->Verbosity(verbose ? 1 : 0);
   se->registerSubsystem(trigInfo);
+    
+  // ------------------------------------------------------------------
+  // low‑level detector reconstruction (creates raw tower/PMT containers)
+  // ------------------------------------------------------------------
+  auto epdreco  = new EpdReco();          // fills TOWERINFO_CALIB_SEPD   + EpdGeom
+  auto mbdreco  = new MbdReco();          // fills MbdPmtContainer        + MbdGeom
+  auto gvertex  = new GlobalVertexReco(); // fills GlobalVertexMap
+
+  se->registerSubsystem(epdreco);
+  se->registerSubsystem(mbdreco);
+  se->registerSubsystem(gvertex);
+
+  // ------------------------------------------------------------------
+  // high‑level reconstruction (needs the detectors above)
+  // ------------------------------------------------------------------
+  auto epreco = new EventPlaneReco();
+  epreco->set_sepd_epreco(true);          // tell it to build sEPD Q‑vectors
+  se->registerSubsystem(epreco);
+
+  // optional – tag minimum‑bias events based on sEPD + MBD sums
+  auto mbclass = new MinimumBiasClassifier();
+  mbclass->Verbosity(verbose ? 1 : 0);
+  se->registerSubsystem(mbclass);
 
   // 3b) Your analysis module
   auto* correl = new emcal_sepdCorrelator(outRoot);
