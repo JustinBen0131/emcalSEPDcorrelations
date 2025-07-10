@@ -109,17 +109,24 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   bookShapeHitMaps(topNode);
   m_mapsBooked = true;
   if (m_epdKey.empty()) {
-      const std::string mapName  = "SEPD_CHANNELMAP";
-      const std::string field    = "epd_channel_map";
-
-      CDBTTree* tree = new CDBTTree(CDBInterface::instance()->getUrl(mapName));
-      m_epdKey.reserve(768);
-      for (int i = 0; i < 768; ++i) {
-        int tile = tree->GetIntValue(i, field);
-        if (tile == 999) continue;                       // empty tile, skip
-        m_epdKey.push_back(TowerInfoDefs::encode_epd(tile));
+      constexpr unsigned nChan = 768;
+      constexpr unsigned INVALID = std::numeric_limits<unsigned>::max();
+      const std::string mapName = "SEPD_CHANNELMAP";
+      const std::string field   = "epd_channel_map";
+      CDBTTree tree(CDBInterface::instance()->getUrl(mapName));
+      m_epdKey.resize(nChan, INVALID);          // **always 768 entries**
+      for (unsigned ch = 0; ch < nChan; ++ch)
+      {
+          int tile = tree.GetIntValue(ch, field);
+          if (tile == 999) continue;              // leave INVALID in place
+          m_epdKey[ch] = TowerInfoDefs::encode_epd(tile);
       }
   }
+  if (m_sepd && m_sepd->size() != m_epdKey.size())
+      throw std::runtime_error(
+          Form("[InitRun] Size mismatch: TOWERINFO_CALIB_SEPD has %zu channels "
+               "but m_epdKey is %zu long",
+               m_sepd->size(), m_epdKey.size()));
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -726,7 +733,8 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     const double w = ti->get_energy();           if (w <= 0) continue;
 
     const unsigned key = m_epdKey[ch];                  // <─ FIXED
-    const int arm     = TowerInfoDefs::get_epd_arm(key);
+    if (key == std::numeric_limits<unsigned>::max()) continue; // empty tile
+    const int arm = TowerInfoDefs::get_epd_arm(key);
     const double r   = m_epdgeom->get_r(key);
     const double phi = m_epdgeom->get_phi(key);
 
