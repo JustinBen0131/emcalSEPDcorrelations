@@ -108,25 +108,30 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   LOG(1, CLR_GREEN, "[InitRun] geometry is present – booking hit‑maps …");
   bookShapeHitMaps(topNode);
   m_mapsBooked = true;
-  if (m_epdKey.empty()) {
-      constexpr unsigned nChan = 768;
-      constexpr unsigned INVALID = std::numeric_limits<unsigned>::max();
-      const std::string mapName = "SEPD_CHANNELMAP";
-      const std::string field   = "epd_channel_map";
-      CDBTTree tree(CDBInterface::instance()->getUrl(mapName));
-      m_epdKey.resize(nChan, INVALID);          // **always 768 entries**
-      for (unsigned ch = 0; ch < nChan; ++ch)
-      {
-          int tile = tree.GetIntValue(ch, field);
-          if (tile == 999) continue;              // leave INVALID in place
-          m_epdKey[ch] = TowerInfoDefs::encode_epd(tile);
-      }
-  }
-  if (m_sepd && m_sepd->size() != m_epdKey.size())
-      throw std::runtime_error(
-          Form("[InitRun] Size mismatch: TOWERINFO_CALIB_SEPD has %zu channels "
-               "but m_epdKey is %zu long",
-               m_sepd->size(), m_epdKey.size()));
+  // ------------------------------------------------------------------
+  // Use the size of TOWERINFO_CALIB_SEPD that is present **in this run**
+  // ------------------------------------------------------------------
+  m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
+                                                    "TOWERINFO_CALIB_SEPD");
+  if (!m_sepd)
+      throw std::runtime_error("[InitRun] TOWERINFO_CALIB_SEPD not found");
+
+  const std::size_t nChan = m_sepd->size();      // e.g. 512, 768, 1024 …
+  const std::string mapName = "SEPD_CHANNELMAP";
+  const std::string field   = "epd_channel_map";
+
+  m_epdKey.assign(nChan, std::numeric_limits<unsigned>::max());  // resize
+
+  CDBTTree tree{ CDBInterface::instance()->getUrl(mapName) };
+  for (std::size_t ch = 0; ch < nChan; ++ch)
+    {
+      const int tile = tree.GetIntValue(ch, field);   // may be 999 → empty
+      if (tile == 999) continue;
+      m_epdKey[ch] = TowerInfoDefs::encode_epd(tile); // always safe
+    }
+
+    LOG(1, CLR_GREEN, "[InitRun] SEPD: container has "
+                       << nChan << " channels, m_epdKey filled");
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
