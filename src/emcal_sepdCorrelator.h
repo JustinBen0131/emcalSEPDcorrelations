@@ -27,7 +27,7 @@
 #include <mbd/MbdGeom.h>
 #include <mbd/MbdPmtContainer.h>
 #include <epd/EpdGeom.h>
-#include <centrality_io/EpdCentrality.h>
+#include <centrality/CentralityInfo.h>
 
 //––– STL ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <string>
@@ -100,7 +100,7 @@ class emcal_sepdCorrelator : public SubsysReco
   double m_vx {0.}, m_vy {0.}, m_vz {0.};\
     
   std::vector<int> m_centEdges {0,10,20,30,40,50,60};
-  int                         m_centPercent   = -1;   // 0…99 from EpdCentrality
+  int                         m_centBin   = -1;   // 0…99
   std::map<std::string,int>   m_centIdxCache;         // "0_10" → 0, etc.
 
   std::string       Outfile;              // ROOT output file name

@@ -4,7 +4,7 @@
 //==========================================================================
 
 #include "emcal_sepdCorrelator.h"
-å
+
 //––– Fun4All / PHOOL -------------------------------------------------------
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <fun4all/Fun4AllServer.h>
@@ -26,7 +26,11 @@
 #include <calobase/RawClusterUtility.h>
 #include <mbd/MbdPmtHit.h>
 #include <epd/EpdGeom.h>
-#include <centrality_io/EpdCentrality.h>
+#include <centrality/CentralityInfo.h>
+
+#include <eventplaneinfo/Eventplaneinfo.h>
+#include <eventplaneinfo/Eventplaneinfov1.h>
+#include <eventplaneinfo/EventplaneinfoMap.h>
 
 // Standard C++ -------------------------------------------------------------
 #include <atomic>
@@ -446,7 +450,16 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* detector‑level QA & correlations */
   doCaloQA(activeTrig);
   doSepdQA(activeTrig);
-  m_centPercent = EpdCentrality::getCentrality(m_sepdQ_arm[0], m_sepdQ_arm[1]);
+  CentralityInfo* cent = findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
+  if (!cent)
+  {
+        LOG(1, CLR_YELLOW,
+            "  – CentralityInfo node missing → skip event");
+        return Fun4AllReturnCodes::ABORTEVENT;
+  }
+  /* use the arm-sum (South+North) definition that CentralityReco writes */
+  m_centBin = cent->get_centrality_bin(CentralityInfo::PROP::epd_NS);
+    
     
   doMbdQA (activeTrig);
   doPi0QA (activeTrig);
@@ -821,12 +834,12 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   if (cl.size() < 2) return;
 
   /* ---------- map percentile → {lo,hi} tag ------------------------------ */
-  int lo = 0, hi = 100;
-  if (m_centPercent >= 0)
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centPercent >= m_centEdges[i] &&
-          m_centPercent <  m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+    int lo = 0, hi = 100;
+    if (m_centBin >= 0)
+      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+        if (m_centBin >= m_centEdges[i] &&
+            m_centBin <  m_centEdges[i + 1])
+        { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
 
   std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;   // "_20_40"
   const std::string centTag = tagSS.str();
@@ -969,18 +982,18 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
   const double ohcal = m_calo["OHCAL"].sumE;
 
   /* ----- determine which {lo,hi} slice this event belongs to ---------- */
-  int lo = 0, hi = 100;                                    // fallback
-  if (m_centPercent >= 0)
-  {
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centPercent >= m_centEdges[i] &&
-          m_centPercent <  m_centEdges[i + 1])
-      {
-        lo = m_centEdges[i];
-        hi = m_centEdges[i + 1];
-        break;
-      }
-  }
+    int lo = 0, hi = 100;                                    // fallback
+    if (m_centBin >= 0)
+    {
+      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+        if (m_centBin >= m_centEdges[i] &&
+            m_centBin <  m_centEdges[i + 1])
+        {
+          lo = m_centEdges[i];
+          hi = m_centEdges[i + 1];
+          break;
+        }
+    }
   std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;
   const std::string tag = tagSS.str();                     // e.g. "_10_20"
 
@@ -1029,12 +1042,12 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
     tryFill("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1], m_cemcEt_arm[1]);
   }
 
-  LOG(3, CLR_BLUE,
-      "  [fillCorrelations] ΣE(CEMC)=" << cemc
-      << "  ΣE(IHCAL)="       << ihcal
-      << "  ΣE(OHCAL)="       << ohcal
-      << "  cent="            << m_centPercent
-      << "%  slice="          << lo << "–" << hi << '%');
+    LOG(3, CLR_BLUE,
+        "  [fillCorrelations] ΣE(CEMC)=" << cemc
+        << "  ΣE(IHCAL)="       << ihcal
+        << "  ΣE(OHCAL)="       << ohcal
+        << "  cent="            << m_centBin
+        << "%  slice="          << lo << "–" << hi << '%');
 }
 
 
@@ -1077,6 +1090,7 @@ int emcal_sepdCorrelator::ResetEvent(PHCompositeNode*)
   m_mbdQ   = 0.;
   m_psi2_S = 0.;
   m_psi2_N = 0.;
+  m_centBin = -1;
   for (auto& kv : m_calo) kv.second.sumE = 0.;
 
   m_evtStat.clear();

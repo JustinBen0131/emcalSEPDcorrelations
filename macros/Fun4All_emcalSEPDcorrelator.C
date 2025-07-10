@@ -44,6 +44,8 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
+R__LOAD_LIBRARY(libcentrality.so)      // always
+R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
 R__LOAD_LIBRARY(libcalotrigger.so)
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
@@ -126,7 +128,9 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   //--------------------------------------------------------------------
   // 3.  Register subsystems
   //--------------------------------------------------------------------
-
+  auto cent = new CentralityReco();
+  se->registerSubsystem( cent );
+    
   // 3a) Run‑info (always available in ana.495)
   auto* trigInfo = new TriggerRunInfoReco();
   trigInfo->Verbosity(verbose ? 1 : 0);
