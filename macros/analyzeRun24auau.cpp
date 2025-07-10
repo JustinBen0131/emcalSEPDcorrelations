@@ -1,10 +1,12 @@
-// analyzeRun24auau.cpp  – ROOT ≥ 6, C++17
-// =====================================================================
+// analyzeRun24auau.cpp  – ROOT ≥ 6, C++17
+// ===============================================================
 //  • Pass‑0: catalogue every histogram in the file  (console + .txt)
 //  • Pass‑1: modular QA (EMCal, HCal, sEPD, MBD, correlations,
 //            π0 invariant‑mass spectra, …) with automatic centrality
 //            slice replication and North/South map fusion.
-// =====================================================================
+//  • Built‑in [TRACE] instrumentation to pinpoint run‑time crashes.
+//  • Global toggle kDoPi0Fit to switch π0 mass fitting on/off
+// ===============================================================
 
 #include <ROOT/RDataFrame.hxx>
 #include <TFile.h>
@@ -28,13 +30,14 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#include <cstdint>   // uintptr_t cast
 
 using std::string;
 namespace fs = std::filesystem;
 
-// ──────────────────────────────────────────────────────────────────────
-//                         ▼   USER SETTINGS   ▼
-// ──────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────
+//            ▼  USER SETTINGS  ▼
+// ───────────────────────────────────────────────
 const string kInputFile =
     "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/"
     "emcal_sepd_analysis_run54280_c0_DST_CALO_run2auau_new_2024p007-00054280-00000.root";
@@ -43,13 +46,18 @@ const string kOutputBase =
     "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output";
 
 std::set<string> kTriggersWanted{ "MBD_NandS_geq_2" };
-// ──────────────────────────────────────────────────────────────────────
+
+/*  <<<   π0‐fit master switch   >>>                                         *
+ *  false  → spectra are drawn, but *no* TF1 fit is attempted and            *
+ *           InvariantMassSummary.csv is left empty (except header).         *
+ *  true   → run the Gaussian‑plus‑poly fit and fill CSV.                    */
+constexpr bool kDoPi0Fit = false;
+// ───────────────────────────────────────────────
 
 
-
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                       SECTION 1 – LOGGING                         ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║                1.  LOGGING                   ║
+// ╚══════════════════════════════════════════════╝
 namespace term {
   constexpr const char* CLR_RST  = "\033[0m";
   constexpr const char* CLR_BOLD = "\033[1m";
@@ -58,9 +66,6 @@ namespace term {
   constexpr const char* CLR_YEL  = "\033[33m";
   constexpr const char* CLR_RED  = "\033[31m";
 }
-
-#define MSG(HDR,CLR,BODY) \
-  do{ std::cout<<term::CLR_TERM<<HDR<<term::CLR_RST<<" "<<BODY<<"\n"; }while(0)
 
 namespace log {
   inline void banner(const string& m)
@@ -75,10 +80,20 @@ namespace log {
   inline void ok   (const string& m){ std::cout<<term::CLR_GRN <<m<<term::CLR_RST<<"\n"; }
   inline void warn (const string& m){ std::cout<<term::CLR_YEL <<m<<term::CLR_RST<<"\n"; }
   inline void err  (const string& m){ std::cerr<<term::CLR_RED <<m<<term::CLR_RST<<"\n"; }
+
+  // new ultra‑light trace channel
+  inline void trace(const std::string& m)
+  {
+    std::cout << term::CLR_YEL << "[TRACE] " << m << term::CLR_RST << "\n";
+  }
 }
 
-// helper
-inline void ensure_dir(const fs::path& p){ std::error_code ec; fs::create_directories(p,ec); }
+// helper --------------------------------------------------------------
+inline void ensure_dir(const fs::path& p)
+{
+  std::error_code ec;
+  fs::create_directories(p, ec);
+}
 inline string sf3(double x){
   std::ostringstream o; if(x==0){o<<"0";return o.str();}
   int e=int(floor(log10(fabs(x)))); o<<std::fixed<<std::setprecision(std::max(0,2-e))<<x;
@@ -87,9 +102,9 @@ inline string sf3(double x){
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                    SECTION 2 – GEOMETRY HELPERS                   ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║          2.  GEOMETRY  HELPERS               ║
+// ╚══════════════════════════════════════════════╝
 static inline int sector_from_idx(unsigned ieta,unsigned iphi)
 { if(iphi>=256) return -1; int base=iphi/8; return (ieta<48)?32+base:base; }
 
@@ -108,10 +123,10 @@ inline bool isBadHcalPlate(int,int){ return false; }
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║              SECTION 3 – CENTRALITY TAG DISCOVERY                  ║
-// ╚═══════════════════════════════════════════════════════════════════╝
-using CentList = std::vector<string>;   // e.g. "0_10"
+// ╔══════════════════════════════════════════════╗
+// ║ 3.  CENTRALITY‑TAG DISCOVERY                 ║
+// ╚══════════════════════════════════════════════╝
+using CentList = std::vector<string>;
 CentList discoverSlices(TFile* f)
 {
   std::set<string> tags;
@@ -132,18 +147,18 @@ CentList discoverSlices(TFile* f)
 
 inline fs::path cPath(fs::path base, const string& slice, fs::path sub)
 {
-  if(slice!="Inclusive") base/=("Cent_"+slice);
-  return base/sub;
+  base /= (slice == "Inclusive" ? "noCentralityDep"
+                                : "Cent_" + slice);
+  return base / sub;
 }
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║              SECTION 4 – π0 CUT KEY / PEAK FITTER                  ║
-// ╚═══════════════════════════════════════════════════════════════════╝
-struct CutKey{
-  float E,chi,asy,pLo,pHi; string trigger;
-};
+// ╔══════════════════════════════════════════════╗
+// ║ 4.  π0 CUT KEY / PEAK FITTER                 ║
+// ╚══════════════════════════════════════════════╝
+struct CutKey{ float E,chi,asy,pLo,pHi; string trigger; };
+
 bool decodeInvName(const string& n, CutKey& k)
 {
   std::regex r(R"(mInv_pt([\-0-9\.]+)to([\-0-9\.]+)_E([0-9\.]+)_chi([0-9\.]+)_asy([0-9\.]+)_(.+))");
@@ -151,6 +166,7 @@ bool decodeInvName(const string& n, CutKey& k)
   k.pLo=stof(m[1]); k.pHi=stof(m[2]); k.E=stof(m[3]); k.chi=stof(m[4]); k.asy=stof(m[5]); k.trigger=m[6];
   return true;
 }
+
 std::array<double,8> fitPi0(TH1* h,bool& ok)
 {
   double lo=h->GetXaxis()->GetXmin(), hi=h->GetXaxis()->GetXmax();
@@ -167,25 +183,27 @@ std::array<double,8> fitPi0(TH1* h,bool& ok)
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                    SECTION 5 – SAVE HELPERS                       ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║ 5.  SAVE HELPERS  (with TRACE)               ║
+// ╚══════════════════════════════════════════════╝
 void save1D(TH1* h,const fs::path& p)
 {
+  log::trace("save1D → " + p.string());
   TCanvas c; h->SetStats(0); h->Draw();
   ensure_dir(p.parent_path()); c.SaveAs(p.string().c_str());
 }
 void save2D(TH2* h,const fs::path& p,const char* opt="COLZ")
 {
+  log::trace("save2D → " + p.string());
   TCanvas c; h->SetStats(0); h->Draw(opt);
   ensure_dir(p.parent_path()); c.SaveAs(p.string().c_str());
 }
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║         SECTION 6 – NS MAP CACHE  (generic template)              ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║ 6.  NS MAP CACHE                            ║
+// ╚══════════════════════════════════════════════╝
 template<class MPair> class NSCache{
 public:
   MPair& operator[](const string& k){ return _c[k]; }
@@ -195,14 +213,13 @@ private:
   struct H{ size_t operator()(const string& s)const noexcept{ return std::hash<string>{}(s);} };
   std::unordered_map<string,MPair,H> _c;
 };
-
 struct MapPair{ TH2* n=nullptr,*s=nullptr; };
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                     SECTION 7 – QA BASE CLASS                     ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║ 7.  QA  BASE CLASS                          ║
+// ╚══════════════════════════════════════════════╝
 class QA{
 public:
   QA(string trg, fs::path base, const CentList& c): trig(trg), root(base), slices(c){}
@@ -220,11 +237,11 @@ protected:
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                        SECTION 8 – QA MODULES                     ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║ 8.  QA MODULES                              ║
+// ╚══════════════════════════════════════════════╝
 
-// ————————— π0 QA —————————
+// ——— π0 QA —————————————————————————————————————————
 class Pi0QA : public QA{
 public:
   Pi0QA(string t,fs::path b,const CentList& s,std::ofstream& csv):
@@ -246,26 +263,31 @@ public:
       fs::path out=cPath(root,slice,sub)/(n+".png");
       ensure_dir(out.parent_path());
       TH1* h=static_cast<TH1*>(o);
-      bool ok; auto p=fitPi0(h,ok);
+
+      bool ok=false;
+      std::array<double,8> p{};
+      if(kDoPi0Fit){ p = fitPi0(h, ok); }
+
       TCanvas c; h->SetStats(0); h->Draw();
-      if(ok){ h->GetFunction("f")->SetLineColor(kRed); }
+      if(kDoPi0Fit && ok){ h->GetFunction("f")->SetLineColor(kRed); }
       c.SaveAs(out.string().c_str());
-      if(ok) csv<<trig<<","<<ck.E<<","<<ck.chi<<","<<ck.asy<<","
-                <<ck.pLo<<","<<ck.pHi<<","<<p[0]<<","<<p[1]<<","
-                <<p[2]<<","<<p[3]<<","<<p[4]<<","<<p[5]<<","
-                <<p[6]<<","<<p[7]<<"\n";
+
+      if(kDoPi0Fit && ok){
+        csv<<trig<<","<<ck.E<<","<<ck.chi<<","<<ck.asy<<","
+           <<ck.pLo<<","<<ck.pHi<<","<<p[0]<<","<<p[1]<<","
+           <<p[2]<<","<<p[3]<<","<<p[4]<<","<<p[5]<<","
+           <<p[6]<<","<<p[7]<<"\n";
+      }
     };
 
-    if(sl=="Inclusive") for(auto& s:slices) save(s);
-    else                save(sl);
+    save(sl);
     return true;
   }
 private:
   std::ofstream& csv;
 };
 
-
-// ————————— Detector‑detector correlations —————————
+// ——— Detector–detector correlations ————————————
 class CorrQA : public QA{
 public: using QA::QA;
   bool process(TObject* o) override
@@ -278,14 +300,12 @@ public: using QA::QA;
       fs::path out=cPath(root,slice,"Correlations")/(n+".png");
       save2D(static_cast<TH2*>(o),out);
     };
-    if(sl=="Inclusive") for(auto& s:slices) save(s);
-    else                save(sl);
+    save(sl);
     return true;
   }
 };
 
-
-// ————————— EMCal QA —————————
+// ——— EMCal QA ————————————————————————————————
 class EmcalQA : public QA{
 public: using QA::QA;
   bool process(TObject* o) override
@@ -299,7 +319,6 @@ public: using QA::QA;
       fs::path out=cPath(root,slice,"EMCal")/(n+".png");
       if(etaPhi && o->InheritsFrom(TH2::Class()))
       {
-        // mask bad interface boards
         auto* h=static_cast<TH2*>(o);
         std::unique_ptr<TH2> h2(static_cast<TH2*>(h->Clone()));
         h2->SetDirectory(nullptr); h2->SetStats(0); h2->SetContour(99);
@@ -315,20 +334,19 @@ public: using QA::QA;
       else if(o->InheritsFrom(TH2::Class())) save2D(static_cast<TH2*>(o),out);
       else                                   save1D(static_cast<TH1*>(o),out);
     };
-    if(sl=="Inclusive") for(auto& s:slices) save(s);
-    else                save(sl);
+    save(sl);
     return true;
   }
 };
 
-
-// ————————— HCal QA —————————
+// ——— HCal QA ————————————————————————————————————
 class HcalQA : public QA{
 public: using QA::QA;
   bool process(TObject* o) override
   {
     if(!o->InheritsFrom(TH1::Class())) return false;
-    string n=o->GetName(); bool isI=n.rfind("h_IHCAL_",0)==0, isO=n.rfind("h_OHCAL_",0)==0;
+    string n=o->GetName();
+    bool isI=n.rfind("h_IHCAL_",0)==0, isO=n.rfind("h_OHCAL_",0)==0;
     if(!isI && !isO) return false;
     string sl=sliceKey(n); bool etaPhi=n.find("_EtaPhiMap_")!=string::npos;
 
@@ -351,13 +369,12 @@ public: using QA::QA;
       else if(o->InheritsFrom(TH2::Class())) save2D(static_cast<TH2*>(o),out);
       else                                   save1D(static_cast<TH1*>(o),out);
     };
-    if(sl=="Inclusive") for(auto& s:slices) save(s); else save(sl);
+    save(sl);
     return true;
   }
 };
 
-
-// ————————— sEPD & MBD QA (share NS cache) —————————
+// ——— sEPD & MBD QA (NS combiner) ——————————————
 template<class DERIVED> class NSDetectorQA : public QA{
 public:
   NSDetectorQA(string t,fs::path b,const CentList& s,NSCache<MapPair>& c):
@@ -369,62 +386,88 @@ public:
     string sl=sliceKey(n);
     bool isSouth=n.find("_South_")!=string::npos;
 
-    /* scalar */
+    // A. arrival trace
+    log::trace(string(DERIVED::subdir)+"  slice="+sl+
+               "  hist=\""+n+"\"  south? "+(isSouth?"yes":"no"));
+
+    /* scalar spectra */
     if(!o->InheritsFrom(TH2::Class())){
       auto save=[&](const string& slice){
         fs::path out=cPath(root,slice,DERIVED::subdir)/(n+".png");
         save1D(static_cast<TH1*>(o),out);
       };
-      if(sl=="Inclusive") for(auto& s:slices) save(s); else save(sl);
+      save(sl);
       return true;
     }
 
-    /* map cache */
+    // B. cache bookkeeping
     MapPair& mp=cache[trig+sl];
-    TH2* clone=static_cast<TH2*>(o->Clone()); clone->SetDirectory(nullptr); clone->SetStats(0);
+    TH2* clone=static_cast<TH2*>(o->Clone());
+    clone->SetDirectory(nullptr); clone->SetStats(0);
+
+    log::trace("   clone ptr = "+std::to_string((uintptr_t)clone));
+
     isSouth ? mp.s=clone : mp.n=clone;
+
+    log::trace("   cache state  n="+std::to_string((uintptr_t)mp.n)+
+               "  s="+std::to_string((uintptr_t)mp.s));
+
     if(!cache.ready(trig+sl)) return true;
 
+    // C. both maps present → draw
     MapPair out=cache.pop(trig+sl);
+
+    log::trace("   >> drawing combined canvas for slice "+sl+
+               "  n="+std::to_string((uintptr_t)out.n)+
+               "  s="+std::to_string((uintptr_t)out.s));
+
     auto save=[&](const string& slice){
       fs::path outPng=cPath(root,slice,DERIVED::subdir)/(DERIVED::fileName(trig)+".png");
       TCanvas c("c","",1100,600); c.Divide(2,1,0.01,0.01);
-      c.cd(1); out.s->SetTitle(DERIVED::titleSouth); out.s->Draw("POLY COLZ");
-      c.cd(2); out.n->SetTitle(DERIVED::titleNorth); out.n->Draw("POLY COLZ");
+      c.cd(1); out.s->SetTitle(DERIVED::titleSouth); out.s->Draw(("COL POLZ");
+      c.cd(2); out.n->SetTitle(DERIVED::titleNorth); out.n->Draw(("COL POLZ");
       ensure_dir(outPng.parent_path()); c.SaveAs(outPng.string().c_str());
     };
-    if(sl=="Inclusive") for(auto& s:slices) save(s); else save(sl);
+    save(sl);
     return true;
   }
 protected:
   NSCache<MapPair>& cache;
 };
 
-struct MBDTag{ static bool accept(const string& s){return s.find("MBD")!=string::npos;}
-               static constexpr const char* subdir="MBD";
-               static string fileName(const string& t){return "MBD_Hitmap_NS_"+t;}
-               static constexpr const char* titleSouth="MBD South";
-               static constexpr const char* titleNorth="MBD North"; };
-
-struct sEPDTag{ static bool accept(const string& s){return s.find("sEPD")!=string::npos;}
-                static constexpr const char* subdir="sEPD";
-                static string fileName(const string& t){return "sEPD_Hitmap_NS_"+t;}
-                static constexpr const char* titleSouth="sEPD South";
-                static constexpr const char* titleNorth="sEPD North"; };
+struct MBDTag{
+  // accept only true‑MBD histograms: must contain “MBD” and NOT “sEPD”
+  static bool accept(const string& s)
+  {
+    return s.find("MBD")  != string::npos &&   // MBD present
+           s.find("sEPD") == string::npos;     // but no sEPD substring
+  }
+  static constexpr const char* subdir = "MBD";
+  static string fileName(const string& t){ return "MBD_Hitmap_NS_" + t; }
+  static constexpr const char* titleSouth = "MBD South";
+  static constexpr const char* titleNorth = "MBD North";
+};
+struct sEPDTag{
+  static bool accept(const string& s){return s.find("sEPD")!=string::npos;}
+  static constexpr const char* subdir="sEPD";
+  static string fileName(const string& t){return "sEPD_Hitmap_NS_"+t;}
+  static constexpr const char* titleSouth="sEPD South";
+  static constexpr const char* titleNorth="sEPD North";
+};
 
 using MbdQA  = NSDetectorQA<MBDTag>;
 using SepdQA = NSDetectorQA<sEPDTag>;
 
 
 
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                       SECTION 9 – MAIN DRIVER                     ║
-// ╚═══════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════╗
+// ║ 9.  MAIN DRIVER                              ║
+// ╚══════════════════════════════════════════════╝
 void analyzeRun24auau()
 {
   gStyle->SetOptStat(0);
 
-  log::banner("sPHENIX Run‑24 Au+Au QA – Enhanced Macro");
+  log::banner("sPHENIX Run‑24 Au+Au QA – Enhanced Macro");
 
   std::unique_ptr<TFile> in(TFile::Open(kInputFile.c_str(),"READ"));
   if(!in||in->IsZombie()){ log::err("Cannot open "+kInputFile); return; }
@@ -437,7 +480,7 @@ void analyzeRun24auau()
     log::info(o.str());
   }
 
-  // ─────────────────── Pass 0 catalogue ────────────────────
+  // ─── Pass 0 catalogue ─────────────────────────
   log::banner("Pass 0 – Catalogue");
   fs::path catTxt=fs::path(kOutputBase)/"AllHistogramNames.txt";
   ensure_dir(catTxt.parent_path());
@@ -457,8 +500,8 @@ void analyzeRun24auau()
   }
   log::ok("Histogram list written → "+catTxt.string());
 
-  // ─────────────────── Pass 1 QA ────────────────────────────
-  log::banner("Pass 1 – QA Production");
+  // ─── Pass 1 QA ────────────────────────────────
+  log::banner("Pass 1 – QA Production");
 
   fs::path csvPath=fs::path(kOutputBase)/"InvariantMassSummary.csv";
   ensure_dir(csvPath.parent_path());
@@ -498,6 +541,7 @@ void analyzeRun24auau()
     // histogram loop
     TIter itH(dTrig->GetListOfKeys());
     while(auto* kh=dynamic_cast<TKey*>(itH())){
+      log::trace("Handling ["+trg+"] histogram \""+string(kh->GetName())+"\"");
       TObject* obj=kh->ReadObj();
       if(obj->InheritsFrom(TH1::Class()))
         static_cast<TH1*>(obj)->SetDirectory(nullptr);
@@ -512,7 +556,7 @@ void analyzeRun24auau()
 
   csv.close();
 
-  // ─────────────────── Summary table ────────────────────────
+  // ─── Summary ──────────────────────────────────
   log::banner("Summary");
   std::cout<<term::CLR_BOLD
            <<std::left<<std::setw(20)<<"Trigger"
@@ -525,11 +569,3 @@ void analyzeRun24auau()
 
   log::ok("All outputs under "+kOutputBase);
 }
-
-
-
-// ╔═══════════════════════════════════════════════════════════════════╗
-// ║                             ROOT HOOK                             ║
-// ╚═══════════════════════════════════════════════════════════════════╝
-void run_analyzeRun24auau(){ analyzeRun24auau(); }
-run_analyzeRun24auau();
