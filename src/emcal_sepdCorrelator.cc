@@ -9,6 +9,7 @@
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <fun4all/Fun4AllServer.h>
 #include <phool/getClass.h>
+#include <phool/recoConsts.h>
 
 //––– ROOT & CLHEP ----------------------------------------------------------
 #include <TProfile.h>
@@ -140,7 +141,9 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
     const int tile = tree.GetIntValue(ch, field);   // 0…511 or 999
     if (tile == 999) continue;                      // empty slot
     ++nMapped;
-    m_epdKey[ch] = TowerInfoDefs::encode_epd(tile);
+    const unsigned arm  = (ch >= 384) ? 1 /*North*/ : 0 /*South*/;
+    const unsigned id   = arm * 256 + tile;           // 0…511
+    m_epdKey[ch] = TowerInfoDefs::encode_epd(id);
   }
   const double frac = 100.0 * nMapped / nChan;
   LOG(1, CLR_GREEN, "[InitRun] SEPD mapping: "
@@ -173,9 +176,6 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
 
     if (!monotonic)
       LOG(0, CLR_YELLOW, "[InitRun] WARNING: centrality edges are not strictly increasing!");
-
-    /* reset occupancy counters */
-    m_centOcc.assign(m_centEdges.size() ? m_centEdges.size() - 1 : 0, 0);
   }
 
   LOG(1, CLR_BLUE, "[InitRun] InitRun completed successfully");
@@ -533,7 +533,7 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
         return Fun4AllReturnCodes::ABORTEVENT;
   }
   /* use the arm-sum (South+North) definition that CentralityReco writes */
-  m_centBin = cent->get_centrality_bin(CentralityInfo::PROP::epd_NS);
+  m_centBin = static_cast<int>(cent->get_centile(CentralityInfo::PROP::epd_NS));
     
     
   doMbdQA (activeTrig);
@@ -655,40 +655,16 @@ TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
 
 
 
-TH2Poly* emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
-                                             EpdGeom* geom,
-                                             int arm)   // 0 = South, 1 = North
+TH2F*
+emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
+                                    EpdGeom* /*geom*/, int /*arm*/)
 {
-  auto* h = new TH2Poly();
-  h->SetNameTitle(name.c_str(), ";x (cm);y (cm)");
-  LOG(2, CLR_BLUE, "    ↳ makeEpdHitmap(\"" << name << "\")  arm=" << (arm ? "North" : "South"));
-
-  if (!geom)
-  {
-    LOG(1, CLR_YELLOW, "      [WARN] EpdGeom is nullptr – map left empty");
-    return h;
-  }
-
-  std::size_t nAdded = 0;
-  for (unsigned tile = 0; tile < 256; ++tile)
-  {
-    const unsigned id = arm * 256 + tile;
-
-    const double r_cen   = geom->get_r(id);
-    const double phi_cen = geom->get_phi(id);
-    const double x_cen   = r_cen * std::cos(phi_cen);
-    const double y_cen   = r_cen * std::sin(phi_cen);
-
-    if (std::isnan(x_cen) || std::isnan(y_cen)) continue;
-
-    const double d = 2.0;   // half side length [cm] – tiny square
-    double x[5]{ x_cen - d, x_cen + d, x_cen + d, x_cen - d, x_cen - d };
-    double y[5]{ y_cen - d, y_cen - d, y_cen + d, y_cen + d, y_cen - d };
-
-    h->AddBin(4, x, y);
-    ++nAdded;
-  }
-  LOG(3, CLR_GREEN, "      → " << nAdded << " tile‑bins booked");
+  // 24 × φ bins (15° each), 16 radial rings (tile 0 occupies ring 0)
+  auto* h = new TH2F(name.c_str(),
+                     ";#varphi  [rad];r  [cm]",
+                     24, 0, 2*TMath::Pi(),
+                     16, 0.15, 3.55);
+  h->SetCanExtend(TH1::kAllAxes);   // keeps old “auto‑extend” behaviour
   return h;
 }
 
@@ -793,8 +769,11 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     /* fill hit‑map */
     const std::string hpfx = (arm == 0 ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_");
     for (auto& t : trig)
-      static_cast<TH2Poly*>(qaHistogramsByTrigger[t][hpfx + t])
-          ->Fill(r * std::cos(phi), r * std::sin(phi), w);
+    {
+        const double ph = (phi < 0) ? phi + 2.*M_PI : phi;   // 0…2π
+        static_cast<TH2F*>(qaHistogramsByTrigger[t][hpfx + t])
+            ->Fill(ph, r, w);
+    }
 
     /* Q‑vector */
     const double c2 = std::cos(2 * phi), s2 = std::sin(2 * phi);

@@ -77,7 +77,7 @@ class emcal_sepdCorrelator : public SubsysReco
   // ======================================================================
   void      createHistos_Data();                          // main booker
   TH2Poly*  makeMbdHitmap(const std::string&, const MbdGeom*, int arm);
-  TH2Poly*  makeEpdHitmap(const std::string& name, EpdGeom* geom, int arm);
+  TH2F*     makeEpdHitmap(const std::string& name, EpdGeom* geom, int arm);
 
   // ======================================================================
   // 2) Per‑event helpers (called in process_event)
