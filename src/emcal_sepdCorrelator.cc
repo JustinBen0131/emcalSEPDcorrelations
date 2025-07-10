@@ -98,43 +98,90 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* /*topNode*/)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
-//==========================================================================
-//  InitRun – geometry dependent booking (only once per run)
-//==========================================================================
+//======================================================================
+//  InitRun – geometry‑dependent booking (only once per run)
+//======================================================================
 int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
 {
-  if (m_mapsBooked) return Fun4AllReturnCodes::EVENT_OK;   // already done
+  if (m_mapsBooked) return Fun4AllReturnCodes::EVENT_OK;   // nothing to do
 
-  LOG(1, CLR_GREEN, "[InitRun] geometry is present – booking hit‑maps …");
+  /* ------------------------------------------------------------------ */
+  /* 0.  banner                                                         */
+  /* ------------------------------------------------------------------ */
+  uint64_t run   = recoConsts::instance()->get_uint64Flag("TIMESTAMP", 0);
+  LOG(1, CLR_BLUE, "[InitRun] ------------------------------------------------------------");
+  LOG(1, CLR_BLUE, "[InitRun] Starting InitRun  –  TIMESTAMP = " << run);
+
+  /* ------------------------------------------------------------------ */
+  /* 1.  book geometry‑dependent hit‑maps *once*                         */
+  /* ------------------------------------------------------------------ */
+  LOG(1, CLR_GREEN, "[InitRun] Geometry is present – booking hit‑maps …");
   bookShapeHitMaps(topNode);
   m_mapsBooked = true;
-  // ------------------------------------------------------------------
-  // Use the size of TOWERINFO_CALIB_SEPD that is present **in this run**
-  // ------------------------------------------------------------------
-  m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
-                                                    "TOWERINFO_CALIB_SEPD");
-  if (!m_sepd)
-      throw std::runtime_error("[InitRun] TOWERINFO_CALIB_SEPD not found");
 
-  const std::size_t nChan = m_sepd->size();      // e.g. 512, 768, 1024 …
+  /* ------------------------------------------------------------------ */
+  /* 2.  SEPD channel‑to‑tile mapping                                    */
+  /* ------------------------------------------------------------------ */
+  m_sepd = findNode::getClass<TowerInfoContainer>(
+              topNode, "TOWERINFO_CALIB_SEPD");
+  if (!m_sepd)
+    throw std::runtime_error("[InitRun] FATAL: TOWERINFO_CALIB_SEPD not found");
+
+  const std::size_t nChan = m_sepd->size();        // e.g. 768
+  m_epdKey.assign(nChan, std::numeric_limits<unsigned>::max());
+
   const std::string mapName = "SEPD_CHANNELMAP";
   const std::string field   = "epd_channel_map";
-
-  m_epdKey.assign(nChan, std::numeric_limits<unsigned>::max());  // resize
-
   CDBTTree tree{ CDBInterface::instance()->getUrl(mapName) };
+
+  std::size_t nMapped = 0;
   for (std::size_t ch = 0; ch < nChan; ++ch)
-    {
-      const int tile = tree.GetIntValue(ch, field);   // may be 999 → empty
-      if (tile == 999) continue;
-      m_epdKey[ch] = TowerInfoDefs::encode_epd(tile); // always safe
-    }
+  {
+    const int tile = tree.GetIntValue(ch, field);   // 0…511 or 999
+    if (tile == 999) continue;                      // empty slot
+    ++nMapped;
+    m_epdKey[ch] = TowerInfoDefs::encode_epd(tile);
+  }
+  const double frac = 100.0 * nMapped / nChan;
+  LOG(1, CLR_GREEN, "[InitRun] SEPD mapping: "
+         << nMapped << " / " << nChan << " channels mapped ("
+         << std::fixed << std::setprecision(1) << frac << "%)");
 
-    LOG(1, CLR_GREEN, "[InitRun] SEPD: container has "
-                       << nChan << " channels, m_epdKey filled");
+  if (frac < 90.0)
+    LOG(0, CLR_YELLOW, "[InitRun] WARNING: < 90 % of SEPD channels mapped – check the channel map!");
 
+  /* ------------------------------------------------------------------ */
+  /* 3.  centrality‑edge sanity check                                    */
+  /* ------------------------------------------------------------------ */
+  if (m_centEdges.empty())
+  {
+    LOG(0, CLR_YELLOW, "[InitRun] WARNING: m_centEdges vector is EMPTY – "
+                       "no centrality binning will be applied");
+  }
+  else
+  {
+    std::ostringstream edgeMsg;
+    for (std::size_t i = 0; i < m_centEdges.size(); ++i)
+      edgeMsg << (i ? "," : "[") << m_centEdges[i];
+    edgeMsg << "]";
+    LOG(1, CLR_CYAN, "[InitRun] Centrality edges read: " << edgeMsg.str()
+            << "  (" << (m_centEdges.size() - 1) << " bins)");
+
+    bool monotonic = true;
+    for (std::size_t i = 1; i < m_centEdges.size(); ++i)
+      if (m_centEdges[i] <= m_centEdges[i - 1]) { monotonic = false; break; }
+
+    if (!monotonic)
+      LOG(0, CLR_YELLOW, "[InitRun] WARNING: centrality edges are not strictly increasing!");
+
+    /* reset occupancy counters */
+    m_centOcc.assign(m_centEdges.size() ? m_centEdges.size() - 1 : 0, 0);
+  }
+
+  LOG(1, CLR_BLUE, "[InitRun] InitRun completed successfully");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 //==========================================================================
 //  bookShapeHitMaps – hex (MBD) & polar (sEPD) hit‑maps, one per trigger
@@ -856,14 +903,27 @@ void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig
 }
 
 /* ----------------------------------------------------------------------
- * doPi0QA – γγ invariant‑mass spectra (global + centrality‑tagged)
+ * doPi0QA – γγ invariant‑mass spectra (global + centrality‑tagged)
+ *            (improved verbosity)
  * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 {
-  /* ---------- early exits ------------------------------------------------ */
-  if (!m_clus || m_clus->size() < 2) return;
+  /* ------------------------------------------------------------------ */
+  /* 0)  Entrance message                                               */
+  /* ------------------------------------------------------------------ */
+  LOG(3, CLR_BLUE,
+      "[doPi0QA] entered  – "
+      << (m_clus ? m_clus->size() : 0)
+      << " EMC clusters available in this event");
 
-  /* ---------- build a filtered cluster cache ---------------------------- */
+  /* ---------- early exits ------------------------------------------- */
+  if (!m_clus || m_clus->size() < 2)
+  {
+    LOG(4, CLR_YELLOW, "    [doPi0QA] < 2 clusters – nothing to do");
+    return;
+  }
+
+  /* ---------- build a filtered cluster cache ------------------------ */
   const float EminMin = *std::min_element(m_minClusE.begin(), m_minClusE.end());
   const float chi2Max = *std::max_element(m_chi2Cuts.begin(), m_chi2Cuts.end());
   const float asymMax = *std::max_element(m_asymCuts.begin(), m_asymCuts.end());
@@ -871,10 +931,14 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
   struct Clu { TLorentzVector v; float E, pt, chi; };
   std::vector<Clu> cl; cl.reserve(m_clus->size());
 
+  std::size_t nRejectedE   = 0;
+  std::size_t nRejectedChi = 0;
+
   for (auto [it, end] = m_clus->getClusters(); it != end; ++it)
   {
     const RawCluster* c = it->second;
-    if (c->get_energy() < EminMin || c->get_chi2() > chi2Max) continue;
+    if (c->get_energy() < EminMin) { ++nRejectedE;   continue; }
+    if (c->get_chi2()  > chi2Max)  { ++nRejectedChi; continue; }
 
     const auto eVec = RawClusterUtility::GetEVec(*c, {m_vx, m_vy, m_vz});
     cl.push_back({{}, static_cast<float>(c->get_energy()),
@@ -885,20 +949,38 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
                              eVec.phi(),
                              cl.back().E);
   }
-  if (cl.size() < 2) return;
 
-  /* ---------- map percentile → {lo,hi} tag ------------------------------ */
-    int lo = 0, hi = 100;
-    if (m_centBin >= 0)
-      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-        if (m_centBin >= m_centEdges[i] &&
-            m_centBin <  m_centEdges[i + 1])
-        { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+  if (cl.size() < 2)
+  {
+    LOG(4, CLR_YELLOW,
+        "    [doPi0QA] Cluster filtering left "
+        << cl.size() << " usable clusters (rejected "
+        << nRejectedE << " for E, " << nRejectedChi
+        << " for χ²) – aborting");
+    return;
+  }
+
+  LOG(3, CLR_GREEN,
+      "    [doPi0QA] kept " << cl.size() << " clusters  ("
+      << nRejectedE << " rejected by E, "
+      << nRejectedChi << " rejected by χ²)");
+
+  /* ---------- determine centrality slice ---------------------------- */
+  int lo = 0, hi = 100;
+  if (m_centBin >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] &&
+          m_centBin <  m_centEdges[i + 1])
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
 
   std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;   // "_20_40"
   const std::string centTag = tagSS.str();
 
-  /* ---------- loop over cluster pairs ----------------------------------- */
+  LOG(4, CLR_CYAN,
+      "    [doPi0QA] centrality = " << m_centBin
+      << "%  → slice " << lo << "–" << hi << '%');
+
+  /* ---------- loop over cluster pairs ------------------------------- */
   const std::size_t totalPairs = cl.size() * (cl.size() - 1) / 2;
   std::atomic<std::size_t> pairCnt{0};
   constexpr std::size_t reportEvery = 50'000;
@@ -945,7 +1027,7 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
         }
       };
 
-      /* ---- inclusive (all‑pT) spectra -------------------------------- */
+      /* ---- inclusive (all‑pT) spectra ------------------------------ */
       for (float Emin : m_minClusE)
       for (float chiMx: m_chi2Cuts)
       for (float aMx  : m_asymCuts)
@@ -955,19 +1037,22 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 
         bool pass = (c1.E >= Emin && c2.E >= Emin) &&
                     (c1.chi <= chiMx && c2.chi <= chiMx) &&
-                    (asym <= aMx);
+                    (asym   <= aMx);
 
-        if (!pass) { if (!pass) { if (c1.E < Emin || c2.E < Emin) ++st.failE;
-                                  else if (c1.chi > chiMx || c2.chi > chiMx) ++st.failChi;
-                                  else ++st.failAsy; }
-                      continue; }
+        if (!pass)
+        {
+          if      (c1.E < Emin || c2.E < Emin) ++st.failE;
+          else if (c1.chi > chiMx || c2.chi > chiMx) ++st.failChi;
+          else                                     ++st.failAsy;
+          continue;
+        }
 
         const float mInv = (c1.v + c2.v).M();
         fillBoth(invKey(-1,-1,Emin,chiMx,aMx), trig, mInv);
         ++st.passed;
       }
 
-      /* ---- pT‑binned spectra ---------------------------------------- */
+      /* ---- pT‑binned spectra -------------------------------------- */
       for (const auto& pb : m_ptBins)
       {
         const float ptLo = pb.first, ptHi = pb.second;
@@ -983,12 +1068,15 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 
           bool pass = (c1.E >= Emin && c2.E >= Emin) &&
                       (c1.chi <= chiMx && c2.chi <= chiMx) &&
-                      (asym <= aMx);
+                      (asym   <= aMx);
 
-          if (!pass) { if (c1.E < Emin || c2.E < Emin) ++st.failE;
-                       else if (c1.chi > chiMx || c2.chi > chiMx) ++st.failChi;
-                       else ++st.failAsy;
-                       continue; }
+          if (!pass)
+          {
+            if      (c1.E < Emin || c2.E < Emin) ++st.failE;
+            else if (c1.chi > chiMx || c2.chi > chiMx) ++st.failChi;
+            else                                     ++st.failAsy;
+            continue;
+          }
 
           const float mInv = (c1.v + c2.v).M();
           fillBoth(invKey(ptLo,ptHi,Emin,chiMx,aMx), trig, mInv);
@@ -996,15 +1084,18 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
         }
       }
 
-      /* ---- progress counter ----------------------------------------- */
-#ifdef _OPENMP
-      if ((++pairCnt % reportEvery) == 0 && omp_get_thread_num() == 0)
-#else
+      /* ---- periodic progress ticker -------------------------------- */
       if ((++pairCnt % reportEvery) == 0)
+      {
+#ifdef _OPENMP
+        if (omp_get_thread_num() == 0)
 #endif
-        std::cout << CLR_CYAN << "    [doPi0QA] processed "
-                  << pairCnt << " / " << totalPairs << " pairs\r"
-                  << CLR_RESET << std::flush;
+          std::cout << CLR_CYAN << "    [doPi0QA] processed "
+                    << pairCnt << " / " << totalPairs << " pairs ("
+                    << std::fixed << std::setprecision(1)
+                    << 100.0 * pairCnt / totalPairs << "%)\r"
+                    << CLR_RESET << std::flush;
+      }
     } // end pair loop
 
     /* ---- merge local stats ----------------------------------------- */
@@ -1022,6 +1113,15 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
       }
     }
   } // end parallel region
+
+  /* ---------- summary & exit ---------------------------------------- */
+  const std::size_t processedPairs = pairCnt.load();
+  LOG(3, CLR_GREEN,
+      "    [doPi0QA] completed – "
+      << processedPairs << " / " << totalPairs
+      << " pairs processed (" << std::fixed << std::setprecision(1)
+      << (100.0 * processedPairs / totalPairs) << "%)"
+      << " – centrality slice " << lo << "–" << hi << '%');
 }
 
 
@@ -1031,78 +1131,121 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
  * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig)
 {
-  const double cemc  = m_calo["CEMC"].sumE;
+  /* —— 0. Basic book‑keeping ———————————————————————————————— */
+  static std::uint64_t callCtr = 0;   // stays local to this TU
+  ++callCtr;
+  LOG(3, CLR_BLUE, "[fillCorrelations] call #" << callCtr
+                          << "  (triggers=" << trig.size() << ")  BEGIN");
+
+  const double cemc  = m_calo["CEMC" ].sumE;
   const double ihcal = m_calo["IHCAL"].sumE;
   const double ohcal = m_calo["OHCAL"].sumE;
 
-  /* ----- determine which {lo,hi} slice this event belongs to ---------- */
-    int lo = 0, hi = 100;                                    // fallback
-    if (m_centBin >= 0)
-    {
-      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-        if (m_centBin >= m_centEdges[i] &&
-            m_centBin <  m_centEdges[i + 1])
-        {
-          lo = m_centEdges[i];
-          hi = m_centEdges[i + 1];
-          break;
-        }
-    }
-  std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;
-  const std::string tag = tagSS.str();                     // e.g. "_10_20"
+  /* —— 1. Determine centrality slice this event belongs to ———————— */
+  int lo = 0, hi = 100;                      // default = ‘all events’
+  if (m_centBin >= 0)
+  {
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+  }
+  const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
 
-  /* --------------------------------------------------------------------
-   * loop over all active triggers and fill both histogram sets
-   * ------------------------------------------------------------------ */
+  LOG(4, CLR_CYAN, "    centrality bin = " << m_centBin
+                       << "  → slice " << lo << "–" << hi << " %");
+
+  /* —— 2. Auxiliary lambda that *safely* writes to TH2F ——————————— */
+  auto safeFill = [&](auto* obj, double x, double y,
+                      const std::string& hName, const std::string& trg)
+  {
+    if (!obj)
+    {
+      LOG(1, CLR_YELLOW, "      [WARN] histogram '" << hName
+                               << "' missing for trigger '" << trg << '\'');
+      return false;
+    }
+    static_cast<TH2F*>(obj)->Fill(x, y);
+    return true;
+  };
+
+  /* counters for diagnostic summary */
+  std::unordered_map<std::string, std::size_t> binsFilled;
+
+  /* —— 3. Loop over every *active* trigger ———————————————— */
   for (const auto& t : trig)
   {
     auto& H = qaHistogramsByTrigger[t];
 
-    /* ---- 2.1  arm‑matched histos ----------------------------------- */
-    static_cast<TH2F*>(H["h_SEPD_S_vs_CEMC_South"])
-        ->Fill(m_sepdQ_arm[0], m_cemcEt_arm[0]);
-    static_cast<TH2F*>(H["h_SEPD_N_vs_CEMC_North"])
-        ->Fill(m_sepdQ_arm[1], m_cemcEt_arm[1]);
+    /* — 3.1 arm‑matched maps —————————————————————— */
+    binsFilled[t] += safeFill(H["h_SEPD_S_vs_CEMC_South"], m_sepdQ_arm[0],
+                              m_cemcEt_arm[0],
+                              "h_SEPD_S_vs_CEMC_South", t);
+    binsFilled[t] += safeFill(H["h_SEPD_N_vs_CEMC_North"], m_sepdQ_arm[1],
+                              m_cemcEt_arm[1],
+                              "h_SEPD_N_vs_CEMC_North", t);
 
-    /* ---- 2.2  global (all‑events) histos --------------------------- */
-    static_cast<TH2F*>(H["h_SEPD_vs_CEMC"])->Fill(m_sepdQ,  cemc);
-    static_cast<TH2F*>(H["h_SEPD_vs_IHCAL"])->Fill(m_sepdQ,  ihcal);
-    static_cast<TH2F*>(H["h_SEPD_vs_OHCAL"])->Fill(m_sepdQ,  ohcal);
-    static_cast<TH2F*>(H["h_SEPD_vs_MBD"]  )->Fill(m_sepdQ,  m_mbdQ);
+    /* — 3.2 global (all events) maps ————————————— */
+    binsFilled[t] += safeFill(H["h_SEPD_vs_CEMC" ], m_sepdQ, cemc ,
+                              "h_SEPD_vs_CEMC", t);
+    binsFilled[t] += safeFill(H["h_SEPD_vs_IHCAL"], m_sepdQ, ihcal,
+                              "h_SEPD_vs_IHCAL", t);
+    binsFilled[t] += safeFill(H["h_SEPD_vs_OHCAL"], m_sepdQ, ohcal,
+                              "h_SEPD_vs_OHCAL", t);
+    binsFilled[t] += safeFill(H["h_SEPD_vs_MBD"  ], m_sepdQ, m_mbdQ,
+                              "h_SEPD_vs_MBD", t);
 
-    static_cast<TH2F*>(H["h_MBD_vs_CEMC"] )->Fill(m_mbdQ,   cemc);
-    static_cast<TH2F*>(H["h_MBD_vs_IHCAL"])->Fill(m_mbdQ,   ihcal);
-    static_cast<TH2F*>(H["h_MBD_vs_OHCAL"])->Fill(m_mbdQ,   ohcal);
+    binsFilled[t] += safeFill(H["h_MBD_vs_CEMC" ], m_mbdQ, cemc ,
+                              "h_MBD_vs_CEMC", t);
+    binsFilled[t] += safeFill(H["h_MBD_vs_IHCAL"], m_mbdQ, ihcal,
+                              "h_MBD_vs_IHCAL", t);
+    binsFilled[t] += safeFill(H["h_MBD_vs_OHCAL"], m_mbdQ, ohcal,
+                              "h_MBD_vs_OHCAL", t);
 
-    /* ---- 2.3  centrality‑binned clones ----------------------------- */
-    auto tryFill = [&](const std::string& base,
+    /* — 3.3 centrality‑tagged clones ———————————— */
+    auto tryCent = [&](const std::string& base,
                        double x, double y)
     {
-      const std::string key = base + tag + '_' + t;   // matches booking
-      auto it = H.find(key);
-      if (it != H.end()) static_cast<TH2F*>(it->second)->Fill(x, y);
+      const std::string hkey = base + tag + '_' + t;
+      auto it = H.find(hkey);
+      if (it == H.end()) return false;
+      static_cast<TH2F*>(it->second)->Fill(x, y);
+      return true;
     };
 
-    tryFill("h_SEPD_vs_CEMC", m_sepdQ, cemc);
-    tryFill("h_SEPD_vs_IHCAL",m_sepdQ, ihcal);
-    tryFill("h_SEPD_vs_OHCAL",m_sepdQ, ohcal);
-    tryFill("h_SEPD_vs_MBD",  m_sepdQ, m_mbdQ);
+    binsFilled[t] += tryCent("h_SEPD_vs_CEMC",  m_sepdQ, cemc);
+    binsFilled[t] += tryCent("h_SEPD_vs_IHCAL", m_sepdQ, ihcal);
+    binsFilled[t] += tryCent("h_SEPD_vs_OHCAL", m_sepdQ, ohcal);
+    binsFilled[t] += tryCent("h_SEPD_vs_MBD",   m_sepdQ, m_mbdQ);
 
-    tryFill("h_MBD_vs_CEMC",  m_mbdQ,  cemc);
-    tryFill("h_MBD_vs_IHCAL", m_mbdQ,  ihcal);
-    tryFill("h_MBD_vs_OHCAL", m_mbdQ,  ohcal);
+    binsFilled[t] += tryCent("h_MBD_vs_CEMC",   m_mbdQ, cemc);
+    binsFilled[t] += tryCent("h_MBD_vs_IHCAL",  m_mbdQ, ihcal);
+    binsFilled[t] += tryCent("h_MBD_vs_OHCAL",  m_mbdQ, ohcal);
 
-    tryFill("h_SEPD_S_vs_CEMC_South", m_sepdQ_arm[0], m_cemcEt_arm[0]);
-    tryFill("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1], m_cemcEt_arm[1]);
+    binsFilled[t] += tryCent("h_SEPD_S_vs_CEMC_South", m_sepdQ_arm[0],
+                             m_cemcEt_arm[0]);
+    binsFilled[t] += tryCent("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1],
+                             m_cemcEt_arm[1]);
+  } // trigger loop
+
+  /* —— 4. Human‑readable one‑line summary ——————————————————— */
+  LOG(3, CLR_GREEN,
+      "    ΣE(CEMC)=" << cemc
+      << "  ΣE(IHCAL)=" << ihcal
+      << "  ΣE(OHCAL)=" << ohcal
+      << "  ΣQ(MBD)="   << m_mbdQ
+      << "  ΣQ(sEPD)="  << m_sepdQ
+      << "  slice="     << lo << "–" << hi << " %");
+
+  if (Verbosity() >= 4)
+  {
+    for (const auto& [trg, n] : binsFilled)
+      LOG(4, CLR_CYAN, "      trigger '" << trg
+                         << "': filled " << n << " correlation‑bins");
   }
 
-    LOG(3, CLR_BLUE,
-        "  [fillCorrelations] ΣE(CEMC)=" << cemc
-        << "  ΣE(IHCAL)="       << ihcal
-        << "  ΣE(OHCAL)="       << ohcal
-        << "  cent="            << m_centBin
-        << "%  slice="          << lo << "–" << hi << '%');
+  LOG(3, CLR_BLUE, "[fillCorrelations] call #" << callCtr << "  END");
 }
+
 
 
 //==========================================================================

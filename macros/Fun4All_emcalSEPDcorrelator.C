@@ -151,34 +151,15 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   trigInfo->Verbosity(verbose ? 1 : 0);
   se->registerSubsystem(trigInfo);
     
-  // ------------------------------------------------------------------
-  // low‑level detector reconstruction (creates raw tower/PMT containers)
-  // ------------------------------------------------------------------
-  auto epdreco  = new EpdReco();          // fills TOWERINFO_CALIB_SEPD   + EpdGeom
-  auto mbdreco  = new MbdReco();          // fills MbdPmtContainer        + MbdGeom
-  auto gvertex  = new GlobalVertexReco(); // fills GlobalVertexMap
-
-  se->registerSubsystem(epdreco);
-  se->registerSubsystem(mbdreco);
-  se->registerSubsystem(gvertex);
-
-  // ------------------------------------------------------------------
-  // high‑level reconstruction (needs the detectors above)
-  // ------------------------------------------------------------------
-  auto epreco = new EventPlaneReco();
-  epreco->set_sepd_epreco(true);          // tell it to build sEPD Q‑vectors
-  se->registerSubsystem(epreco);
-
-  // optional – tag minimum‑bias events based on sEPD + MBD sums
   auto mbclass = new MinimumBiasClassifier();
-  mbclass->Verbosity(verbose ? 1 : 0);
+  mbclass->Verbosity(0);
   se->registerSubsystem(mbclass);
 
   // 3b) Your analysis module
   auto* correl = new emcal_sepdCorrelator(outRoot);
   correl->setVzCut(10.);
   correl->enableVzCut(true);
-  correl->setVerbose(4);
+  correl->setVerbose(10);
   se->registerSubsystem(correl);
 
   //--------------------------------------------------------------------
