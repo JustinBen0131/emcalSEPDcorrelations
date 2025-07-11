@@ -1291,6 +1291,24 @@ std::string emcal_sepdCorrelator::statKey(float ptLo, float ptHi,
 
 
 // ----------------------------------------------------------------------
+// Return the highest transverse energy of the jets in a container
+// ----------------------------------------------------------------------
+float
+emcal_sepdCorrelator::getMaxJetEt(const JetContainer* jets) const
+{
+  if (!jets) return 0.f;
+
+  float maxEt = 0.f;
+  for (auto [it,end] = jets->getJets(); it != end; ++it)
+  {
+    const float et = static_cast<float>(it->second->get_et());
+    if (et > maxEt) maxEt = et;
+  }
+  return maxEt;
+}
+
+
+// ----------------------------------------------------------------------
 // Fill the jet QA histograms for this event
 // ----------------------------------------------------------------------
 int
