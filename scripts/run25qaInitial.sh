@@ -1,166 +1,180 @@
 #!/usr/bin/env bash
 ###############################################################################
-#  run25qaInitial.sh  –  Run-25 Au+Au JET-DST quick QA  (trigger census edition)
+#  run25qaInitial.sh – Run‑25 Au+Au JET‑DST quick QA
+#                     (runtime cut + trigger census & matrix + cut‑flow)
 #
-#  • Builds run25auauCurrentDstRuns.txt from *.list inside dst_list/
-#  • For each run queries DAQ replica for runtime, GL1-event count and all
-#    GL1 triggers (with their ‘scaled’ value).
-#  • Produces two tables:
-#       1) per-run summary (identical to previous behaviour)
-#       2) trigger census:
-#            TriggerName | ON  | OFF | ABSENT
-#         where  ON   = scaled > 0
-#                OFF  = scaled = -1   (trigger deliberately off)
-#                ABSENT = no row for that trigger in given run
+#  ① Builds run25auauCurrentDstRuns.txt from *.list in $DST_LIST_DIR
+#  ② Per run queries DAQ replica for
+#       • runtime      := ertimestamp – brtimestamp   [ s ]
+#       • GL1 evt      := Σ( lastevent–firstevent+1 ) in *.evt
+#       • every GL1 trigger’s “scaled” value
+#  ③ Prints
+#       • per‑run summary
+#       • cut‑flow table  ( ≥5 min vs <5 min )
+#       • list of <5 min runs
+#       • trigger census  (ON|OFF|ABSENT)
+#       • run × trigger matrix (✔/✖/–)
 #
-#  2025-07-11
+#  2025‑07‑11   –   sPHENIX offline QA utilities
 ###############################################################################
-set -euo pipefail
-IFS=$'\n\t'
-shopt -s nullglob
+set -o errexit -o nounset -o pipefail
+IFS=$'\n\t' ; shopt -s nullglob
 
 ########################  USER SETTINGS  ######################################
 DST_LIST_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/dst_list"
 RUN_LIST_FILE="run25auauCurrentDstRuns.txt"
-MIN_RUNTIME=300            # 5 min  (seconds)
+MIN_RUNTIME=300            # 5 min
 ###############################################################################
 
 ########################  COLOUR HELPERS  #####################################
 ESC=$'\e['
-RED=${ESC}0\;31m; YEL=${ESC}1\;33m; GRN=${ESC}0\;32m; BLU=${ESC}1\;34m; RST=${ESC}0m
+RED=${ESC}0\;31m ; YEL=${ESC}1\;33m ; GRN=${ESC}0\;32m ; BLU=${ESC}1\;34m ; RST=${ESC}0m
 say()   { printf "${BLU}[STEP]${RST} %s\n" "$*"; }
 good()  { printf "${GRN}[ OK ]${RST} %s\n"  "$*"; }
 warn()  { printf "${YEL}[WARN]${RST} %s\n" "$*"; }
 fatal() { printf "${RED}✘ %s${RST}\n"     "$*" >&2; exit 2; }
-
 trap 'fatal "Script aborted (line $LINENO) – check previous messages."' ERR
 
-########################  PREREQUISITES  ######################################
+########################  BINARIES & HELPERS  #################################
 command -v psql   >/dev/null || fatal "psql not found in \$PATH"
-command -v column >/dev/null || fatal "column (util-linux) missing"
-PSQL=(psql -h sphnxdaqdbreplica -d daq -At -F $'\t' -q)
+command -v column >/dev/null || fatal "`column` (util‑linux) missing"
+command -v bc     >/dev/null || fatal "`bc` not found – install bc"
 
-"${PSQL[@]}" -c "SELECT 1;" &>/dev/null \
-  || fatal "Cannot reach DB – check network / Kerberos / .pgpass"
+readonly PSQL=(psql -h sphnxdaqdbreplica -d daq -At -F $'\t' -q)
+
+# --- run SQL, always exit 0, return rows ------------------------------------
+db() { "${PSQL[@]}" -c "$1" 2>/dev/null || true; }
+
+# --- numeric or zero (prevents (( … )) crashes) -----------------------------
+num_or_zero() {
+  [[ $1 =~ ^-?[0-9]+$ ]] && printf '%s' "$1" || printf '0'
+}
+
+"${PSQL[@]}" -c 'SELECT 1;' &>/dev/null || \
+  fatal "Cannot reach DAQ DB – check network / Kerberos / .pgpass"
 good "DB connectivity OK."
 
 ########################  1. BUILD RUN LIST  ##################################
-say "Scanning $DST_LIST_DIR for JET-DST .list files"
-
+say "Scanning $DST_LIST_DIR for JET‑DST .list files"
 runs=()
 for f in "$DST_LIST_DIR"/{DST_JET,dst_jet}-*.list; do
   bn=${f##*/}; run=${bn#*-}; run=${run%.list}
   [[ $run =~ ^[0-9]{8}$ ]] && runs+=("$run") || warn "Ignored odd file: $bn"
 done
-((${#runs[@]})) || fatal "No valid JET-DST .list files found."
-
+((${#runs[@]})) || fatal "No valid JET‑DST .list files found."
 printf '%s\n' "${runs[@]}" | sort -u >"$RUN_LIST_FILE"
 good "Run list saved to $RUN_LIST_FILE  ( $(wc -l <"$RUN_LIST_FILE") runs )"
 
 ########################  2. MAIN LOOP  #######################################
-say "Starting per-run queries …"
+say "Starting per‑run queries …"
 
-header=$'runNumber\trunTime[s]\tGL1_evt\t<5min\tTriggers_ON(scaled)\n'
+header=$'runNumber\trunTime[s]\tGL1_evt\tON\tOFF\t<5min\tON_triggers\tOFF_triggers\n'
 rows=()
-shortCnt=0; totalTime=0; totalEvt=0
 
-# --- trigger census structures ---------------------------------------------
-declare -A trigON   # how many runs have trigger scaled>0
-declare -A trigOFF  # how many runs have trigger scaled=-1
-declare -A trigABS  # how many runs *lack* that trigger row
+declare -A onCnt offCnt absCnt status              # trigger meta
+declare -a droppedRuns
+totalTime=0 totalEvt=0 shortCnt=0 idx=0
 
-# helper: safe increment for associative arrays with “set -u”
-inc() { local -n A=$1; local k=$2; A["$k"]=$(( ${A["$k"]:-0} + 1 )); }
-
-idx=0
 while read -r run; do
   ((++idx))
   say "[RUN $idx] Processing run $run"
 
-  # ---------- runtime -------------------------------------------------------
-  sql_rt="SELECT COALESCE(FLOOR(EXTRACT(EPOCH FROM (ertimestamp - brtimestamp)))::INT,0)
-          FROM run WHERE runnumber=$run;"
-  echo "[SQL] ${sql_rt//[$'\n\t']/ }"
-  runtime=$("${PSQL[@]}" -c "$sql_rt" | tr -d '[:space:]')
-  [[ -z $runtime ]] && runtime=0
-  (( runtime < MIN_RUNTIME )) && { short="YES"; ((shortCnt++)); } || short=""
+  # ---------- runtime (s) ---------------------------------------------------
+  runtime_raw=$(db "SELECT FLOOR(EXTRACT(EPOCH FROM (ertimestamp-brtimestamp)))::INT
+                    FROM run WHERE runnumber=$run;")
+  runtime=$(num_or_zero "${runtime_raw//[[:space:]]/}")
+  if (( runtime < MIN_RUNTIME )); then
+    short='YES'; droppedRuns+=("$run"); ((shortCnt++))
+  else
+    short=''
+  fi
 
   # ---------- GL1 physics events -------------------------------------------
-  sql_evt="SELECT COALESCE(SUM(lastevent-firstevent+1),0)::BIGINT
-           FROM filelist
-           WHERE runnumber=$run
-             AND filename LIKE '%GL1_physics_gl1daq%.evt';"
-  echo "[SQL] ${sql_evt//[$'\n\t']/ }"
-  gl1evt=$("${PSQL[@]}" -c "$sql_evt" | tr -d '[:space:]')
-  [[ -z $gl1evt ]] && gl1evt=0
+  evt_raw=$(db "SELECT COALESCE(SUM(lastevent-firstevent+1),0)::BIGINT
+                FROM filelist
+                WHERE runnumber=$run
+                  AND filename LIKE '%GL1_physics_gl1daq%.evt';")
+  gl1evt=$(num_or_zero "${evt_raw//[[:space:]]/}")
 
-  # ---------- triggers ------------------------------------------------------
-  sql_trig="SELECT t.triggername, s.scaled
-            FROM gl1_scalers s
-            JOIN gl1_triggernames t
-              ON s.index=t.index
-             AND s.runnumber BETWEEN t.runnumber AND t.runnumber_last
-            WHERE s.runnumber=$run;"
-  echo "[SQL] ${sql_trig//[$'\n\t']/ }"
-  mapfile -t trgRows < <("${PSQL[@]}" -c "$sql_trig")
+  # ---------- trigger scalers ----------------------------------------------
+  mapfile -t trgRows < <(db "SELECT t.triggername, s.scaled
+                             FROM gl1_scalers s
+                             JOIN gl1_triggernames t
+                               ON s.index=t.index
+                              AND s.runnumber BETWEEN t.runnumber AND t.runnumber_last
+                             WHERE s.runnumber=$run;")
 
-  # track which triggers appeared at all for ABSENT counting
-  declare -A seenInRun=()
-
-  trigStr=""
+  declare -A seen=(); onList=(); offList=()
   for row in "${trgRows[@]}"; do
-    trig=${row%%$'\t'*}; scaled=${row##*$'\t'}
-    seenInRun["$trig"]=1
-    if [[ $scaled =~ ^-?[0-9]+$ ]]; then
-      case $scaled in
-        ''|*[!0-9-]*) ;;  # non-numeric, ignore
-        *[!0-9]* )      ;; # safety
-        *)
-          if (( scaled > 0 )); then
-            trigStr+="${trig}(${scaled}),"
-            inc trigON  "$trig"
-          elif (( scaled == -1 )); then
-            inc trigOFF "$trig"
-          fi
-          ;;
-      esac
+    IFS=$'\t' read -r trig scaled <<<"$row"
+    seen["$trig"]=1
+    if [[ $scaled =~ ^-?[0-9]+$ ]] && (( scaled > 0 )); then
+      status["$run|$trig"]="✔"; (( onCnt["$trig"]++ ))
+      onList+=("${trig}(${scaled})")
+    else
+      status["$run|$trig"]="✖"; (( offCnt["$trig"]++ ))
+      offList+=("$trig")
     fi
   done
-  # mark absences
-  for trig in "${!trigON[@]}" "${!trigOFF[@]}"; do
-    [[ -n ${seenInRun["$trig"]+set} ]] || inc trigABS "$trig"
+  # any trigger not seen this run but observed elsewhere → ABSENT
+  for t in "${!onCnt[@]}" "${!offCnt[@]}"; do
+    [[ ${seen[$t]+x} ]] || { status["$run|$t"]="–"; (( absCnt["$t"]++ )); }
   done
-  trigStr=${trigStr%,}
 
-  # ---------- accumulate totals --------------------------------------------
   totalTime=$(( totalTime + runtime ))
   totalEvt=$(( totalEvt  + gl1evt ))
-  rows+=( "$run\t$runtime\t$gl1evt\t$short\t$trigStr" )
+
+  rows+=("$run\t$runtime\t$gl1evt\t${#onList[@]}\t${#offList[@]}\t$short\t\
+$(IFS=,;echo "${onList[*]}")\t$(IFS=,;echo "${offList[*]}")")
 done <"$RUN_LIST_FILE"
 
-########################  3. PER-RUN TABLE ####################################
-echo -e "\n${GRN}========== Run-25 Jet-DST Per-Run Summary ==========${RST}"
+########################  3. PER‑RUN SUMMARY  #################################
+echo -e "\n${GRN}==================== Per‑Run Summary ====================${RST}"
 printf '%s' "$header"
 printf '%s\n' "${rows[@]}" | column -t -s $'\t'
 
-########################  4. TRIGGER CENSUS ###################################
-echo -e "\n${GRN}========== Trigger Census (per ${#rows[@]} runs) ==========${RST}"
+########################  4. CUT‑FLOW (runtime)  ##############################
+passRuns=$(( ${#runs[@]} - shortCnt ))
+passTime=0 passEvt=0
+for row in "${rows[@]}"; do
+  IFS=$'\t' read -r _run rt ev _ _ shortFlag _ _ <<<"$row"
+  [[ $shortFlag == YES ]] && continue
+  (( passTime += rt, passEvt += ev ))
+done
+
+echo -e "\n${GRN}==================== Cut‑flow (runtime) ===================${RST}"
+printf 'Stage\tRuns\tEvents\tRuntime[h]\n'
+printf 'Raw  \t%d\t%d\t%.2f\n'  "${#runs[@]}" "$totalEvt" "$(bc -l <<<"$totalTime/3600")"
+printf '≥5 m \t%d\t%d\t%.2f\n'  "$passRuns"   "$passEvt"  "$(bc -l <<<"$passTime/3600")"
+
+########################  5. DROPPED RUNS (<5 min) ###########################
+echo -e "\n${YEL}Runs dropped for runtime < ${MIN_RUNTIME}s:${RST}"
+((${#droppedRuns[@]})) && printf '%s\n' "${droppedRuns[@]}" | column || echo "(none)"
+
+########################  6. TRIGGER CENSUS  ##################################
+echo -e "\n${GRN}==================== Trigger Census ====================${RST}"
 printf 'TriggerName\tON\tOFF\tABSENT\n'
-allTrig=($(printf '%s\n' "${!trigON[@]}" "${!trigOFF[@]}" "${!trigABS[@]}" | sort -u))
-for t in "${allTrig[@]}"; do
-  printf '%s\t%d\t%d\t%d\n' \
-    "$t" \
-    "${trigON[$t]:-0}" \
-    "${trigOFF[$t]:-0}" \
-    "${trigABS[$t]:-0}"
+for t in $(printf '%s\n' "${!onCnt[@]}" "${!offCnt[@]}" | sort -u); do
+  printf '%s\t%d\t%d\t%d\n' "$t" "${onCnt[$t]:-0}" "${offCnt[$t]:-0}" "${absCnt[$t]:-0}"
 done | column -t -s $'\t'
 
-########################  5. OVERALL STATS ####################################
-echo "------------------------------------------------------------"
-printf 'Runs analysed : %d\n'    "${#rows[@]}"
-printf 'Short (<5 m)  : %d\n'    "$shortCnt"
+########################  7. RUN × TRIGGER MATRIX #############################
+echo -e "\n${GRN}============== Run × Trigger Status Matrix ==============${RST}"
+triggers=( $(printf '%s\n' "${!onCnt[@]}" "${!offCnt[@]}" | sort -u) )
+printf 'runNumber'; for t in "${triggers[@]}"; do printf '\t%s' "$t"; done; echo
+for run in "${runs[@]}"; do
+  printf '%s' "$run"
+  for t in "${triggers[@]}"; do
+    printf '\t%s' "${status["$run|$t"]:-–}"
+  done
+  echo
+done | column -t -s $'\t'
+
+########################  8. OVERALL TOTALS  ##################################
+echo -e "${GRN}------------------------------------------------------------${RST}"
+printf 'Runs analysed : %d\n'   "${#runs[@]}"
+printf 'Short (<5 m)  : %d\n'   "$shortCnt"
 printf 'Total runtime : %d s  (%.2f h)\n' "$totalTime" "$(bc -l <<<"$totalTime/3600")"
 printf 'Total GL1 evt : %d\n'   "$totalEvt"
-echo "============================================================"
+echo -e "${GRN}============================================================${RST}"
 good "Done."
-###############################################################################

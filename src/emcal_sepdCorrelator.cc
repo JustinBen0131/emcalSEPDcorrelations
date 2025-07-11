@@ -10,6 +10,7 @@
 #include <fun4all/Fun4AllServer.h>
 #include <phool/getClass.h>
 #include <phool/recoConsts.h>
+#include <jetbase/JetContainer.h>
 
 //––– ROOT & CLHEP ----------------------------------------------------------
 #include <TProfile.h>
@@ -439,6 +440,41 @@ void emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig, H
                    12, 0, 1200, "s");
 }
 
+// ----------------------------------------------------------------------
+// Book max‑jet‑E_T spectra (global + centrality‑tagged clones)
+// ----------------------------------------------------------------------
+void
+emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)       // <<< NEW
+{
+  const int nbEt = 200;            // 1 GeV per bin
+  const double etMax = 200.;
+
+  for (const auto& r : kJetRadii)
+  {
+    const std::string base = std::string("h_maxJetEt_") + r.first;
+
+    /* global histogram */
+    H[base + "_" + trig] =
+        new TH1F((base + "_" + trig).c_str(),
+                 ("max jet E_{T} ("+std::string(r.first)+");E_{T} [GeV]").c_str(),
+                 nbEt, 0, etMax);
+
+    /* centrality‑tagged clones */
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+    {
+      int lo = m_centEdges[i];
+      int hi = m_centEdges[i + 1];
+      std::ostringstream n;
+      n << base << '_' << lo << '_' << hi << '_' << trig;
+      H[n.str()] =
+          new TH1F(n.str().c_str(),
+                   ("max jet E_{T} ("+std::string(r.first)+");E_{T} [GeV]").c_str(),
+                   nbEt, 0, etMax);
+    }
+  }
+}
+
+
 //==========================================================================
 //  createHistos_Data – scalar QA & QA maps
 //==========================================================================
@@ -459,7 +495,7 @@ void emcal_sepdCorrelator::createHistos_Data()
     bookEnergyChargeCorrel(trig, H);
     bookPi0MassSpectra(trig, H);
     bookEventPlaneCentralityQA(trig, H);
-
+    bookJetQA(trig, H);
     H["h_vertexZ"] = new TH1F(("h_vertexZ_" + trig).c_str(),
                                 "Primary vertex z;z_{vtx} [cm]",
                                 240, -60., 60.);
@@ -535,10 +571,13 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* use the arm-sum (South+North) definition that CentralityReco writes */
   m_centBin = static_cast<int>(cent->get_centile(CentralityInfo::PROP::epd_NS));
     
-    
   doMbdQA (activeTrig);
   doPi0QA (activeTrig);
   fillCorrelations(activeTrig);
+    
+  if (doJetQA(topNode, activeTrig) == Fun4AllReturnCodes::ABORTRUN)
+      return Fun4AllReturnCodes::ABORTRUN;
+      
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -1248,6 +1287,54 @@ std::string emcal_sepdCorrelator::statKey(float ptLo, float ptHi,
   else          o << "pt" << ptLo << "to" << ptHi;
   o << "_E" << Emin << "_chi" << chi << "_asy" << a;
   return o.str();
+}
+
+
+// ----------------------------------------------------------------------
+// Fill the jet QA histograms for this event
+// ----------------------------------------------------------------------
+int
+emcal_sepdCorrelator::doJetQA(PHCompositeNode* topNode,                    // <<< NEW
+                              const std::vector<std::string>& trig)
+{
+  // 1) collect per‑radius maxima (abort run if any container is missing)
+  std::unordered_map<std::string, float> maxJetEt;
+  for (const auto& r : kJetRadii)
+  {
+    auto* jets = findNode::getClass<JetContainer>(topNode, r.second);
+    if (!jets)
+    {
+      if (verbose)
+        std::cout << CLR_YELLOW << "[doJetQA] Aborting run: missing jet container "
+                  << r.second << CLR_RESET << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+    maxJetEt[r.first] = getMaxJetEt(jets);
+  }
+
+  // 2) work out the centrality slice tag
+  int lo = 0, hi = 100;
+  if (m_centBin >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+  const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
+
+  // 3) fill the histograms
+  for (const auto& [rad, etMax] : maxJetEt)
+  {
+    const std::string base = "h_maxJetEt_" + rad;
+    for (const auto& t : trig)
+    {
+      auto& H = qaHistogramsByTrigger[t];
+      static_cast<TH1F*>(H[base + "_" + t])->Fill(etMax);
+
+      auto it = H.find(base + tag + "_" + t);
+      if (it != H.end())
+        static_cast<TH1F*>(it->second)->Fill(etMax);
+    }
+  }
+  return Fun4AllReturnCodes::EVENT_OK;
 }
 
 //==========================================================================
