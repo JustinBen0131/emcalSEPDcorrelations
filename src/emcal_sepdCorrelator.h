@@ -193,12 +193,12 @@ class emcal_sepdCorrelator : public SubsysReco
   std::size_t m_evtNoTrig = 0;
 
   static constexpr std::array<std::pair<const char*, const char*>, 2> kJetRadii {{
-        {"r02", "AntiKt_unsubtracted_r02"},
-        {"r05", "AntiKt_unsubtracted_r05"}
+        {"r02", "AntiKt_subtracted_r02"},
+        {"r05", "AntiKt_subtracted_r05"}
   }};
   void  bookJetQA (const std::string& trig, HistMap& H);
   int   doJetQA   (PHCompositeNode* topNode, const std::vector<std::string>& trig);
-  float getMaxJetEt(const JetContainer* jets) const;
+  float getMaxJetEt(JetContainer* jets) const;
     
   // ======================================================================
   // 4) Static mapping helpers
