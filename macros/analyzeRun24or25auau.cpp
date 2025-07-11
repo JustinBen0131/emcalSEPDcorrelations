@@ -463,7 +463,7 @@ using SepdQA = NSDetectorQA<sEPDTag>;
 // ╔══════════════════════════════════════════════╗
 // ║ 9.  MAIN DRIVER                              ║
 // ╚══════════════════════════════════════════════╝
-void analyzeRun24auau()
+void analyzeRun24or25auau()
 {
   gStyle->SetOptStat(0);
 
@@ -569,3 +569,4 @@ void analyzeRun24auau()
 
   log::ok("All outputs under "+kOutputBase);
 }
+

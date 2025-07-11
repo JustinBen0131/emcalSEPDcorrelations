@@ -20,6 +20,12 @@
 #include <fun4all/Fun4AllServer.h>
 #include <fun4all/Fun4AllDstInputManager.h>
 #include <fun4all/Fun4AllUtils.h>
+#include <phool/getClass.h>
+#include <phool/PHCompositeNode.h>
+#include <calobase/TowerInfoContainer.h>
+#include <mbd/MbdPmtContainer.h>
+#include <phool/PHNodeIterator.h>
+#include <phool/PHIODataNode.h>         // for PHIODataNode
 
 #include <ffamodules/CDBInterface.h>
 #include <calotrigger/TriggerRunInfoReco.h>
@@ -108,26 +114,25 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   //--------------------------------------------------------------------
   std::ifstream list(listFile);
   if (!list.is_open())
-    detail::bail("cannot open input list \"" + std::string(listFile) + "\"");
+      detail::bail("cannot open input list \"" + std::string(listFile) + "\"");
 
   std::vector<std::string> files;
-  std::string line;
-  while (std::getline(list, line))
+  for (std::string line; std::getline(list, line); )
   {
-    line = detail::trim(line);
-    if (!line.empty()) files.emplace_back(line);
+      line = detail::trim(line);
+      if (!line.empty()) files.emplace_back(line);
   }
   if (files.empty())
-    detail::bail("input list \"" + std::string(listFile) + "\" is empty");
+      detail::bail("input list \"" + std::string(listFile) + "\" is empty");
 
   const std::string& firstFile = files.front();
   const auto [run, seg]        = Fun4AllUtils::GetRunSegment(firstFile);
   if (run <= 0)
-    detail::bail("failed to extract run number from first file: " + firstFile);
+      detail::bail("failed to extract run number from first file: " + firstFile);
 
   if (verbose)
-    std::cout << "[INFO] Run=" << run << "  Seg=" << seg
-              << "  (" << files.size() << " files)\n";
+      std::cout << "[INFO] Run=" << run << "  Seg=" << seg
+                << "  (" << files.size() << " files)\n";
 
   //--------------------------------------------------------------------
   // 2.  Global run flags
@@ -138,29 +143,77 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   PHRandomSeed();
 
   //--------------------------------------------------------------------
-  // 3.  Register subsystems
+  // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
   //--------------------------------------------------------------------
+
+//    // ------------------------------------------------------------------
+//    // erase sEPD container if it exists AND its size != 744  -------------
+//    // (older DST_CALO files contain only 721 channels)
+//    // ------------------------------------------------------------------
+//    auto* top = se->topNode();              // Fun4AllServer already exists
+//    TowerInfoContainer* sepd = findNode::getClass<TowerInfoContainer>(
+//                                 top, "TOWERINFO_CALIB_SEPD");
+//
+//    if (sepd && sepd->size() != 744)
+//    {
+//      // locate the parent composite node ("SEPD") that owns the data node
+//      PHNodeIterator it(top);
+//      auto* sepdNode = dynamic_cast<PHCompositeNode*>(
+//                         it.findFirst("PHCompositeNode", "SEPD"));
+//
+//      if (sepdNode)
+//      {
+//        PHNodeIterator it2(sepdNode);
+//        if (auto* dataNode = it2.findFirst("PHIODataNode", "TOWERINFO_CALIB_SEPD"))
+//        {
+//          sepdNode->removeNode(dataNode);
+//          std::cout << "[INFO] removed stale sEPD node (size "
+//                    << sepd->size() << ") – will rebuild with EpdReco\n";
+//        }
+//      }
+//    }
+//    //  -- 3a) (Re)build a correct sEPD container -------------------------
+//    auto* epdReco = new EpdReco();      // Verbosity, etc. optional
+//    se->registerSubsystem(epdReco);
+//
+//
+//  if (!findNode::getClass<MbdPmtContainer>(top,"MbdPmtContainer"))
+//  {
+//      se->registerSubsystem( new MbdReco() );
+//  }
+
+  // 3b) Primary‑vertex finder (needs MBD & EPD information)
+  auto gvr = new GlobalVertexReco();
+  se->registerSubsystem( gvr );
+
+  // 3c) Centrality determination (needs vertex + detector charges)
   auto cent = new CentralityReco();
-  cent->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54280.root"); // will change run by run
-  cent->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54280.root"); // will change run by run
-  cent->setOverwriteDivs("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54280.root");
-  se->registerSubsystem( cent );
-    
-  // 3a) Run‑info (always available in ana.495)
-  auto* trigInfo = new TriggerRunInfoReco();
-  trigInfo->Verbosity(verbose ? 1 : 0);
-  se->registerSubsystem(trigInfo);
-    
+  cent->setOverwriteScale ("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54280.root");
+  cent->setOverwriteVtx   ("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54280.root");
+  cent->setOverwriteDivs  ("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54280.root");
+  se->registerSubsystem(cent);
+
   auto mbclass = new MinimumBiasClassifier();
   mbclass->Verbosity(0);
   se->registerSubsystem(mbclass);
 
-  // 3b) Your analysis module
+  // 3d) Event‑plane reconstruction (needs calibrated sEPD/MBD)
+  auto epreco = new EventPlaneReco();
+  epreco->set_sepd_epreco(true);         // build sEPD Q‑vector
+  se->registerSubsystem(epreco);
+
+  // 3e) Run‑information helper (optional but handy)
+  auto* trigInfo = new TriggerRunInfoReco();
+  trigInfo->Verbosity(verbose ? 1 : 0);
+  se->registerSubsystem(trigInfo);
+
+  // 3f) User analysis module – must come *last*
   auto* correl = new emcal_sepdCorrelator(outRoot);
-  correl->setVzCut(10.);
+  correl->setVzCut(30.);
   correl->enableVzCut(true);
   correl->setVerbose(10);
   se->registerSubsystem(correl);
+
 
   //--------------------------------------------------------------------
   // 4.  Input manager
