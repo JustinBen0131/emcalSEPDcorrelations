@@ -30,7 +30,6 @@
 
 #include <ffamodules/CDBInterface.h>
 #include <calotrigger/TriggerRunInfoReco.h>
-#include <epd/EpdReco.h>
 #include <mbd/MbdReco.h>
 #include <globalvertex/GlobalVertexReco.h>
 #include <caloreco/CaloTowerCalib.h>
@@ -44,6 +43,7 @@
 
 // analysis module
 #include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdReco.h"
 
 // C / C++
 #include <fstream>
@@ -60,14 +60,14 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
-//R__LOAD_LIBRARY(libepd.so)
-//R__LOAD_LIBRARY(libmbd.so)
+R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libepd.so)
+R__LOAD_LIBRARY(libmbd.so)
 R__LOAD_LIBRARY(libglobalvertex.so)
-//R__LOAD_LIBRARY(libeventplaneinfo.so)
-//R__LOAD_LIBRARY(libcentrality.so)      // always
-//R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
+R__LOAD_LIBRARY(libeventplaneinfo.so)
+R__LOAD_LIBRARY(libcentrality.so)      // always
+R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
 R__LOAD_LIBRARY(libcalotrigger.so)
-//R__LOAD_LIBRARY( libzdcinfo.so )
+R__LOAD_LIBRARY( libzdcinfo.so )
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
 //======================================================================
@@ -143,69 +143,52 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   recoConsts* rc = recoConsts::instance();
   rc->set_StringFlag("CDB_GLOBALTAG", "ProdA_2024");
   rc->set_uint64Flag("TIMESTAMP",     run);
-  PHRandomSeed();
+  CDBInterface::instance() -> Verbosity(1);
+    
+  gSystem->Load("libg4dst");
+    
+  auto* inDST = new Fun4AllDstInputManager("DSTcalo");
+  for (const auto& f : files) inDST->AddFile(f);
+  se->registerInputManager(inDST);
 
   //--------------------------------------------------------------------
   // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
   //--------------------------------------------------------------------
-  // ------------------------------------------------------------------
-  // Quick probe: does the first DST already carry a calibrated
-  // TowerInfoContainer called  TOWERINFO_CALIB_SEPD  ?
-  //   • Run‑25 DST_JET / DST_JETCALO   → YES
-  //   • older productions (e.g. Run‑24 DST_CALO) → NO
-  // ------------------------------------------------------------------
-//  bool haveSepdTowers = false;
-//  {
-//      std::unique_ptr<TFile> tf(TFile::Open(firstFile.c_str(), "READ"));
-//      if (tf && !tf->IsZombie())
-//        haveSepdTowers =
-//            (tf->FindObjectAny("TOWERINFO_CALIB_SEPD") != nullptr);
-//  }
-//    
-//  // 3a) SEPD reconstruction – run it **only** if the towers are absent
-//  if (!haveSepdTowers)
-//   {
-//      auto* epdreco = new EpdReco();
-//      epdreco->Verbosity(verbose ? 1 : 0);
-//      se->registerSubsystem(epdreco);
-//  }
-//  else if (verbose)
-//  {
-//      std::cout << "[INFO] DST already contains calibrated SEPD towers – "
-//                   "EpdReco skipped\n";
-//  }
-////
-//  auto mbdreco = new MbdReco();
-//  se->registerSubsystem( mbdreco );
+  auto* epdreco = new EpdReco();
+  se->Verbosity(10);
+  se->registerSubsystem(epdreco);
 ////    
-//  auto gvertex = new GlobalVertexReco();
-//  se->registerSubsystem( gvertex );
+  auto mbdreco = new MbdReco();
+  se->registerSubsystem( mbdreco );
+//    
+  auto gvertex = new GlobalVertexReco();
+  se->registerSubsystem( gvertex );
 //    
     
-//  CaloTowerCalib *calibZDC = new CaloTowerCalib("ZDC");
-//  calibZDC->set_detector_type(CaloTowerDefs::ZDC);
-//  se->registerSubsystem(calibZDC);
+  CaloTowerCalib *calibZDC = new CaloTowerCalib("ZDC");
+  calibZDC->set_detector_type(CaloTowerDefs::ZDC);
+  se->registerSubsystem(calibZDC);
 
-//  auto zdcreco = new ZdcReco();
-//  zdcreco->set_zdc1_cut(0.0);
-//  zdcreco->set_zdc2_cut(0.0);
-//  se->registerSubsystem( zdcreco );
-//
-//  auto mb = new MinimumBiasClassifier();
+  auto zdcreco = new ZdcReco();
+  zdcreco->set_zdc1_cut(0.0);
+  zdcreco->set_zdc2_cut(0.0);
+  se->registerSubsystem( zdcreco );
+
+  auto mb = new MinimumBiasClassifier();
 //  mb->Verbosity( Enable::VERBOSITY );
-//  mb->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
-//  mb->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
-//  se->registerSubsystem( mb );
+  mb->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
+  mb->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
+  se->registerSubsystem( mb );
 //
-//  auto cent = new CentralityReco();
+  auto cent = new CentralityReco();
 //  cent->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
 //  cent->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
 //  cent->setOverwriteDivs("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54912.root");
-//  se->registerSubsystem( cent );
+  se->registerSubsystem( cent );
 //    
-//  EventPlaneReco *epreco = new EventPlaneReco();
-//  epreco->set_sepd_epreco(true);
-//  se->registerSubsystem(epreco);
+  EventPlaneReco *epreco = new EventPlaneReco();
+  epreco->set_sepd_epreco(true);
+  se->registerSubsystem(epreco);
     
   // 3e) Run‑information helper (optional but handy)
   auto* trigInfo = new TriggerRunInfoReco();
@@ -219,13 +202,6 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   correl->setVerbose(10);
   se->registerSubsystem(correl);
 
-
-  //--------------------------------------------------------------------
-  // 4.  Input manager
-  //--------------------------------------------------------------------
-  auto* inDST = new Fun4AllDstInputManager("DSTjet");
-  for (const auto& f : files) inDST->AddFile(f);
-  se->registerInputManager(inDST);
 
   //--------------------------------------------------------------------
   // 5.  Run

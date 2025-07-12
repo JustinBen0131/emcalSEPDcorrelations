@@ -27,7 +27,7 @@
 #include <globalvertex/GlobalVertexMap.h>
 #include <mbd/MbdGeom.h>
 #include <mbd/MbdPmtContainer.h>
-#include <epd/EpdGeom.h>
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdGeom.h"
 #include <centrality/CentralityInfo.h>
 #include <eventplaneinfo/EventplaneinfoMap.h>
 

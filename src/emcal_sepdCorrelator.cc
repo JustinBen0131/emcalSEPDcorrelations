@@ -33,7 +33,8 @@
 #include <calobase/RawTowerGeomContainer_Cylinderv1.h>
 #include <calobase/RawClusterUtility.h>
 #include <mbd/MbdPmtHit.h>
-#include <epd/EpdGeomV2.h>
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdGeomV2.h"
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdReco.h"
 #include <centrality/CentralityInfo.h>
 
 #include <eventplaneinfo/Eventplaneinfo.h>
