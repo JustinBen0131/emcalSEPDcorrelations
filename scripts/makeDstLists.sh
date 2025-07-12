@@ -1,144 +1,130 @@
 #!/usr/bin/env bash
 ###############################################################################
-#  makeDstLists.sh
-#  ---------------
-#  Build .list files for sPHENIX Run‑24 Au+Au CALO‑DSTs  *or*
-#  Run‑25 Au+Au jet‑DSTs, depending on the first argument:
+#  makeDstLists.sh  – build one “.list” per run with absolute paths to DST
+#  ROOT files.
 #
-#      ./makeDstLists.sh run24auau   # ← current behaviour (good‑run file)
-#      ./makeDstLists.sh run25auau   # ← auto‑scan jet DST repository
+#  Modes:
+#    run24auau → Run-24 Au+Au CALO-DSTs
+#    run25auau → Run-25 Au+Au JET **and** JETCALO-DSTs (parallel)
 #
-#  • List files are written to  $LIST_DIR  (wiped at start)
-#  • One .list per run, containing the full path(s) to matching ROOT files
+#  No external run-number files are needed – runs are detected by scanning the
+#  filenames themselves.
 ###############################################################################
 set -euo pipefail
 IFS=$'\n\t'
 
 ########################  COLOUR / LOG HELPERS  ###############################
-ESC=$'\e['
-CLR_RED=${ESC}0\;31m  ; CLR_GRN=${ESC}0\;32m
-CLR_YEL=${ESC}1\;33m  ; CLR_BLU=${ESC}1\;34m
-CLR_BLD=${ESC}1m      ; CLR_RST=${ESC}0m
+esc=$'\e['
+clr_red=${esc}0\;31m ; clr_grn=${esc}0\;32m
+clr_yel=${esc}1\;33m ; clr_blu=${esc}1\;34m
+clr_bld=${esc}1m     ; clr_rst=${esc}0m
 
-say()   { printf "${CLR_BLU}➜${CLR_RST} %s\n" "$*"; }
-good()  { printf "${CLR_GRN}%s${CLR_RST}\n"   "$*"; }
-warn()  { printf "${CLR_YEL}⚠ %s${CLR_RST}\n" "$*" >&2; }
-fatal() { printf "${CLR_RED}✘ %s${CLR_RST}\n" "$*" >&2; exit 1; }
+say()   { printf "${clr_blu}➜${clr_rst} %s\n" "$*"; }
+good()  { printf "${clr_grn}%s${clr_rst}\n"   "$*"; }
+warn()  { printf "${clr_yel}⚠ %s${clr_rst}\n" "$*" >&2; }
+fatal() { printf "${clr_red}✘ %s${clr_rst}\n" "$*" >&2; exit 1; }
 
 trap 'fatal "Script aborted (line $LINENO)"' ERR
 
 ############################  CONSTANTS  #####################################
-SCRIPT_PWD="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-LIST_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/dst_list"
+script_pwd="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+list_dir="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/dst_list"
 
-MODE=${1:-run24auau}               # default keeps old behaviour
-case "$MODE" in
-    run24auau)
-        # ---- Run‑24 CALO‑DST settings -------------------------------------
-        FILE_PREFIX="DST_CALO_run2auau_new_2024p007"
-        BASE_DIR="/sphenix/lustre01/sphnxpro/physics/run2auau/caloy2calib/new_2024p007"
-        RUNLIST_FILE="${SCRIPT_PWD}/../goodRunList_sEPD_run24auau.txt"
-        [[ -f "$RUNLIST_FILE" ]] || fatal "Run‑list file not found: $RUNLIST_FILE"
-        ;;
-    run25auau)
-        # ---- Run‑25 JET‑DST settings --------------------------------------
-        FILE_PREFIX="DST_JET"
-        BASE_DIR="/sphenix/tg/tg01/jets/vbailey/run25_jet_dsts/new_newcdbtag_v005/jet"
-        RUNLIST_FILE=""                 # not used in this mode
-        [[ -d "$BASE_DIR" ]] || fatal "Jet‑DST directory not found: $BASE_DIR"
-        ;;
-    *)
-        fatal "Unknown mode '$MODE' – use 'run24auau' or 'run25auau'"
-        ;;
+###########################  MODE SELECTION  ##################################
+mode=${1:-run24auau}
+declare -A prefix_dir     # key = prefix, value = base directory
+
+case "$mode" in
+  run24auau)
+    # Run-24 CALO-DST repository (nested by run-range dirs)
+    prefix_dir["DST_CALO_run2auau_new_2024p007"]="/sphenix/lustre01/sphnxpro/physics/run2auau/caloy2calib/new_2024p007"
+    ;;
+
+  run25auau)
+    # Run-25 flat repositories – JET and JETCALO in parallel
+    prefix_dir["DST_JET"]="/sphenix/tg/tg01/jets/vbailey/run25_jet_dsts/new_newcdbtag_v005/jet"
+    prefix_dir["DST_JETCALO"]="/sphenix/tg/tg01/jets/vbailey/run25_jet_dsts/new_newcdbtag_v005/jetcalo"
+    ;;
+
+  *) fatal "Unknown mode “$mode” – use run24auau | run25auau" ;;
 esac
 
-############################  PRE‑FLIGHT  #####################################
-say  "Mode                  : ${CLR_BLD}${MODE}${CLR_RST}"
-say  "Destination .list dir : ${CLR_BLD}${LIST_DIR}${CLR_RST}"
-say  "ROOT file base dir    : ${CLR_BLD}${BASE_DIR}${CLR_RST}"
+# Check source directories exist
+for d in "${prefix_dir[@]}"; do
+  [[ -d "$d" ]] || fatal "Directory not found: $d"
+done
 
-# Purge previous list files
-rm -f "${LIST_DIR:?}/"* 2>/dev/null || true
-mkdir -p "$LIST_DIR"
-good "Cleared old list files in ${LIST_DIR}"
+############################  PRE-FLIGHT  #####################################
+say "Mode                  : ${clr_bld}${mode}${clr_rst}"
+say "Destination .list dir : ${clr_bld}${list_dir}${clr_rst}"
+for k in "${!prefix_dir[@]}"; do
+  say "Source for ${clr_bld}${k}${clr_rst}: ${prefix_dir[$k]}"
+done
+
+rm -rf "${list_dir:?}"/* 2>/dev/null || true
+mkdir -p "$list_dir"
+good "Output directory prepared"
+
+###########################  COLLECT RUN IDs  #################################
+declare -A run_set   # associative (run → 1) to deduplicate
+
+for pfx in "${!prefix_dir[@]}"; do
+  base=${prefix_dir[$pfx]}
+  while IFS= read -r -d '' f; do
+    [[ $f =~ ([0-9]{8}) ]] && run_set[${BASH_REMATCH[1]}]=1
+  done < <(find "$base" -type f -name "${pfx}-????????-*.root" -print0)
+done
+
+runs=("${!run_set[@]}")
+IFS=$'\n' runs=($(sort -n <<<"${runs[*]}")); IFS=$'\n\t'
+
+(( ${#runs[@]} )) || fatal "No runs found to process"
+good "Runs to process       : ${#runs[@]}"
 echo
 
-###########################  HELPERS  #########################################
-# increment a nameref counter safely under 'set -e'
-inc() { local -n ref=$1; ref=$(( ref + 1 )); }
+##############################  HELPERS  ######################################
+inc() { local -n ref=$1; ref=$((ref+1)); }
 
-###########################  BUILD RUN SET  ###################################
-declare -a run_numbers=()
-
-if [[ "$MODE" == run24auau ]]; then
-    mapfile -t run_numbers < <(grep -E '^[0-9]+' "$RUNLIST_FILE" | sort -u)
-else
-    # Extract 8‑digit run numbers from file names once
-    while IFS= read -r -d '' f; do
-        [[ $f =~ ([0-9]{8}) ]] && run_numbers+=("${BASH_REMATCH[1]}")
-    done < <(find "$BASE_DIR" -maxdepth 1 -name "${FILE_PREFIX}-*.root" -print0)
-    run_numbers=($(printf '%s\n' "${run_numbers[@]}" | sort -u))
-fi
-
-total_runs=${#run_numbers[@]}
-[[ $total_runs -eq 0 ]] && fatal "No runs found to process"
-good "Runs to process       : $total_runs"
-echo
-
-###########################  MAIN LOOP  #######################################
-ok=0 miss_dir=0 miss_files=0 removed=0
-declare -a cleanup_runs=()
+############################  MAIN LOOP  ######################################
+ok=0 miss=0 pruned=0
+empty_lists=()
 
 shopt -s nullglob
 
-for run in "${run_numbers[@]}"; do
-    run_pad=$(printf "%08d" "$run")
+for run in "${runs[@]}"; do
+  run_dec=$((10#$run))
+  run8=$(printf "%08d" "$run_dec")
+  say "▸ Run ${clr_bld}${run8}${clr_rst}"
 
-    if [[ "$MODE" == run24auau ]]; then
-        low=$(( (run/100)*100 ))
-        high=$(( low + 100 ))
-        range_dir="${BASE_DIR}/run_$(printf '%08d_%08d' "$low" "$high")"
-        search_dirs=("$range_dir" "$(dirname "$range_dir")")
+  for pfx in "${!prefix_dir[@]}"; do
+    base=${prefix_dir[$pfx]}
+    mapfile -t files < <(find "$base" -type f -name "${pfx}-${run8}-*.root" -print)
+
+    list_file="${list_dir}/${pfx}-${run8}.list"
+
+    if (( ${#files[@]} )); then
+      printf "%s\n" "${files[@]}" > "$list_file"
+      good "  ${pfx}: wrote ${#files[@]} path(s)"
+      inc ok
     else
-        search_dirs=("$BASE_DIR")       # jet DSTs live flat in one dir
+      warn "  ${pfx}: no files found"
+      empty_lists+=("$list_file"); inc miss
     fi
-
-    say "▸ Run ${CLR_BLD}${run}${CLR_RST}"
-
-    files=()
-    for d in "${search_dirs[@]}"; do
-        [[ -d "$d" ]] || continue
-        files+=( "$d/${FILE_PREFIX}-${run_pad}-"*.root )
-        (( ${#files[@]} )) && break     # stop at first dir with matches
-    done
-
-    if (( ${#files[@]} == 0 )); then
-        warn "  No ROOT files found – skipping"
-        inc miss_files; cleanup_runs+=("$run"); continue
-    fi
-
-    list_file="${LIST_DIR}/${FILE_PREFIX}-${run_pad}.list"
-    printf "%s\n" "${files[@]}" > "$list_file"
-    good "  Wrote ${#files[@]} paths → ${list_file##*/}"
-    inc ok
+  done
 done
 
-###########################  CLEAN‑UP (stale)  ################################
-for bad_run in "${cleanup_runs[@]}"; do
-    stale="${LIST_DIR}/${FILE_PREFIX}-$(printf '%08d' "$bad_run").list"
-    if [[ -e "$stale" ]]; then
-        rm -f "$stale"; inc removed
-        warn "  Removed empty/stale list → ${stale##*/}"
-    fi
+############################  CLEAN-UP  #######################################
+for lf in "${empty_lists[@]}"; do
+  [[ -e "$lf" ]] || continue
+  rm -f "$lf"; inc pruned
+  warn "  Removed empty list $(basename "$lf")"
 done
 
 ############################  SUMMARY  ########################################
 echo
 good "Finished:"
-say  "  Successful lists : ${ok}"
-[[ $miss_dir   -gt 0 ]] && warn "  Skipped (no dir)  : ${miss_dir}"
-[[ $miss_files -gt 0 ]] && warn "  Skipped (no files): ${miss_files}"
-[[ $removed    -gt 0 ]] && warn "  Stale lists purged: ${removed}"
-echo "${CLR_BLD}All done.${CLR_RST}"
+say "  Successful lists : $ok"
+[[ $miss   -gt 0 ]] && warn "  Runs with no files: $miss"
+[[ $pruned -gt 0 ]] && warn "  Empty lists pruned: $pruned"
+echo "${clr_bld}All done.${clr_rst}"
 ###############################################################################
-
