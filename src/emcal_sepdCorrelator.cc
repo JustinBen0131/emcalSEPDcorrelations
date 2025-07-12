@@ -45,7 +45,9 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <tuple>
+
 
 #ifdef _OPENMP
   #include <omp.h>
@@ -563,20 +565,21 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 
     /* A.  make sure mandatory nodes exist ----------------------------- */
     if (!fetchNodes(topNode)) return Fun4AllReturnCodes::ABORTEVENT;
-
-//    /* B.  build SEPD channel map on‑the‑fly --------------------------- */
-//    if (!m_sepdMapReady)
-//    {
-//      m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
-//                                                      "TOWERINFO_CALIB_SEPD");
-//      if (!m_sepd)                          // still missing → skip this event
-//      {
-//        LOG(2, CLR_YELLOW,
-//            "[process_event] SEPD container not yet available – event skipped");
-//        return Fun4AllReturnCodes::ABORTEVENT;
-//      }
-//      buildSepdChannelMap();                // will flip m_sepdMapReady = true
-//    }
+    
+    /* B.  build SEPD channel map on‑the‑fly --------------------------- */
+    if (!m_sepdMapReady)
+    {
+      m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
+                                                      "TOWERINFO_CALIB_SEPD");
+      if (!m_sepd)                          // still missing → skip this event
+      {
+        LOG(2, CLR_YELLOW,
+            "[process_event] SEPD container not yet available – event skipped");
+        return Fun4AllReturnCodes::ABORTEVENT;
+      }
+      buildSepdChannelMap();                // will flip m_sepdMapReady = true
+    }
+    
   trigAna->decodeTriggers(topNode);
 
   /* interrogate every configured trigger */

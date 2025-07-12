@@ -20,18 +20,34 @@ trap 'fatal "Script aborted (line $LINENO)"' ERR
 ##############################################################################
 # 0. DATA‑SET SELECTION
 ##############################################################################
-DATASET=${1:-run24auau}
-shift || true          # leave $@ holding the operational mode
+DATASET=${1:-run24auau}        # run24auau | run25auau
+shift || true                  # consume it
+
+# ---------- NEW: optional DST‑type argument for run25auau -------------------
+#   • dstjet      → DST_JET      (default if omitted)
+#   • dstjetcalo  → DST_JETCALO
+DSTTYPE=dstjet
+if [[ "$DATASET" == run25auau && "${1:-}" =~ ^(dstjet|dstjetcalo)$ ]]; then
+  DSTTYPE=${1,,}   # lower‑case for robustness
+  shift            # consume the dst‑type token
+fi
+# ---------------------------------------------------------------------------
 
 case "$DATASET" in
   run24auau)
     FILE_PREFIX="DST_CALO_run2auau_new_2024p007"
     LIST_PATTERN="${FILE_PREFIX}-000*.list"
-    LIST_FMT="${FILE_PREFIX}-000%05d.list"    # printf pattern
+    LIST_FMT="${FILE_PREFIX}-000%05d.list"
     PAD_FMT="%05d"
     ;;
   run25auau)
-    FILE_PREFIX="DST_JET"
+    # --------------------- NEW: derive prefix from $DSTTYPE -----------------
+    case "$DSTTYPE" in
+      dstjet)      FILE_PREFIX="DST_JET" ;;
+      dstjetcalo)  FILE_PREFIX="DST_JETCALO" ;;
+      *)           fatal "BUG: unhandled DSTTYPE ‘$DSTTYPE’" ;;
+    esac
+    # -----------------------------------------------------------------------
     LIST_PATTERN="${FILE_PREFIX}-000*.list"
     LIST_FMT="${FILE_PREFIX}-%08d.list"
     PAD_FMT="%08d"
@@ -92,7 +108,7 @@ split_run_list() {
 
   while IFS= read -r raw; do
     [[ -z "$raw" || "$raw" =~ ^# ]] && continue
-    local runNumDec=$((10#$raw))                 # remove padding safely
+    local runNumDec=$((10#$raw))
     local listFile="${DST_LIST_DIR}/$(printf "$LIST_FMT" "$runNumDec")"
     [[ -f "$listFile" ]] || { warn "  – list for run $raw missing – skipped"; continue; }
 
@@ -108,7 +124,7 @@ split_run_list() {
       jobs=0
     fi
 
-    printf "$PAD_FMT\n" "$runNumDec" >>"$current"   # keep padded in the file
+    printf "$PAD_FMT\n" "$runNumDec" >>"$current"
     (( jobs += nJobs ))
   done < "$master"
 
@@ -176,7 +192,7 @@ else
   mapfile -t listFiles < <(ls "${DST_LIST_DIR}"/${LIST_PATTERN} 2>/dev/null | sort)
   (( ${#listFiles[@]} )) || fatal "No .list files found in ${DST_LIST_DIR}"
   for f in "${listFiles[@]}"; do
-    bn=${f##*-}; runs+=( "${bn%.list}" )          # already padded
+    bn=${f##*-}; runs+=( "${bn%.list}" )
   done
 fi
 ##############################################################################

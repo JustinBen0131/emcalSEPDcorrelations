@@ -60,14 +60,14 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
-R__LOAD_LIBRARY(libepd.so)
-R__LOAD_LIBRARY(libmbd.so)
+//R__LOAD_LIBRARY(libepd.so)
+//R__LOAD_LIBRARY(libmbd.so)
 R__LOAD_LIBRARY(libglobalvertex.so)
-R__LOAD_LIBRARY(libeventplaneinfo.so)
-R__LOAD_LIBRARY(libcentrality.so)      // always
-R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
+//R__LOAD_LIBRARY(libeventplaneinfo.so)
+//R__LOAD_LIBRARY(libcentrality.so)      // always
+//R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
 R__LOAD_LIBRARY(libcalotrigger.so)
-R__LOAD_LIBRARY( libzdcinfo.so )
+//R__LOAD_LIBRARY( libzdcinfo.so )
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
 //======================================================================
@@ -148,15 +148,39 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   //--------------------------------------------------------------------
   // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
   //--------------------------------------------------------------------
-//  auto* epdreco = new EpdReco();
-//  se->registerSubsystem(epdreco);
+  // ------------------------------------------------------------------
+  // Quick probe: does the first DST already carry a calibrated
+  // TowerInfoContainer called  TOWERINFO_CALIB_SEPD  ?
+  //   • Run‑25 DST_JET / DST_JETCALO   → YES
+  //   • older productions (e.g. Run‑24 DST_CALO) → NO
+  // ------------------------------------------------------------------
+//  bool haveSepdTowers = false;
+//  {
+//      std::unique_ptr<TFile> tf(TFile::Open(firstFile.c_str(), "READ"));
+//      if (tf && !tf->IsZombie())
+//        haveSepdTowers =
+//            (tf->FindObjectAny("TOWERINFO_CALIB_SEPD") != nullptr);
+//  }
 //    
+//  // 3a) SEPD reconstruction – run it **only** if the towers are absent
+//  if (!haveSepdTowers)
+//   {
+//      auto* epdreco = new EpdReco();
+//      epdreco->Verbosity(verbose ? 1 : 0);
+//      se->registerSubsystem(epdreco);
+//  }
+//  else if (verbose)
+//  {
+//      std::cout << "[INFO] DST already contains calibrated SEPD towers – "
+//                   "EpdReco skipped\n";
+//  }
+////
 //  auto mbdreco = new MbdReco();
 //  se->registerSubsystem( mbdreco );
-//    
+////    
 //  auto gvertex = new GlobalVertexReco();
 //  se->registerSubsystem( gvertex );
-    
+//    
     
 //  CaloTowerCalib *calibZDC = new CaloTowerCalib("ZDC");
 //  calibZDC->set_detector_type(CaloTowerDefs::ZDC);
