@@ -147,7 +147,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
     
   gSystem->Load("libg4dst");
     
-  auto* inDST = new Fun4AllDstInputManager("DSTcalo");
+  auto* inDST = new Fun4AllDstInputManager("DSTcalofitting");
   for (const auto& f : files) inDST->AddFile(f);
   se->registerInputManager(inDST);
 
@@ -155,15 +155,13 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
   //--------------------------------------------------------------------
   auto* epdreco = new EpdReco();
-  se->Verbosity(10);
   se->registerSubsystem(epdreco);
-////    
+    
   auto mbdreco = new MbdReco();
   se->registerSubsystem( mbdreco );
-//    
+    
   auto gvertex = new GlobalVertexReco();
   se->registerSubsystem( gvertex );
-//    
     
   CaloTowerCalib *calibZDC = new CaloTowerCalib("ZDC");
   calibZDC->set_detector_type(CaloTowerDefs::ZDC);
@@ -175,17 +173,16 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   se->registerSubsystem( zdcreco );
 
   auto mb = new MinimumBiasClassifier();
-//  mb->Verbosity( Enable::VERBOSITY );
   mb->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
   mb->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
   se->registerSubsystem( mb );
-//
+
   auto cent = new CentralityReco();
-//  cent->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
-//  cent->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
-//  cent->setOverwriteDivs("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54912.root");
+  cent->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
+  cent->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
+  cent->setOverwriteDivs("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54912.root");
   se->registerSubsystem( cent );
-//    
+    
   EventPlaneReco *epreco = new EventPlaneReco();
   epreco->set_sepd_epreco(true);
   se->registerSubsystem(epreco);

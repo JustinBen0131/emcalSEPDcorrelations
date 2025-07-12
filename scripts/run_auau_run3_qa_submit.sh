@@ -1,8 +1,87 @@
 #!/usr/bin/env bash
+#!/usr/bin/env bash
 ##############################################################################
-#  run_auau_run3_qa_submit.sh         – submit (or locally test) the sPHENIX
-#                                       EMCAL×sEPD×MBD QA correlation job
+#  run_auau_run3_qa_submit.sh
+#
+#  Purpose
+#  ───────
+#  Submit – or locally dry-run – the sPHENIX **EMCAL × sEPD × MBD QA
+#  correlation analysis** for Run-24/25 Au+Au data.  Jobs are either executed
+#  directly on the login node (**local**) or dispatched to the Lab’s HTCondor
+#  pool (**condor / condorTest**).
+#
+#  Quick synopsis
+#  ──────────────
+#    ./run_auau_run3_qa_submit.sh  <DATASET>  [QUALIFIER]  <MODE>  [OPTION] …
+#
+#    <DATASET>      run24auau      – uses Run-24 **CALO-DST** lists
+#                   run25auau      – uses Run-25 JET-family lists *or*
+#                                    Run-3 CALOFITTING lists (see QUALIFIER)
+#
+#    [QUALIFIER]    dstjet         – (default)  Run-25 JET DSTs
+#                   dstjetcalo     – Run-25 JETCALO DSTs
+#                   caloFitting    – **Run-3 CALOFITTING** sample
+#
+#    <MODE>         local          – run one chunk interactively for a sanity
+#                                    check (prints the command it executes)
+#                   condorTest     – submit *one* run to Condor for a smoke
+#                                    test (verbose output)
+#                   condor         – full Condor submission
+#                   splitRunList   – utility: split a master run list into
+#                                    manageable “round-n” segments
+#
+#    [OPTION]       firstTen       – with *condor*: cap the launch to 10 chunks
+#                   round <N>      – with *condor*: use segment file # N
+#                   <runID>        – with *local*: which run to test
+#
+#  Examples
+#  ────────
+#  • Run-24 quick local test (first DST only)
+#      ./run_auau_run3_qa_submit.sh run24auau local
+#
+#  • Submit *all* Run-25 JET jobs to Condor (quiet mode)
+#      ./run_auau_run3_qa_submit.sh run25auau condor
+#
+#  • Submit the first 10 CALOFITTING chunks for a smoke test
+#      ./run_auau_run3_qa_submit.sh run25auau caloFitting condor firstTen
+#
+#  • Split a golden-run list into segment files of ≤10 000 Condor jobs each
+#      ./run_auau_run3_qa_submit.sh run25auau splitRunList run25GoldenRuns.txt
+#
+#  How the qualifier logic works
+#  ─────────────────────────────
+#  ┌──────────┬──────────────────────────────────────────────────────────────┐
+#  │ DATASET  │ 1st extra token → result                                    │
+#  ├──────────┼──────────────────────────────────────────────────────────────┤
+#  │ run24…   │ (none)                → CALO lists (Run-24 Y2Calib)         │
+#  │ run25…   │ dstjet | dstjetcalo   → JET / JETCALO lists (Run-25)        │
+#  │ run25…   │ caloFitting           → CALOFITTING lists (Run-3) *and*     │
+#  │          │                        golden-run selector switches to      │
+#  │          │                        **run3GoldenRuns.txt**               │
+#  └──────────┴──────────────────────────────────────────────────────────────┘
+#
+#  Modes in detail
+#  ───────────────
+#  • local          : Runs a single chunk (first two DST files of the run)
+#                     directly, useful for debugger/interactive gdb.
+#  • condorTest     : Submits exactly one Condor job (first chunk of the
+#                     first run) and prints progress messages.
+#  • condor         : Walks every *.list file (or the supplied run list) and
+#                     submits one Condor job per CHUNK_SIZE files.  Optional
+#                     “firstTen” hard-caps the launch at 10 jobs.
+#  • splitRunList   : Utility helper.  Takes a plain-text list of run numbers
+#                     and produces runSegment_<DATASET>_<n>.txt files that each
+#                     expand to ≤ MAX_JOBS Condor jobs.
+#
+#  Environment / paths
+#  ───────────────────
+#  PROJECT_BASE       = /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations
+#  DST_LIST_DIR       = \$PROJECT_BASE/dst_list          (input *.list files)
+#  TMP_LIST_DIR       = \$PROJECT_BASE/tmp_condor_lists  (auto-generated)
+#  run_auau_run3_qa.sh – executable Condor wrapper (called per chunk)
+#
 ##############################################################################
+
 set -euo pipefail
 shopt -s extglob
 IFS=$'\n\t'
@@ -18,18 +97,31 @@ fatal() { printf "${CLR_R}✘ %s${CLR_RST}\n" "$*" >&2; exit 1; }
 trap 'fatal "Script aborted (line $LINENO)"' ERR
 
 ##############################################################################
-# 0. DATA‑SET SELECTION
+# 0. DATA‑SET & SPECIAL‑MODE SELECTION
 ##############################################################################
 DATASET=${1:-run24auau}        # run24auau | run25auau
-shift || true                  # consume it
+shift || true                  # always consume at least one token
 
-# ---------- NEW: optional DST‑type argument for run25auau -------------------
-#   • dstjet      → DST_JET      (default if omitted)
+# ---------------------------------------------------------------------------
+# Recognise an *optional* special‑mode keyword *before* ordinary dst‑type:
+#   run25auau caloFitting …
+# This switches the submitter to CALOFITTING‑specific list handling.
+# ---------------------------------------------------------------------------
+CALOFIT=0
+if [[ "$DATASET" == run25auau && "${1:-}" == caloFitting ]]; then
+  CALOFIT=1
+  shift                         # consume "caloFitting"
+fi
+
+# ---------------------------------------------------------------------------
+# dst‑type selection for the standard JET* modes (only if CALOFIT == 0)
+#   • dstjet      → DST_JET      (default)
 #   • dstjetcalo  → DST_JETCALO
+# ---------------------------------------------------------------------------
 DSTTYPE=dstjet
-if [[ "$DATASET" == run25auau && "${1:-}" =~ ^(dstjet|dstjetcalo)$ ]]; then
-  DSTTYPE=${1,,}   # lower‑case for robustness
-  shift            # consume the dst‑type token
+if (( ! CALOFIT )) && [[ "$DATASET" == run25auau && "${1:-}" =~ ^(dstjet|dstjetcalo)$ ]]; then
+  DSTTYPE=${1,,}                # lower‑case
+  shift                         # consume the dst‑type token
 fi
 # ---------------------------------------------------------------------------
 
@@ -41,16 +133,21 @@ case "$DATASET" in
     PAD_FMT="%05d"
     ;;
   run25auau)
-    # --------------------- NEW: derive prefix from $DSTTYPE -----------------
-    case "$DSTTYPE" in
-      dstjet)      FILE_PREFIX="DST_JET" ;;
-      dstjetcalo)  FILE_PREFIX="DST_JETCALO" ;;
-      *)           fatal "BUG: unhandled DSTTYPE ‘$DSTTYPE’" ;;
-    esac
-    # -----------------------------------------------------------------------
-    LIST_PATTERN="${FILE_PREFIX}-000*.list"
-    LIST_FMT="${FILE_PREFIX}-%08d.list"
-    PAD_FMT="%08d"
+    if (( CALOFIT )); then
+      FILE_PREFIX="DST_CALOFITTING_run3auau_new_newcdbtag_v006"
+      LIST_PATTERN="${FILE_PREFIX}-*.list"          # no 000‑subdir for CALOFIT
+      LIST_FMT="${FILE_PREFIX}-%08d.list"
+      PAD_FMT="%08d"
+    else
+      case "$DSTTYPE" in
+        dstjet)      FILE_PREFIX="DST_JET" ;;
+        dstjetcalo)  FILE_PREFIX="DST_JETCALO" ;;
+        *)           fatal "BUG: unhandled DSTTYPE ‘$DSTTYPE’" ;;
+      esac
+      LIST_PATTERN="${FILE_PREFIX}-000*.list"
+      LIST_FMT="${FILE_PREFIX}-%08d.list"
+      PAD_FMT="%08d"
+    fi
     ;;
   *)
     fatal "Unknown data‑set selector '$DATASET' – use run24auau or run25auau"
@@ -80,7 +177,6 @@ mkdir -p "$TMP_LIST_DIR" "$LOGDIR" "$OUTDIR" "$ERRDIR"
 RUN_SPLIT_DIR="${PROJECT_BASE}/run_segments"
 SEGMENT_PREFIX="${RUN_SPLIT_DIR}/runSegment_${DATASET}_"
 mkdir -p "$RUN_SPLIT_DIR"
-##############################################################################
 
 ##############################################################################
 # 3. OPERATIONAL MODE PARSING
@@ -93,7 +189,6 @@ case "$mode" in
   '')  fatal "Missing operational mode  (local | condor | condorTest | splitRunList)" ;;
   *)   fatal "Unknown operational mode '$mode'" ;;
 esac
-##############################################################################
 
 ##############################################################################
 # 4. HELPER: split_run_list
@@ -131,7 +226,6 @@ split_run_list() {
   good "  [SEGMENT $seg] closed with $jobs jobs"
   good "[OK] splitting finished – files are in $RUN_SPLIT_DIR"
 }
-##############################################################################
 
 ##############################################################################
 # 5. EARLY‑EXIT: splitRunList
@@ -140,7 +234,6 @@ if [[ "$mode" == "splitRunList" ]]; then
   split_run_list "$limitSwitch"
   exit 0
 fi
-##############################################################################
 
 ##############################################################################
 # 6. VERBOSITY / CAP
@@ -152,29 +245,38 @@ vecho() { (( VERBOSE )) && echo -e "${CLR_B}•${CLR_RST} $*"; }
 jobCap=0
 [[ "$mode" == "condor" && "$limitSwitch" == "firstTen" ]] && jobCap=$MAX_JOBS
 submitted=0
-##############################################################################
 
 ##############################################################################
 # 7. ROUND‑N OR GOLDEN‑LIST SELECTION
 ##############################################################################
 runListFile=""
 
+# -- explicit “round N” selection -------------------------------------------
 if [[ "$mode" == "condor" && "$limitSwitch" == "round" && "${3:-}" =~ ^[0-9]+$ ]]; then
   runListFile="${SEGMENT_PREFIX}${3}.txt"
   [[ -f "$runListFile" ]] || fatal "Segment file $runListFile not found"
   say  "Round ${3} selected → using run list $(basename "$runListFile")"
 fi
 
+# -- automatic golden list ---------------------------------------------------
 if [[ "$DATASET" == run25auau && -z "$runListFile" ]]; then
-  for p in "${PROJECT_BASE}" .; do
-    [[ -f "$p/run25GoldenRuns.txt" ]] && runListFile="$p/run25GoldenRuns.txt" && break
-  done
-  [[ -n "$runListFile" ]] && say  "run25auau selected – using golden run list $(basename "$runListFile")"
+  if (( CALOFIT )); then
+    for p in "${PROJECT_BASE}" .; do
+      [[ -f "$p/run3GoldenRuns.txt" ]] && runListFile="$p/run3GoldenRuns.txt" && break
+    done
+    [[ -n "$runListFile" ]] && \
+      say "run25auau(caloFitting) – using golden run list $(basename "$runListFile")"
+  else
+    for p in "${PROJECT_BASE}" .; do
+      [[ -f "$p/run25GoldenRuns.txt" ]] && runListFile="$p/run25GoldenRuns.txt" && break
+    done
+    [[ -n "$runListFile" ]] && \
+      say "run25auau – using golden run list $(basename "$runListFile")"
+  fi
 fi
-##############################################################################
 
 ##############################################################################
-# 8. BUILD MAIN ARRAYS
+# 8. BUILD MAIN ARRAYS (runs[]  &  listFiles[])
 ##############################################################################
 runs=()
 listFiles=()
@@ -195,7 +297,6 @@ else
     bn=${f##*-}; runs+=( "${bn%.list}" )
   done
 fi
-##############################################################################
 
 ##############################################################################
 # 9. LOCAL MODE
@@ -227,7 +328,6 @@ if [[ "$mode" == "local" ]]; then
   rm -f "$tmpList"
   exit 0
 fi
-##############################################################################
 
 ##############################################################################
 # 10. CONDOR / CONDORTEST LOOP
