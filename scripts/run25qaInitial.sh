@@ -13,6 +13,8 @@ DST_LIST_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/dst_list"
 RUN_LIST_FILE="run25auauCurrentDstRuns.txt"
 MIN_RUNTIME=300            # seconds (5 min)
 TOP_N_TRIG=20              # show N most‑frequent triggers
+### <ADD> write golden runs (≥ 5 min) one directory up from the script location
+GOLDEN_RUN_FILE="../run25GoldenRuns.txt"
 ###############################################################################
 
 ########################  COLOUR HELPERS  #####################################
@@ -54,6 +56,8 @@ header=$'Run\trunTime[s]\tGL1_evt\tON\tOFF\t<5m\tLegend'
 rows=()
 totalTime=0 totalEvt=0 shortCnt=0
 dropped=()
+### <ADD> collect golden runs (runtime ≥ MIN_RUNTIME)
+goldenRuns=()
 
 for run in "${runs[@]}"; do
   say "• $run"
@@ -63,6 +67,8 @@ for run in "${runs[@]}"; do
             FROM run WHERE runnumber=$run;" | tr -d '[:space:]')
   rt=$(num_or_zero "$rt")
   flag=''; (( rt < MIN_RUNTIME )) && { flag='YES'; dropped+=("$run"); ((++shortCnt)); }
+  ### <ADD>
+  (( rt >= MIN_RUNTIME )) && goldenRuns+=("$run")
 
   # -- GL1 events ------------------------------------------------------------
   ev=$(sql "SELECT COALESCE(SUM(lastevent-firstevent+1),0)::BIGINT
@@ -137,4 +143,10 @@ printf 'Short (<5 m)  : %d\n'   "$shortCnt"
 printf 'Total runtime : %d s (≈ %.2f h)\n' "$totalTime" "$(bc -l <<<"$totalTime/3600")"
 printf 'Total GL1 evt : %d\n'   "$totalEvt"
 echo -e "${GRN}====================================================${RST}"
+
+### <ADD> 8. WRITE GOLDEN RUN LIST ###########################################
+say "Writing golden run list (≥ ${MIN_RUNTIME}s) to $GOLDEN_RUN_FILE"
+printf '%s\n' "${goldenRuns[@]}" >"$GOLDEN_RUN_FILE"
+good "Golden run list ➔ $GOLDEN_RUN_FILE  (${#goldenRuns[@]} runs)"
+
 good "Done."

@@ -20,7 +20,8 @@
 //––– sPHENIX objects ––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <calobase/TowerInfoContainer.h>
 #include <calobase/TowerInfoDefs.h>
-#include <calobase/RawTowerGeomContainer.h>
+#include <calobase/RawTowerGeomContainer_Cylinderv1.h>
+#include <calobase/RawTowerGeom.h>
 #include <calobase/RawTowerGeom.h>
 #include <calobase/RawClusterContainer.h>
 #include <globalvertex/GlobalVertexMap.h>
@@ -81,7 +82,8 @@ class emcal_sepdCorrelator : public SubsysReco
   void      createHistos_Data();                          // main booker
   TH2Poly*  makeMbdHitmap(const std::string&, const MbdGeom*, int arm);
   TH2F*     makeEpdHitmap(const std::string& name, EpdGeom* geom, int arm);
-
+  bool      m_sepdMapReady {false};
+  void      buildSepdChannelMap();  
   // ======================================================================
   // 2) Per‑event helpers (called in process_event)
   // ======================================================================
@@ -127,9 +129,9 @@ class emcal_sepdCorrelator : public SubsysReco
 
   // --- detector lists -----------------------------------------------------
   const std::vector<std::tuple<std::string,std::string,std::string>> m_caloInfo {
-        {"TOWERINFO_CALIB_CEMC",   "TOWERGEOM_CEMC",   "CEMC"},
-        {"TOWERINFO_CALIB_HCALIN", "TOWERGEOM_HCALIN", "IHCAL"},
-        {"TOWERINFO_CALIB_HCALOUT","TOWERGEOM_HCALOUT","OHCAL"} };
+        {"TOWERINFO_CALIB_CEMC_RETOWER_SUB1",   "TOWERGEOM_CEMC",   "CEMC"},
+        {"TOWERINFO_CALIB_HCALIN_SUB1", "TOWERGEOM_HCALIN", "IHCAL"},
+        {"TOWERINFO_CALIB_HCALOUT_SUB1","TOWERGEOM_HCALOUT","OHCAL"} };
 
   // --- run‑time caches ----------------------------------------------------
   struct CaloCache {
@@ -193,8 +195,8 @@ class emcal_sepdCorrelator : public SubsysReco
   std::size_t m_evtNoTrig = 0;
 
   static constexpr std::array<std::pair<const char*, const char*>, 2> kJetRadii {{
-        {"r02", "AntiKt_subtracted_r02"},
-        {"r05", "AntiKt_subtracted_r05"}
+        {"r02", "AntiKt_Tower_r02_Sub1"},
+        {"r05", "AntiKt_Tower_r05_Sub1"}
   }};
   void  bookJetQA (const std::string& trig, HistMap& H);
   int   doJetQA   (PHCompositeNode* topNode, const std::vector<std::string>& trig);

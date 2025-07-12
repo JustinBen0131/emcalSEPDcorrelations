@@ -28,10 +28,12 @@
 #include <globalvertex/GlobalVertex.h>
 #include <calobase/TowerInfo.h>
 #include <calobase/TowerInfoDefs.h>
+#include <calobase/TowerInfoContainerv4.h>
 #include <calobase/RawCluster.h>
+#include <calobase/RawTowerGeomContainer_Cylinderv1.h>
 #include <calobase/RawClusterUtility.h>
 #include <mbd/MbdPmtHit.h>
-#include <epd/EpdGeom.h>
+#include <epd/EpdGeomV2.h>
 #include <centrality/CentralityInfo.h>
 
 #include <eventplaneinfo/Eventplaneinfo.h>
@@ -81,107 +83,124 @@ emcal_sepdCorrelator::emcal_sepdCorrelator(const std::string& outFile)
   }
 }
 
-//==========================================================================
-//  Init – one‑time module setup
-//==========================================================================
-int emcal_sepdCorrelator::Init(PHCompositeNode* /*topNode*/)
+/* ======================================================================
+ *  Init – one-time module setup
+ *    • books QA histograms
+ *    • (optional) prints the full DST node tree (Verbosity ≥ 2)
+ * ====================================================================*/
+int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
 {
   LOG(1, CLR_BLUE, "[Init] emcal_sepdCorrelator – starting");
 
+  /* 0.  book-keeping & QA histograms --------------------------------- */
   out = new TFile(Outfile.c_str(), "RECREATE");
   LOG(1, CLR_GREEN, "[Init] opened output file: " << Outfile);
 
   trigAna = new TriggerAnalyzer();
-
   LOG(1, CLR_GREEN, "[Init] booking scalar QA histograms …");
   createHistos_Data();
+
+  /* 1.  optional DST node-tree dump ---------------------------------- */
+  if (Verbosity() >= 2)           // ← adjust threshold as desired
+  {
+    std::cout << CLR_CYAN
+              << "\n[Init] ── DST node-tree dump ────────────────────────────"
+              << CLR_RESET << std::endl;
+
+    /* depth-first walk implemented with a std::function so that the
+       lambda can recurse without shadowing problems                       */
+    std::function<void(PHCompositeNode*, int)> dumpTree =
+      [&](PHCompositeNode* node, int depth)
+    {
+      if (!node) return;
+
+      /* print this node ------------------------------------------------ */
+      const std::string indent(depth * 3, ' ');
+      std::cout << indent << node->getName()
+                << " (" << node->getType() << ")";
+
+      /* for IO-data nodes also print the contained class name ---------- */
+      if (node->getType() == "PHIODataNode")
+        std::cout << " <" << node->getClass() << '>';
+
+      std::cout << '\n';
+
+      /* iterate over children with the *real* PHOOL API ---------------- */
+      PHNodeIterator it(node);
+      auto& kids = it.ls();                       // PHPointerList<PHNode>
+      for (size_t i = 0; i < kids.length(); ++i)
+      {
+        PHNode* child = kids[i];
+        if (!child) continue;
+
+        if (auto* comp = dynamic_cast<PHCompositeNode*>(child))
+        {
+          dumpTree(comp, depth + 1);              // recurse
+        }
+        else
+        {
+          const std::string ind2((depth + 1) * 3, ' ');
+          std::cout << ind2 << child->getName()
+                    << " (" << child->getType() << ")";
+          if (child->getType() == "PHIODataNode")
+            std::cout << " <" << child->getClass() << '>';
+          std::cout << '\n';
+        }
+      }
+    };
+
+    /* pick the correct root: use argument if non-null, else global ---- */
+    PHCompositeNode* root = topNode
+                              ? topNode
+                              : Fun4AllServer::instance()->topNode();
+
+    dumpTree(root, 0);
+
+    std::cout << CLR_CYAN
+              << "[Init] ──────────────────────────────────────────────────\n"
+              << CLR_RESET << std::endl;
+  }
 
   LOG(1, CLR_BLUE, "[Init] emcal_sepdCorrelator – done");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 //======================================================================
 //  InitRun – geometry‑dependent booking (only once per run)
 //======================================================================
 int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
 {
-  if (m_mapsBooked) return Fun4AllReturnCodes::EVENT_OK;   // nothing to do
-
-  /* ------------------------------------------------------------------ */
-  /* 0.  banner                                                         */
-  /* ------------------------------------------------------------------ */
-  uint64_t run   = recoConsts::instance()->get_uint64Flag("TIMESTAMP", 0);
+  /* 0. banner -------------------------------------------------------- */
+  const uint64_t run = recoConsts::instance()->get_uint64Flag("TIMESTAMP", 0);
   LOG(1, CLR_BLUE, "[InitRun] ------------------------------------------------------------");
   LOG(1, CLR_BLUE, "[InitRun] Starting InitRun  –  TIMESTAMP = " << run);
 
-  /* ------------------------------------------------------------------ */
-  /* 1.  book geometry‑dependent hit‑maps *once*                         */
-  /* ------------------------------------------------------------------ */
-  LOG(1, CLR_GREEN, "[InitRun] Geometry is present – booking hit‑maps …");
-  bookShapeHitMaps(topNode);
-  m_mapsBooked = true;
-
-  /* ------------------------------------------------------------------ */
-  /* 2.  SEPD channel‑to‑tile mapping                                    */
-  /* ------------------------------------------------------------------ */
-  m_sepd = findNode::getClass<TowerInfoContainer>(
-              topNode, "TOWERINFO_CALIB_SEPD");
-  if (!m_sepd)
-    throw std::runtime_error("[InitRun] FATAL: TOWERINFO_CALIB_SEPD not found");
-
-  const std::size_t nChan = m_sepd->size();        // e.g. 768
-  m_epdKey.assign(nChan, std::numeric_limits<unsigned>::max());
-
-  const std::string mapName = "SEPD_CHANNELMAP";
-  const std::string field   = "epd_channel_map";
-  CDBTTree tree{ CDBInterface::instance()->getUrl(mapName) };
-
-  std::size_t nMapped = 0;
-  for (std::size_t ch = 0; ch < nChan; ++ch)
+  /* 1. geometry‑dependent hit‑maps – only once per job --------------- */
+  if (!m_mapsBooked)
   {
-    const int tile = tree.GetIntValue(ch, field);   // 0…511 or 999
-    if (tile == 999) continue;                      // empty slot
-    ++nMapped;
-    const unsigned arm  = (ch >= 384) ? 1 /*North*/ : 0 /*South*/;
-    const unsigned id   = arm * 256 + tile;           // 0…511
-    m_epdKey[ch] = TowerInfoDefs::encode_epd(id);
+    LOG(1, CLR_GREEN, "[InitRun] booking hit‑maps …");
+    bookShapeHitMaps(topNode);
+    m_mapsBooked = true;
   }
-  const double frac = 100.0 * nMapped / nChan;
-  LOG(1, CLR_GREEN, "[InitRun] SEPD mapping: "
-         << nMapped << " / " << nChan << " channels mapped ("
-         << std::fixed << std::setprecision(1) << frac << "%)");
 
-  if (frac < 90.0)
-    LOG(0, CLR_YELLOW, "[InitRun] WARNING: < 90 % of SEPD channels mapped – check the channel map!");
+  /* 2. (lazy) SEPD mapping will be done the first time we see data --- */
+  m_sepdMapReady = false;         // force rebuild after run change
 
-  /* ------------------------------------------------------------------ */
-  /* 3.  centrality‑edge sanity check                                    */
-  /* ------------------------------------------------------------------ */
+  /* 3. sanity‑check user centrality edges --------------------------- */
   if (m_centEdges.empty())
-  {
-    LOG(0, CLR_YELLOW, "[InitRun] WARNING: m_centEdges vector is EMPTY – "
-                       "no centrality binning will be applied");
-  }
+    LOG(0, CLR_YELLOW, "[InitRun] WARNING: centrality edges vector is EMPTY");
   else
   {
-    std::ostringstream edgeMsg;
-    for (std::size_t i = 0; i < m_centEdges.size(); ++i)
-      edgeMsg << (i ? "," : "[") << m_centEdges[i];
-    edgeMsg << "]";
-    LOG(1, CLR_CYAN, "[InitRun] Centrality edges read: " << edgeMsg.str()
-            << "  (" << (m_centEdges.size() - 1) << " bins)");
-
-    bool monotonic = true;
-    for (std::size_t i = 1; i < m_centEdges.size(); ++i)
-      if (m_centEdges[i] <= m_centEdges[i - 1]) { monotonic = false; break; }
-
-    if (!monotonic)
-      LOG(0, CLR_YELLOW, "[InitRun] WARNING: centrality edges are not strictly increasing!");
+    bool mono = std::is_sorted(m_centEdges.begin(), m_centEdges.end());
+    if (!mono)
+      LOG(0, CLR_YELLOW, "[InitRun] WARNING: centrality edges not monotonic");
   }
 
   LOG(1, CLR_BLUE, "[InitRun] InitRun completed successfully");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 
 //==========================================================================
@@ -504,16 +523,60 @@ void emcal_sepdCorrelator::createHistos_Data()
   }
 }
 
+// ----------------------------------------------------------------------
+//  buildSepdChannelMap – executed once, after TOWERINFO_CALIB_SEPD exists
+// ----------------------------------------------------------------------
+void emcal_sepdCorrelator::buildSepdChannelMap()
+{
+  const std::size_t nChan = m_sepd->size();
+  m_epdKey.assign(nChan, std::numeric_limits<unsigned>::max());
+
+  const std::string mapName = "SEPD_CHANNELMAP";
+  const std::string field   = "epd_channel_map";
+  CDBTTree tree{ CDBInterface::instance()->getUrl(mapName) };
+
+  std::size_t nMapped = 0;
+  for (std::size_t ch = 0; ch < nChan; ++ch)
+  {
+    const int tile = tree.GetIntValue(ch, field);   // 0…511 or 999
+    if (tile == 999) continue;                      // empty slot
+    ++nMapped;
+    const unsigned arm = (ch >= 384) ? 1u : 0u;     // 0 = S, 1 = N
+    const unsigned id  = arm * 256u + tile;
+    m_epdKey[ch] = TowerInfoDefs::encode_epd(id);
+  }
+
+  const double frac = 100. * nMapped / nChan;
+  LOG(1, CLR_GREEN, "[SEPD‑map] mapped " << nMapped << " / " << nChan
+                                         << " channels (" << std::fixed
+                                         << std::setprecision(1) << frac << "%)");
+  m_sepdMapReady = true;
+}
+
 //==========================================================================
 //  process_event – orchestration only
 //==========================================================================
 int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 {
-  ++event_count;
-  PROGRESS("[event " << std::setw(9) << event_count << "]");
+    ++event_count;
+    PROGRESS("[event " << std::setw(9) << event_count << "]");
 
-  if (!fetchNodes(topNode)) return Fun4AllReturnCodes::ABORTEVENT;
+    /* A.  make sure mandatory nodes exist ----------------------------- */
+    if (!fetchNodes(topNode)) return Fun4AllReturnCodes::ABORTEVENT;
 
+//    /* B.  build SEPD channel map on‑the‑fly --------------------------- */
+//    if (!m_sepdMapReady)
+//    {
+//      m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
+//                                                      "TOWERINFO_CALIB_SEPD");
+//      if (!m_sepd)                          // still missing → skip this event
+//      {
+//        LOG(2, CLR_YELLOW,
+//            "[process_event] SEPD container not yet available – event skipped");
+//        return Fun4AllReturnCodes::ABORTEVENT;
+//      }
+//      buildSepdChannelMap();                // will flip m_sepdMapReady = true
+//    }
   trigAna->decodeTriggers(topNode);
 
   /* interrogate every configured trigger */
