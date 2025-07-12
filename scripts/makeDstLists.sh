@@ -1,21 +1,58 @@
 #!/usr/bin/env bash
 ###############################################################################
-#  makeDstLists.sh  – build one “.list” per run with absolute paths to DST
-#  ROOT files.
+#  makeDstLists.sh
 #
-#  Usage examples
+#  Purpose
+#  -------
+#  Build one “*.list” file per run containing the absolute paths to DST ROOT
+#  files.  These lists are subsequently consumed by downstream analysis or
+#  GRID production tools.
+#
+#  High-level Workflow
+#  -------------------
+#    1.  Scan one or more DST repositories for files whose names encode the
+#        run-number (e.g.   DST_JET-00068542-00017.root).
+#    2.  For every run discovered, write a list file
+#        $list_dir/<PREFIX>-<run>.list  containing all matching paths.
+#    3.  (optional)  “caloFitting” workflow
+#          • Retrieve Run-3 Au+Au run numbers that have CALOFITTING output.
+#          • Perform a quick QA (runtime ≥ 5 min **and** GL1 events ≥ 1 × 10⁵).
+#          • Keep the *golden* subset and create CALOFITTING list files.
+#          • Optionally bypass CreateDstList.pl and build these lists by
+#            traversing the raw production tree (see **forceFileList** mode).
+#
+#  Command-line Syntax
+#  -------------------
+#    ./makeDstLists.sh <mode> [caloFitting [forceFileList]]
+#
+#      <mode>            Required.  Selects the DST repositories to scan.
+#                        ├─ run24auau   →  Run-24 Au+Au  CALO-DSTs
+#                        └─ run25auau   →  Run-25 Au+Au  JET and JETCALO DSTs
+#
+#      caloFitting       Optional.  Enables the extended QA + CALOFITTING
+#                        pipeline described above.
+#
+#      forceFileList     Optional **third** argument that is only honoured
+#                        when *caloFitting* is also specified.  Instead of
+#                        calling CreateDstList.pl, the script walks the
+#                        directory
+#                          /sphenix/lustre01/sphnxpro/production/run3auau/\
+#                          physics/caloy2fitting/<tag>
+#                        creates one list per run, and writes them to
+#                        $list_dir with the same naming convention.
+#
+#  Typical Examples
+#  ----------------
+#    # Standard list building for Run-24 Au+Au CALO-DSTs
 #    ./makeDstLists.sh run24auau
-#    ./makeDstLists.sh run25auau
-#    ./makeDstLists.sh run25auau caloFitting   # ← extra QA + CALOFITTING lists
 #
-#  Modes implemented so far
-#    run24auau  – Run‑24 Au+Au  CALO‑DSTs
-#    run25auau  – Run‑25 Au+Au  JET *and* JETCALO DSTs
+#    # Build Run-25 JET / JETCALO lists **plus** CALOFITTING QA & lists
+#    ./makeDstLists.sh run25auau caloFitting
 #
-#  Optional second argument “caloFitting” expands the workflow:
-#    • obtains Run‑3 Au+Au run numbers for DST_CALOFITTING
-#    • runs a quick per‑run QA (runtime ≥5 min, GL1 events ≥1e5)
-#    • writes *.list files for the golden runs to $list_dir
+#    # Same as above, but force the CALOFITTING list files to be built from
+#    # the production tree rather than via CreateDstList.pl
+#    ./makeDstLists.sh run25auau caloFitting forceFileList
+#
 ###############################################################################
 set -euo pipefail
 IFS=$'\n\t' ; shopt -s nullglob              # strict mode
@@ -261,13 +298,59 @@ if [[ $extra == caloFitting ]]; then
   ###########################################################################
   # 4 . produce per‑run .list files for the golden sample                  #
   ###########################################################################
-  say "Generating ${calo_prefix} .list files for ${#golden[@]} golden runs"
-  for run in "${golden[@]}"; do
-    out_list="${list_dir}/${calo_prefix}-${run}.list"
-    CreateDstList.pl --tag "$tag" --list "$run3_list" "$calo_prefix" --run "$run" \
-                     >"$out_list"
-    good "  ${run}: $(wc -l <"$out_list") path(s)"
+
+  # third positional argument decides how the .list files are built
+  build_mode=${3:-create}        # create  →  use CreateDstList.pl   (default)
+                                   # forceFileList → traverse caloy2fitting tree
+
+  say "Generating ${calo_prefix} .list files for ${#golden[@]} golden runs  (mode=${build_mode})"
+
+  if [[ $build_mode == forceFileList ]]; then
+      # ----------------------------------------------------------------------
+      # 4A. DIRECTORY TRAVERSAL BACK‑UP – build the list files ourselves
+      #     Base      : /sphenix/lustre01/sphnxpro/production/run3auau/physics/caloy2fitting/<tag>
+      #     Sub‑dirs  : run_<000NNN00>_<000NNN00> (100‑run buckets)
+      #     Pattern   : DST_CALOFITTING_<dataset>_<tag>-<run8>-NNNNN.root
+      # ----------------------------------------------------------------------
+      calo_base="/sphenix/lustre01/sphnxpro/production/run3auau/physics/caloy2fitting/${tag}"
+
+      for run in "${golden[@]}"; do
+        run_dec=$((10#$run))                                  # strip any octal :contentReference[oaicite:0]{index=0}
+        run8=$(printf "%08d" "$run_dec")                      # 8‑digit run number
+
+        bucket_start=$(( (run_dec/100)*100 ))                 # integer division :contentReference[oaicite:1]{index=1}
+        bucket_end=$(( bucket_start + 100 ))
+        bucket_dir=$(printf "run_%08d_%08d" "$bucket_start" "$bucket_end")
+
+        full_dir="${calo_base}/${bucket_dir}"
+        [[ -d $full_dir ]] || { warn "  ${run}: directory ${bucket_dir} missing"; continue; }
+
+        # collect all segments for this run, sort them numerically for reproducibility
+        mapfile -t segs < <(find "$full_dir" -type f \
+                     -name "${calo_prefix}_${dataset}_${tag}-${run8}-*.root" \
+                     | sort -V)
+
+        out_list="${list_dir}/${calo_prefix}_${dataset}_${tag}-${run8}.list"
+
+        if (( ${#segs[@]} )); then
+          printf '%s\n' "${segs[@]}" >"$out_list"
+          good "  ${run}: wrote ${#segs[@]} path(s)"
+        else
+          warn "  ${run}: no CALOFITTING files found in ${bucket_dir}"
+        fi
   done
+
+  else
+      # ----------------------------------------------------------------------
+      # 4B. STANDARD PATH – use CreateDstList.pl exactly as before
+      # ----------------------------------------------------------------------
+      for run in "${golden[@]}"; do
+        out_list="${list_dir}/${calo_prefix}-${run}.list"
+        CreateDstList.pl --tag "$tag" --list "$run3_list" "$calo_prefix" --run "$run" \
+                         >"$out_list"
+        good "  ${run}: $(wc -l <"$out_list") path(s)"
+      done
+  fi
 
   printf '%s\n' "${golden[@]}" >"$golden_txt"
   good "Golden run list ➔ $golden_txt"

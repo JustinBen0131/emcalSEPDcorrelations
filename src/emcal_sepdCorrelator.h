@@ -116,8 +116,10 @@ class emcal_sepdCorrelator : public SubsysReco
   std::size_t       event_count = 0;
 
   // --- trigger bookkeeping -----------------------------------------------
-  std::map<std::string, std::string> triggerNameMap {
-      {"MBD N&S >= 2", "MBD_NandS_geq_2"} };
+    std::map<std::string, std::string> triggerNameMap {
+        {"MBD N&S >= 2, vtx < 10 cm", "MBD_NandS_geq_2_vtx_lt10cm"},
+        {"MBD N&S >= 2, vtx < 30 cm", "MBD_NandS_geq_2_vtx_lt30cm"},
+        {"MBD N&S >= 2, vtx < 150 cm", "MBD_NandS_geq_2_vtx_lt150cm"}};
   std::map<std::string, HistMap>     qaHistogramsByTrigger;
 
   // --- analysis cuts ------------------------------------------------------
