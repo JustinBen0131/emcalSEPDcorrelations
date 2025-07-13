@@ -25,12 +25,26 @@
 #include <calobase/TowerInfoContainer.h>
 #include <mbd/MbdPmtContainer.h>
 #include <caloreco/CaloTowerStatus.h>
+#include <caloreco/CaloWaveformProcessing.h>
+#include <caloreco/CaloTowerBuilder.h>
 #include <phool/PHNodeIterator.h>
 #include <phool/PHIODataNode.h>         // for PHIODataNode
 
+#include <ffamodules/FlagHandler.h>
 #include <ffamodules/CDBInterface.h>
 #include <calotrigger/TriggerRunInfoReco.h>
+#include <calobase/RawTowerGeomContainer_Cylinderv1.h>
+#include <caloreco/CaloGeomMapping.h>
+#include <caloreco/RawClusterPositionCorrection.h>
+#include <calobase/RawTowerGeom.h>
+#include <caloreco/RawTowerCalibration.h>
+#include <jetbase/Jet.h>
+#include <jetbase/FastJetOptions.h>
+#include <jetbackground/FastJetAlgoSub.h>
+#include <mbd/MbdEvent.h>
 #include <mbd/MbdReco.h>
+#include <epd/EpdReco.h>
+#include <zdcinfo/ZdcReco.h>
 #include <globalvertex/GlobalVertexReco.h>
 #include <caloreco/CaloTowerCalib.h>
 // new – high‑level reconstruction
@@ -40,10 +54,16 @@
 #include <zdcinfo/ZdcReco.h>
 #include <phool/recoConsts.h>
 #include <phool/PHRandomSeed.h>
+#include <jetbase/FastJetOptions.h>
+#include <jetbase/JetReco.h>
+#include <jetbase/TowerJetInput.h>
+#include <jetbackground/RetowerCEMC.h>
+#include <jetbackground/DetermineTowerBackground.h>
+#include <jetbackground/SubtractTowers.h>
+#include <jetbackground/CopyAndSubtractJets.h>
 
 // analysis module
 #include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdReco.h"
 
 // C / C++
 #include <fstream>
@@ -90,6 +110,15 @@ namespace detail
     s.erase(0, s.find_first_not_of(ws));
     s.erase(s.find_last_not_of(ws) + 1);
     return s;
+  }
+}
+
+namespace detail
+{
+  inline FastJetAlgoSub* fjAlgo(const float R)
+  {
+    FastJetOptions o({Jet::ANTIKT, Jet::SRC::VOID, R, /*ptmin*/0.0, /*verbosity*/0});
+    return new FastJetAlgoSub(o);
   }
 }
 
@@ -141,52 +170,172 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   // 2.  Global run flags
   //--------------------------------------------------------------------
   recoConsts* rc = recoConsts::instance();
-  rc->set_StringFlag("CDB_GLOBALTAG", "ProdA_2024");
+  rc->set_StringFlag("CDB_GLOBALTAG","ProdA_2024");
   rc->set_uint64Flag("TIMESTAMP",     run);
   CDBInterface::instance() -> Verbosity(1);
     
-  gSystem->Load("libg4dst");
+  std::unique_ptr<FlagHandler> flag = std::make_unique<FlagHandler>();
+  se->registerSubsystem(flag.get());
     
-  auto* inDST = new Fun4AllDstInputManager("DSTcalofitting");
-  for (const auto& f : files) inDST->AddFile(f);
-  se->registerInputManager(inDST);
+    for (const std::string& det : {"CEMC","HCALIN","HCALOUT"})
+    {
+      auto *geom = new CaloGeomMapping(("Geom_"+det).c_str());
+      geom->set_detector_name(det);          // << detector tag
+      geom->set_UseDetailedGeometry(false);   // (optional, but nice)
+      se->registerSubsystem(geom);
+    }
 
-  //--------------------------------------------------------------------
-  // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
-  //--------------------------------------------------------------------
-  auto* epdreco = new EpdReco();
-  se->registerSubsystem(epdreco);
-    
-  auto mbdreco = new MbdReco();
-  se->registerSubsystem( mbdreco );
-    
-  auto gvertex = new GlobalVertexReco();
-  se->registerSubsystem( gvertex );
-    
-  CaloTowerCalib *calibZDC = new CaloTowerCalib("ZDC");
-  calibZDC->set_detector_type(CaloTowerDefs::ZDC);
-  se->registerSubsystem(calibZDC);
 
-  auto zdcreco = new ZdcReco();
+//  CaloGeomMapping* geomMap = new CaloGeomMapping("CEMC_GeomFiller");
+//  geomMap->set_detector_name("CEMC");
+//  geomMap->set_UseDetailedGeometry(true);   // we want the 8-vertex blocks
+//  geomMap->Verbosity(0);
+//  se->registerSubsystem(geomMap);           // register *before* anything that uses it
+//    
+  //////////////////////////////
+  // set statuses on raw towers
+  std::cout << "status setters" << std::endl;
+  CaloTowerStatus *statusEMC = new CaloTowerStatus("CEMCSTATUS");
+  statusEMC->set_detector_type(CaloTowerDefs::CEMC);
+  statusEMC->set_time_cut(1);
+  se->registerSubsystem(statusEMC);
+    
+  CaloTowerStatus *statusHCalIn = new CaloTowerStatus("HCALINSTATUS");
+  statusHCalIn->set_detector_type(CaloTowerDefs::HCALIN);
+  statusHCalIn->set_time_cut(2);
+  se->registerSubsystem(statusHCalIn);
+
+  CaloTowerStatus *statusHCALOUT = new CaloTowerStatus("HCALOUTSTATUS");
+  statusHCALOUT->set_detector_type(CaloTowerDefs::HCALOUT);
+  statusHCALOUT->set_time_cut(2);
+  se->registerSubsystem(statusHCALOUT);
+
+  ////////////////////
+  // Calibrate towers
+  std::cout << "Calibrating EMCal" << std::endl;
+  CaloTowerCalib *calibEMC = new CaloTowerCalib("CEMCCALIB");
+  calibEMC->set_detector_type(CaloTowerDefs::CEMC);
+  se->registerSubsystem(calibEMC);
+
+  std::cout << "Calibrating OHcal" << std::endl;
+  CaloTowerCalib *calibOHCal = new CaloTowerCalib("HCALOUT");
+  calibOHCal->set_detector_type(CaloTowerDefs::HCALOUT);
+  se->registerSubsystem(calibOHCal);
+
+  std::cout << "Calibrating IHcal" << std::endl;
+  CaloTowerCalib *calibIHCal = new CaloTowerCalib("HCALIN");
+  calibIHCal->set_detector_type(CaloTowerDefs::HCALIN);
+  se->registerSubsystem(calibIHCal);
+    
+    
+  std::cout << "Building clusters" << std::endl;
+  RawClusterBuilderTemplate *ClusterBuilder = new RawClusterBuilderTemplate("EmcRawClusterBuilderTemplate");
+  ClusterBuilder->Detector("CEMC");
+  ClusterBuilder->set_threshold_energy(0.070);  // for when using basic calibration
+  std::string emc_prof = getenv("CALIBRATIONROOT");
+  emc_prof += "/EmcProfile/CEMCprof_Thresh30MeV.root";
+  ClusterBuilder->LoadProfile(emc_prof);
+  ClusterBuilder->set_UseTowerInfo(1);  // to use towerinfo objects rather than old RawTower
+  ClusterBuilder->set_UseAltZVertex(1); // Use MBD Vertex for vertex-based corrections
+  se->registerSubsystem(ClusterBuilder);
+
+//  //--------------------------------------------------------------------
+//  // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
+//  //--------------------------------------------------------------------
+  // // MBD/BBC Reconstruction
+  std::unique_ptr<MbdReco> mbdreco = std::make_unique<MbdReco>();
+  se->registerSubsystem(mbdreco.get());
+    
+  // sEPD Reconstruction--Calib Info
+  std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
+  se->registerSubsystem(epdreco.get());
+
+  std::unique_ptr<ZdcReco> zdcreco = std::make_unique<ZdcReco>();
   zdcreco->set_zdc1_cut(0.0);
   zdcreco->set_zdc2_cut(0.0);
-  se->registerSubsystem( zdcreco );
-
-  auto mb = new MinimumBiasClassifier();
-  mb->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
-  mb->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
-  se->registerSubsystem( mb );
-
-  auto cent = new CentralityReco();
-  cent->setOverwriteScale("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/cdb_centrality_scale_54912.root"); // will change run by run
-  cent->setOverwriteVtx("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/cdb_centrality_vertex_scale_54912.root"); // will change run by run
-  cent->setOverwriteDivs("/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/cdb_centrality_54912.root");
-  se->registerSubsystem( cent );
+  se->registerSubsystem(zdcreco.get());
+   
+  std::unique_ptr<GlobalVertexReco> gvertex = std::make_unique<GlobalVertexReco>();
+  se->registerSubsystem(gvertex.get());
     
-  EventPlaneReco *epreco = new EventPlaneReco();
+  std::unique_ptr<MinimumBiasClassifier> mb = std::make_unique<MinimumBiasClassifier>();
+  se->registerSubsystem(mb.get());
+    
+  std::unique_ptr<CentralityReco> cent = std::make_unique<CentralityReco>();
+  se->registerSubsystem(cent.get());
+
+  std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();
   epreco->set_sepd_epreco(true);
-  se->registerSubsystem(epreco);
+  se->registerSubsystem(epreco.get());
     
+//  //--------------------------------------------------------------------
+//  // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
+//  //--------------------------------------------------------------------
+//  {
+      // ── (i)  0.025×0.025 retower of the EMCal ─────────────────────────
+      auto* rcemc = new RetowerCEMC();
+      rcemc->set_towerinfo(true);               // use TowerInfo containers
+      rcemc->set_frac_cut(0.5);                 // ≥50 % masked ⇒ mask retower
+      rcemc->set_towerNodePrefix("TOWERINFO_CALIB");
+      se->registerSubsystem(rcemc);
+
+      // ── (ii)  RAW‑SEED JETS  – must precede DetermineTowerBackground ──
+      auto* seedReco = new JetReco();
+
+      seedReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_RETOWER,
+                                            "TOWERINFO_CALIB"));
+      seedReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO,
+                                            "TOWERINFO_CALIB"));
+      seedReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO,
+                                            "TOWERINFO_CALIB"));
+
+      seedReco->add_algo(detail::fjAlgo(0.2f), "AntiKt_TowerInfo_HIRecoSeedsRaw_r02");
+      seedReco->set_algo_node("AntiKt_TowerInfo");   // ➜ nodes:
+                                                     //   AntiKt_TowerInfo_HIRecoSeedsRaw_r0X
+      seedReco->set_input_node("TOWER");
+      seedReco->Verbosity(verbose ? 1 : 0);
+      se->registerSubsystem(seedReco);
+
+      // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
+      auto* dtb = new DetermineTowerBackground();
+      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
+      dtb->SetSeedType(0);                        // use HIRecoSeedsRaw_* we just built
+      dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
+      dtb->set_towerinfo(true);
+      dtb->set_towerNodePrefix("TOWERINFO_CALIB");
+      se->registerSubsystem(dtb);
+
+//      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
+//      auto* st = new SubtractTowers();
+//      st->set_towerinfo(true);
+//      st->set_towerNodePrefix("TOWERINFO_CALIB");
+//      se->registerSubsystem(st);
+
+//      // ── (v)  jet reco on *subtracted* towers – names must match DTB ────
+//      auto* subReco = new JetReco();
+//
+//      subReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_SUB1,
+//                                           "TOWERINFO_CALIB"));
+//      subReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO_SUB1,
+//                                           "TOWERINFO_CALIB"));
+//      subReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO_SUB1,
+//                                           "TOWERINFO_CALIB"));
+//      subReco  ->Verbosity(1);
+//      subReco->add_algo(detail::fjAlgo(0.2f), "HIRecoSeedsSub_r02");
+//      subReco->set_algo_node("AntiKt_TowerInfo");   // ➜ nodes:
+//                                                    //   AntiKt_TowerInfo_HIRecoSeedsSub_r0X
+//      subReco->set_input_node("TOWER");
+//      subReco->Verbosity(verbose ? 1 : 0);
+//      se->registerSubsystem(subReco);
+
+//      // ── (vi)  copy jet four‑vectors & subtract residual background ─────
+//      auto* casj = new CopyAndSubtractJets();
+//      casj->set_towerinfo(true);
+//      casj->Verbosity(3);
+//      casj->set_towerNodePrefix("TOWERINFO_CALIB");
+//      se->registerSubsystem(casj);
+//  }
+
   // 3e) Run‑information helper (optional but handy)
   auto* trigInfo = new TriggerRunInfoReco();
   trigInfo->Verbosity(verbose ? 1 : 0);
@@ -198,7 +347,10 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   correl->enableVzCut(true);
   correl->setVerbose(10);
   se->registerSubsystem(correl);
-
+    
+  auto* inDST = new Fun4AllDstInputManager("DSTcalofitting");
+  for (const auto& f : files) inDST->AddFile(f);
+  se->registerInputManager(inDST);
 
   //--------------------------------------------------------------------
   // 5.  Run
@@ -215,10 +367,10 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
     detail::bail(std::string("exception in Fun4All: ") + e.what());
   }
 
-  //--------------------------------------------------------------------
-  // 6.  Clean exit
-  //--------------------------------------------------------------------
-  gSystem->Exit(0);
+//  //--------------------------------------------------------------------
+//  // 6.  Clean exit
+//  //--------------------------------------------------------------------
+//  gSystem->Exit(0);
 }
 
 #endif   // ROOT_VERSION guard

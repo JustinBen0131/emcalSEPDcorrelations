@@ -636,7 +636,8 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
         return Fun4AllReturnCodes::ABORTEVENT;
   }
   /* use the arm-sum (South+North) definition that CentralityReco writes */
-  m_centBin = static_cast<int>(cent->get_centile(CentralityInfo::PROP::epd_NS));
+  m_centBin = static_cast<int>(
+        cent->get_centile(CentralityInfo::PROP::mbd_NS));
     
   doMbdQA (activeTrig);
   doPi0QA (activeTrig);

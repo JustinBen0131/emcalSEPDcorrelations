@@ -55,6 +55,10 @@ using HistMap = std::map<std::string, TObject*>;
 class emcal_sepdCorrelator : public SubsysReco
 {
  public:
+  static constexpr std::array<std::pair<const char*, const char*>, 1> kJetRadii {{
+        {"r02", "AntiKt_TowerInfo_HIRecoSeedsRaw_r02"}
+  }};
+      
   // ---------- construction / destruction ----------------------------------
   explicit emcal_sepdCorrelator(const std::string& out = "caloTreeData.root");
   ~emcal_sepdCorrelator() override = default;
@@ -105,7 +109,6 @@ class emcal_sepdCorrelator : public SubsysReco
   const GlobalVertex* m_vtx {nullptr};
   double m_vx {0.}, m_vy {0.}, m_vz {0.};
   std::vector<unsigned> m_epdKey;
-    
   std::vector<int> m_centEdges {0,10,20,30,40,50,60};
   int                         m_centBin   = -1;   // 0…99
   std::map<std::string,int>   m_centIdxCache;         // "0_10" → 0, etc.
@@ -117,9 +120,7 @@ class emcal_sepdCorrelator : public SubsysReco
 
   // --- trigger bookkeeping -----------------------------------------------
     std::map<std::string, std::string> triggerNameMap {
-        {"MBD N&S >= 2, vtx < 10 cm", "MBD_NandS_geq_2_vtx_lt10cm"},
-        {"MBD N&S >= 2, vtx < 30 cm", "MBD_NandS_geq_2_vtx_lt30cm"},
-        {"MBD N&S >= 2, vtx < 150 cm", "MBD_NandS_geq_2_vtx_lt150cm"}};
+        {"MBD N&S >= 2", "MBD_NandS_geq_2"}};
   std::map<std::string, HistMap>     qaHistogramsByTrigger;
 
   // --- analysis cuts ------------------------------------------------------
@@ -131,9 +132,9 @@ class emcal_sepdCorrelator : public SubsysReco
 
   // --- detector lists -----------------------------------------------------
   const std::vector<std::tuple<std::string,std::string,std::string>> m_caloInfo {
-        {"TOWERINFO_CALIB_CEMC_RETOWER_SUB1",   "TOWERGEOM_CEMC",   "CEMC"},
-        {"TOWERINFO_CALIB_HCALIN_SUB1", "TOWERGEOM_HCALIN", "IHCAL"},
-        {"TOWERINFO_CALIB_HCALOUT_SUB1","TOWERGEOM_HCALOUT","OHCAL"} };
+        {"TOWERINFO_CALIB_CEMC_RETOWER",   "TOWERGEOM_CEMC",   "CEMC"},
+        {"TOWERINFO_CALIB_HCALIN", "TOWERGEOM_HCALIN", "IHCAL"},
+        {"TOWERINFO_CALIB_HCALOUT","TOWERGEOM_HCALOUT","OHCAL"} };
 
   // --- run‑time caches ----------------------------------------------------
   struct CaloCache {
@@ -196,10 +197,6 @@ class emcal_sepdCorrelator : public SubsysReco
   std::map<std::string,TrigStat> m_trigStat;
   std::size_t m_evtNoTrig = 0;
 
-  static constexpr std::array<std::pair<const char*, const char*>, 2> kJetRadii {{
-        {"r02", "AntiKt_Tower_r02_Sub1"},
-        {"r05", "AntiKt_Tower_r05_Sub1"}
-  }};
   void  bookJetQA (const std::string& trig, HistMap& H);
   int   doJetQA   (PHCompositeNode* topNode, const std::vector<std::string>& trig);
   float getMaxJetEt(JetContainer* jets) const;

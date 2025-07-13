@@ -30,6 +30,7 @@ set -u
 source /opt/sphenix/core/bin/setup_local.sh "/sphenix/u/${USER}/install"
 ################################################################################
 
+
 #  Output directory -----------------------------------------------------------
 outDir="${destBase}/${runNumber}"
 mkdir -p "$outDir"
