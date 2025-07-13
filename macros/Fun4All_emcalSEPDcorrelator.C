@@ -177,15 +177,13 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   std::unique_ptr<FlagHandler> flag = std::make_unique<FlagHandler>();
   se->registerSubsystem(flag.get());
     
-    for (const std::string& det : {"CEMC","HCALIN","HCALOUT"})
+  for (const std::string& det : {"CEMC","HCALIN","HCALOUT"})
     {
       auto *geom = new CaloGeomMapping(("Geom_"+det).c_str());
       geom->set_detector_name(det);          // << detector tag
       geom->set_UseDetailedGeometry(false);   // (optional, but nice)
       se->registerSubsystem(geom);
-    }
-
-
+  }
 //  CaloGeomMapping* geomMap = new CaloGeomMapping("CEMC_GeomFiller");
 //  geomMap->set_detector_name("CEMC");
 //  geomMap->set_UseDetailedGeometry(true);   // we want the 8-vertex blocks
@@ -209,6 +207,11 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   statusHCALOUT->set_detector_type(CaloTowerDefs::HCALOUT);
   statusHCALOUT->set_time_cut(2);
   se->registerSubsystem(statusHCALOUT);
+    
+//  CaloTowerStatus *statusSEPD = new CaloTowerStatus("SEPDSTATUS");
+//  statusSEPD->set_detector_type(CaloTowerDefs::SEPD);
+//  statusSEPD->Verbosity(2);
+//  se->registerSubsystem(statusSEPD);
 
   ////////////////////
   // Calibrate towers
@@ -226,7 +229,16 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   CaloTowerCalib *calibIHCal = new CaloTowerCalib("HCALIN");
   calibIHCal->set_detector_type(CaloTowerDefs::HCALIN);
   se->registerSubsystem(calibIHCal);
+
     
+//  // ----  builder ---------------------------------------------------
+//  CaloTowerBuilder *ctbSEPD = new CaloTowerBuilder("SEPDBUILDER");
+//  ctbSEPD->set_detector_type(CaloTowerDefs::SEPD);
+//  ctbSEPD->set_builder_type(CaloTowerDefs::kPRDFTowerv4);
+//  ctbSEPD->set_processing_type(CaloWaveformProcessing::FAST);
+//  ctbSEPD->set_nsamples(12);
+//  ctbSEPD->set_offlineflag();
+//  se->registerSubsystem(ctbSEPD);
     
   std::cout << "Building clusters" << std::endl;
   RawClusterBuilderTemplate *ClusterBuilder = new RawClusterBuilderTemplate("EmcRawClusterBuilderTemplate");
@@ -239,17 +251,18 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   ClusterBuilder->set_UseAltZVertex(1); // Use MBD Vertex for vertex-based corrections
   se->registerSubsystem(ClusterBuilder);
 
-//  //--------------------------------------------------------------------
-//  // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
-//  //--------------------------------------------------------------------
+  //--------------------------------------------------------------------
+  // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
+  //--------------------------------------------------------------------
   // // MBD/BBC Reconstruction
   std::unique_ptr<MbdReco> mbdreco = std::make_unique<MbdReco>();
   se->registerSubsystem(mbdreco.get());
     
   // sEPD Reconstruction--Calib Info
   std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
+  epdreco->Verbosity(2);
   se->registerSubsystem(epdreco.get());
-
+    
   std::unique_ptr<ZdcReco> zdcreco = std::make_unique<ZdcReco>();
   zdcreco->set_zdc1_cut(0.0);
   zdcreco->set_zdc2_cut(0.0);
@@ -258,20 +271,27 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   std::unique_ptr<GlobalVertexReco> gvertex = std::make_unique<GlobalVertexReco>();
   se->registerSubsystem(gvertex.get());
     
-  std::unique_ptr<MinimumBiasClassifier> mb = std::make_unique<MinimumBiasClassifier>();
-  se->registerSubsystem(mb.get());
+  auto *mb = new MinimumBiasClassifier();
+  mb->Verbosity(1);
+  se->registerSubsystem(mb);
     
-  std::unique_ptr<CentralityReco> cent = std::make_unique<CentralityReco>();
-  se->registerSubsystem(cent.get());
+  auto *cent = new CentralityReco();
+  /* switch off the MB veto (added in PR #2162, ana .495 and up) */
+  se->registerSubsystem(cent);
 
   std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();
   epreco->set_sepd_epreco(true);
   se->registerSubsystem(epreco.get());
     
-//  //--------------------------------------------------------------------
-//  // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
-//  //--------------------------------------------------------------------
-//  {
+//    CaloTowerCalib *calibSEPD = new CaloTowerCalib("SEPD");
+//    calibSEPD->Verbosity(2);
+//    calibSEPD->set_detector_type(CaloTowerDefs::SEPD);
+//    se->registerSubsystem(calibSEPD);
+    
+  //--------------------------------------------------------------------
+  // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
+  //--------------------------------------------------------------------
+  {
       // ── (i)  0.025×0.025 retower of the EMCal ─────────────────────────
       auto* rcemc = new RetowerCEMC();
       rcemc->set_towerinfo(true);               // use TowerInfo containers
@@ -299,7 +319,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
       // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
       auto* dtb = new DetermineTowerBackground();
       dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
-      dtb->SetSeedType(0);                        // use HIRecoSeedsRaw_* we just built
+      dtb->SetSeedType(0);
       dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
       dtb->set_towerinfo(true);
       dtb->set_towerNodePrefix("TOWERINFO_CALIB");
@@ -334,7 +354,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
 //      casj->Verbosity(3);
 //      casj->set_towerNodePrefix("TOWERINFO_CALIB");
 //      se->registerSubsystem(casj);
-//  }
+  }
 
   // 3e) Run‑information helper (optional but handy)
   auto* trigInfo = new TriggerRunInfoReco();

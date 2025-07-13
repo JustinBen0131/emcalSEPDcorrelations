@@ -557,98 +557,160 @@ void emcal_sepdCorrelator::buildSepdChannelMap()
 }
 
 //==========================================================================
-//  process_event – orchestration only
+//  process_event – orchestration with exhaustive verbosity
 //==========================================================================
 int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 {
-    ++event_count;
-    PROGRESS("[event " << std::setw(9) << event_count << "]");
+  /* ------------------------------------------------------------------ */
+  /* 0. Banner & running counter                                        */
+  /* ------------------------------------------------------------------ */
+  ++event_count;
+  PROGRESS("[event " << std::setw(9) << event_count << "] "
+           "(Verb=" << Verbosity() << ")");
 
-    /* A.  make sure mandatory nodes exist ----------------------------- */
-    if (!fetchNodes(topNode)) return Fun4AllReturnCodes::ABORTEVENT;
-    
-    /* B.  build SEPD channel map on‑the‑fly --------------------------- */
-    if (!m_sepdMapReady)
+  /* ------------------------------------------------------------------ */
+  /* 1. Mandatory node check                                            */
+  /* ------------------------------------------------------------------ */
+  LOG(4, CLR_BLUE, "  [process_event] – node sanity");
+
+  if (!fetchNodes(topNode))
+  {
+    LOG(4, CLR_YELLOW, "    mandatory node missing → ABORTEVENT");
+    return Fun4AllReturnCodes::ABORTEVENT;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 2. On-the-fly SEPD map build                                       */
+  /* ------------------------------------------------------------------ */
+  if (!m_sepdMapReady)
+  {
+    LOG(5, CLR_BLUE, "    building SEPD channel map …");
+    m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
+                                                    "TOWERINFO_CALIB_SEPD");
+    if (!m_sepd)
     {
-      m_sepd = findNode::getClass<TowerInfoContainer>(topNode,
-                                                      "TOWERINFO_CALIB_SEPD");
-      if (!m_sepd)                          // still missing → skip this event
-      {
-        LOG(2, CLR_YELLOW,
-            "[process_event] SEPD container not yet available – event skipped");
-        return Fun4AllReturnCodes::ABORTEVENT;
-      }
-      buildSepdChannelMap();                // will flip m_sepdMapReady = true
+      LOG(4, CLR_YELLOW,
+          "    SEPD container not yet present – event skipped");
+      return Fun4AllReturnCodes::ABORTEVENT;
     }
-    
+    buildSepdChannelMap();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Trigger decoding                                                */
+  /* ------------------------------------------------------------------ */
   trigAna->decodeTriggers(topNode);
 
-  /* interrogate every configured trigger */
   std::vector<std::string> activeTrig;
-  if (Verbosity() >= 3) std::cout << CLR_BLUE << "    Trigger status:\n";
+  if (Verbosity() >= 4) LOG(4, CLR_BLUE, "    Trigger matrix:");
 
-  for (auto& kv : triggerNameMap)
+  for (auto& [bitname, key] : triggerNameMap)
   {
-    const std::string &bitname = kv.first;
-    const std::string &key     = kv.second;
     ++m_trigStat[key].tested;
-
     const bool fired = trigAna->didTriggerFire(bitname);
     if (fired) { activeTrig.push_back(key); ++m_trigStat[key].fired; }
 
-    if (Verbosity() >= 3)
+    if (Verbosity() >= 4)
       std::cout << "      • " << std::left << std::setw(25) << bitname
-                << " → " << (fired ? CLR_GREEN "FIRED" : CLR_YELLOW "–")
+                << " → "
+                << (fired ? CLR_GREEN "FIRED" : CLR_YELLOW "–")
                 << CLR_RESET << '\n';
   }
 
   if (activeTrig.empty())
   {
     ++m_evtNoTrig;
-    if (Verbosity() >= 3)
-      std::cout << CLR_YELLOW
-                << "      → event skipped: no configured trigger fired\n"
-                << CLR_RESET;
+    LOG(4, CLR_YELLOW, "    no configured trigger fired – skip");
     return Fun4AllReturnCodes::ABORTEVENT;
   }
-    
-  /* ---- raw z‑vertex distribution (filled before vz cut) -------------- */
-  for (const auto& t : activeTrig)
-      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])->Fill(m_vz);
 
-    /* ---- now enforce the vz cut ---------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* 4. Vertex-z QA & cut                                               */
+  /* ------------------------------------------------------------------ */
+  for (const auto& t : activeTrig)
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])->Fill(m_vz);
+
   if (m_useVzCut && std::fabs(m_vz) >= m_vzCut)
   {
-      LOG(2, CLR_YELLOW, "      |vz| = " << std::fabs(m_vz)
-                         << " cm exceeds cut (" << m_vzCut << ") → skip");
-      return Fun4AllReturnCodes::ABORTEVENT;
+    LOG(4, CLR_YELLOW, "    |vz| = " << std::fabs(m_vz)
+                       << " cm ≥ cut (" << m_vzCut << ") – skip");
+    return Fun4AllReturnCodes::ABORTEVENT;
   }
 
-    
-  /* detector‑level QA & correlations */
+  /* ------------------------------------------------------------------ */
+  /* 5. Detector-level QA                                               */
+  /* ------------------------------------------------------------------ */
+  LOG(5, CLR_BLUE, "    running detector-level QA");
   doCaloQA(activeTrig);
   doSepdQA(activeTrig);
-  CentralityInfo* cent = findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
+
+  /* ------------------------------------------------------------------ */
+  /* 6. Centrality lookup & diagnostics                                 */
+  /* ------------------------------------------------------------------ */
+  CentralityInfo* cent =
+      findNode::getClass<CentralityInfo>(topNode,"CentralityInfo");
   if (!cent)
   {
-        LOG(1, CLR_YELLOW,
-            "  – CentralityInfo node missing → skip event");
-        return Fun4AllReturnCodes::ABORTEVENT;
+    LOG(4, CLR_YELLOW,
+        "    CentralityInfo node **missing** – event skipped");
+    return Fun4AllReturnCodes::ABORTEVENT;
   }
-  /* use the arm-sum (South+North) definition that CentralityReco writes */
-  m_centBin = static_cast<int>(
-        cent->get_centile(CentralityInfo::PROP::mbd_NS));
-    
+
+    auto describeCentrality = [&](CentralityInfo* c)
+    {
+      std::ostringstream oss;
+      int valid = 0;
+
+      // --- derive enum length at compile-time ---
+      constexpr int total =
+          static_cast<int>(CentralityInfo::PROP::epd_NS);  //<-- HERE
+
+      for (int p = 0; p < total; ++p)
+      {
+        auto prop = static_cast<CentralityInfo::PROP>(p);
+        if (c->has_centile(prop) &&
+            std::isfinite(c->get_centile(prop)))
+          ++valid;
+      }
+      oss << valid << '/' << total << " properties finite";
+      return oss.str();
+    };
+
+  float centile = cent->get_centile(CentralityInfo::PROP::mbd_NS);
+  LOG(5, CLR_CYAN,
+      "    CentralityInfo available (" << describeCentrality(cent) << ")  "
+      << "mbd_NS=" << centile);
+
+  if (!std::isfinite(centile) || centile < 0.f)
+  {
+    LOG(4, CLR_YELLOW,
+        "    mbd_NS centile invalid – default to full 0-100 %");
+    m_centBin = -1;
+  }
+  else
+  {
+    m_centBin = static_cast<int>(centile);
+    LOG(5, CLR_GREEN,
+        "    centrality bin = " << m_centBin << "%");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 7. Remaining QA                                                    */
+  /* ------------------------------------------------------------------ */
   doMbdQA (activeTrig);
   doPi0QA (activeTrig);
   fillCorrelations(activeTrig);
-    
-  if (doJetQA(topNode, activeTrig) == Fun4AllReturnCodes::ABORTRUN)
-      return Fun4AllReturnCodes::ABORTRUN;
-      
 
+  if (doJetQA(topNode, activeTrig) == Fun4AllReturnCodes::ABORTRUN)
+  {
+    LOG(2, CLR_YELLOW, "    doJetQA requested ABORTRUN");
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+
+  LOG(4, CLR_GREEN, "  [process_event] finished OK");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 //==========================================================================
 //  fetchNodes – check presence of all required nodes & cache pointers
@@ -686,7 +748,7 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   }
 
   /* ––– remaining detectors –––––––––––––––––––––––––––––––––––––––––– */
-  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERINFO_CALIB_SEPD");
+  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERS_SEPD");
   m_mbdpmts  = findNode::getClass<MbdPmtContainer  >(top, "MbdPmtContainer");
   m_mbdgeom  = findNode::getClass<MbdGeom         >(top, "MbdGeom");
   m_epdgeom  = findNode::getClass<EpdGeom         >(top, "TOWERGEOM_EPD");
@@ -704,62 +766,106 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   return true;
 }
 
-//---------------------------------------------------------------
-//  Geometry helper – NO overlaps, works for any beam configuration
-//---------------------------------------------------------------
 TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
-                                             const MbdGeom*  geom,
-                                             int             arm)      // 0=S,1=N
+                                             const MbdGeom*    geom,
+                                             int               arm)   // 0 = S, 1 = N
 {
-  auto* h = new TH2Poly(name.c_str(), ";x (cm);y (cm)", 0,0,0,0);
-  if (!geom) return h;
+  LOG(4, CLR_BLUE, "[makeMbdHitmap] =================================================");
+  LOG(4, CLR_BLUE, "[makeMbdHitmap] name=\"" << name << "\"  arm=" << arm);
 
-  //----------------------------------------------------------------
-  // 1) collect all PMT centres of this arm
-  //----------------------------------------------------------------
+  /* ------------------------------------------------------------------ */
+  /* 0. Create empty container                                          */
+  /* ------------------------------------------------------------------ */
+  auto *h = new TH2Poly(name.c_str(), ";x (cm);y (cm)", 0, 0, 0, 0);
+  if (!geom)
+  {
+    LOG(4, CLR_YELLOW, "[makeMbdHitmap] geom==nullptr → return empty TH2Poly");
+    return h;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Collect PMT centres for the requested arm                       */
+  /* ------------------------------------------------------------------ */
   std::vector<std::pair<double,double>> pos;  pos.reserve(64);
 
-  /* *** FIX: loop over the known channel range, not get_npmt() *** */
-  for (unsigned ip = 0; ip < 128; ++ip) {           // 64 PMTs per arm
-    if (geom->get_arm(ip) != arm) continue;
+  const unsigned totPmt = 128;             // 64 PMTs per arm
+  for (unsigned ip = 0; ip < totPmt; ++ip)
+  {
+    if (geom->get_arm(ip) != arm)
+    {
+      LOG(6, CLR_YELLOW, "  ip=" << ip << " → other arm – skip");
+      continue;
+    }
 
     const double cx = geom->get_x(ip);
     const double cy = geom->get_y(ip);
-    if (std::isnan(cx) || std::isnan(cy)) continue;
+    if (std::isnan(cx) || std::isnan(cy))
+    {
+      LOG(6, CLR_YELLOW, "  ip=" << ip << " → NaN centre – skip");
+      continue;
+    }
 
     pos.emplace_back(cx, cy);
+    LOG(6, CLR_GREEN, "  ip=" << ip << " centre=(" << cx << "," << cy << ")");
   }
-  if (pos.empty()) return h;
 
-  //----------------------------------------------------------------
-  // 2) derive safe hex‑radius  (flat‑to‑flat = √3·r)
-  //----------------------------------------------------------------
+  LOG(5, CLR_CYAN, "[makeMbdHitmap] collected " << pos.size()
+                   << " centres for arm " << arm);
+  if (pos.empty())
+  {
+    LOG(4, CLR_YELLOW, "[makeMbdHitmap] no valid PMTs – return empty TH2Poly");
+    return h;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Derive safe hexagon radius (flat-to-flat = √3·r)                */
+  /* ------------------------------------------------------------------ */
   double dMin = std::numeric_limits<double>::max();
   for (std::size_t i = 0; i < pos.size(); ++i)
     for (std::size_t j = i + 1; j < pos.size(); ++j)
-      dMin = std::min(dMin,
-                      std::hypot(pos[i].first - pos[j].first,
-                                 pos[i].second - pos[j].second));
+      dMin = std::min(
+        dMin,
+        std::hypot(pos[i].first  - pos[j].first,
+                   pos[i].second - pos[j].second));
 
-  const double r = 0.97 * dMin / std::sqrt(3.0);   // 3 % safety margin
+  if (!std::isfinite(dMin) || dMin <= 0.)
+  {
+    LOG(4, CLR_YELLOW,
+        "[makeMbdHitmap] failed to compute dMin (dMin=" << dMin
+        << ") – return empty TH2Poly");
+    return h;
+  }
 
-  //----------------------------------------------------------------
-  // 3) book one regular hexagon per PMT  (flat‑top orientation)
-  //----------------------------------------------------------------
-  h->SetFloat();                                    // sum if edges touch
+  const double r = 0.97 * dMin / std::sqrt(3.0);   // 3 % safety margin
+  LOG(5, CLR_CYAN, "[makeMbdHitmap] dMin="<<dMin<<"  → hex-r="<<r);
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Create one regular flat-top hexagon per PMT centre              */
+  /* ------------------------------------------------------------------ */
+  h->SetFloat();                                    // allow bin touch summing
   double x[6], y[6];
+
+  std::size_t hexCnt = 0;
   for (const auto& [cx, cy] : pos)
   {
-    for (int k = 0; k < 6; ++k) {
-      const double ang = k * M_PI / 3.0;            // 0°,60°,…
+    for (int k = 0; k < 6; ++k)
+    {
+      const double ang = k * M_PI / 3.0;            // 0°,60°,120°…
       x[k] = cx + r * std::cos(ang);
       y[k] = cy + r * std::sin(ang);
     }
     h->AddBin(6, x, y);
+    ++hexCnt;
+
+    LOG(6, CLR_GREEN,
+        "  hex#" << hexCnt << " centre=(" << cx << "," << cy << ") added");
   }
+
+  LOG(4, CLR_GREEN, "[makeMbdHitmap] completed – " << hexCnt
+                    << " hexagons booked for arm " << arm);
+  LOG(4, CLR_BLUE,  "[makeMbdHitmap] =================================================");
   return h;
 }
-
 
 
 TH2F*
@@ -850,91 +956,167 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 }
 
 //==========================================================================
-//  doSepdQA – sEPD charge, hit‑map & event‑plane QA
+//  doSepdQA – sEPD charge, hit-map & event-plane QA   (✱ EXTENDED VERBOSITY ✱)
 //==========================================================================
 void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 {
-  LOG(3, CLR_BLUE, "  [doSepdQA]");
+  /* ------------------------------------------------------------------ */
+  /* 0. Banner + sanity on pointers                                     */
+  /* ------------------------------------------------------------------ */
+  LOG(2, CLR_BLUE, "[doSepdQA] ===============================================");
+  LOG(2, CLR_BLUE, "[doSepdQA] m_sepd="   << (m_sepd   ? "OK":"nullptr")
+                       << "  m_epdgeom="  << (m_epdgeom? "OK":"nullptr")
+                       << "  m_epmap="    << (m_epmap  ? "OK":"nullptr"));
 
+  if (!m_sepd || !m_epdgeom)
+  {
+    LOG(1, CLR_YELLOW, "[doSepdQA] SEPD container or geometry missing – skip");
+    return;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Initialise accumulators                                         */
+  /* ------------------------------------------------------------------ */
   m_sepdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
-
   double qxS = 0., qyS = 0.;
   double qxN = 0., qyN = 0.;
 
-  for (unsigned ch = 0; ch < m_sepd->size(); ++ch)
-  {
-    auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
-    const double w = ti->get_energy();           if (w <= 0) continue;
+  /* ------------------------------------------------------------------ */
+  /* 2. Tower loop                                                      */
+  /* ------------------------------------------------------------------ */
+  const auto nChan = m_sepd->size();
+  LOG(2, CLR_CYAN, "[doSepdQA] iterating over " << nChan << " SEPD channels");
 
-    const unsigned key = m_epdKey[ch];                  // <─ FIXED
-    if (key == std::numeric_limits<unsigned>::max()) continue; // empty tile
-    const int arm = TowerInfoDefs::get_epd_arm(key);
-    const double r   = m_epdgeom->get_r(key);
+  for (unsigned ch = 0; ch < nChan; ++ch)
+  {
+    auto *ti = m_sepd->get_tower_at_channel(ch);
+    if (!ti)
+    {
+      LOG(6, CLR_YELLOW, "  ch="<<ch<<" → nullptr – continue");
+      continue;
+    }
+
+    const double w = ti->get_energy();
+    if (w <= 0)
+    {
+      LOG(11, CLR_YELLOW, "  ch="<<ch<<" → E="<<w<<" ≤ 0 – continue");
+      continue;
+    }
+
+    const unsigned key = m_epdKey[ch];
+    if (key == std::numeric_limits<unsigned>::max())
+    {
+      LOG(11, CLR_YELLOW, "  ch="<<ch<<" → unmapped (999) – continue");
+      continue;                                   // empty electronics slot
+    }
+
+    const int    arm = TowerInfoDefs::get_epd_arm(key); // 0=S,1=N
+    const double r   = m_epdgeom->get_r  (key);
     const double phi = m_epdgeom->get_phi(key);
 
-    /* fill hit‑map */
-    const std::string hpfx = (arm == 0 ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_");
-    for (auto& t : trig)
+    LOG(11, CLR_GREEN, "  ch="<<ch
+                 <<" arm="<<arm<<" r="<<r<<" phi="<<phi<<" w="<<w);
+
+    /* ---- hit-map fill --------------------------------------------- */
+    const std::string hpfx = (arm == 0)
+                             ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_";
+    const double ph = (phi < 0) ? phi + 2.*M_PI : phi;   // 0…2π
+
+    for (const auto& t : trig)
+      static_cast<TH2F*>(qaHistogramsByTrigger[t][hpfx + t])
+          ->Fill(ph, r, w);
+
+    /* ---- Q-vector -------------------------------------------------- */
+    const double c2 = std::cos(2 * phi);
+    const double s2 = std::sin(2 * phi);
+    if (arm == 0)
     {
-        const double ph = (phi < 0) ? phi + 2.*M_PI : phi;   // 0…2π
-        static_cast<TH2F*>(qaHistogramsByTrigger[t][hpfx + t])
-            ->Fill(ph, r, w);
+      qxS += w * c2;  qyS += w * s2;  ++nFiredS;
+      LOG(11, CLR_CYAN, "    -> South: qxS="<<qxS<<"  qyS="<<qyS
+                           <<"  nS="<<nFiredS);
+    }
+    else
+    {
+      qxN += w * c2;  qyN += w * s2;  ++nFiredN;
+      LOG(11, CLR_CYAN, "    -> North: qxN="<<qxN<<"  qyN="<<qyN
+                           <<"  nN="<<nFiredN);
     }
 
-    /* Q‑vector */
-    const double c2 = std::cos(2 * phi), s2 = std::sin(2 * phi);
-    if (arm == 0) { qxS += w * c2;  qyS += w * s2; ++nFiredS; }
-    else          { qxN += w * c2;  qyN += w * s2; ++nFiredN; }
+    m_sepdQ          += w;
+    m_sepdQ_arm[arm] += w;
+    LOG(11, CLR_CYAN, "    -> running ΣQ = "<<m_sepdQ);
+  } // channel loop
 
-    m_sepdQ           += w;
-    m_sepdQ_arm[arm]  += w;
-  }
+  LOG(3, CLR_GREEN, "[doSepdQA] tower loop finished:"
+                    <<" ΣQ="<<m_sepdQ
+                    <<"  SouthHits="<<nFiredS
+                    <<"  NorthHits="<<nFiredN);
 
-  /* scalar #SigmaQ */
-  for (auto& t : trig)
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])->Fill(m_sepdQ);
+  /* ------------------------------------------------------------------ */
+  /* 3. Scalar ΣQ histogram fill                                        */
+  /* ------------------------------------------------------------------ */
+  for (const auto& t : trig)
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])
+        ->Fill(m_sepdQ);
 
-  /* --- event‑plane angles & resolution proxy ------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* 4. Event-plane angles from EP map (if available)                   */
+  /* ------------------------------------------------------------------ */
+  bool usedMap = false;
   if (m_epmap && !m_epmap->empty())
   {
-      auto epdS = m_epmap->get(EventplaneinfoMap::sEPDS);   // South arm
-      auto epdN = m_epmap->get(EventplaneinfoMap::sEPDN);   // North arm
-      if (epdS && epdN)
-      {
-        const auto q2S = epdS->get_qvector(2);
-        const auto q2N = epdN->get_qvector(2);
+    auto *epdS = m_epmap->get(EventplaneinfoMap::sEPDS);
+    auto *epdN = m_epmap->get(EventplaneinfoMap::sEPDN);
 
-        Eventplaneinfov1 helper;            // provides GetPsi()
-        m_psi2_S = helper.GetPsi(q2S.first, q2S.second, 2);
-        m_psi2_N = helper.GetPsi(q2N.first, q2N.second, 2);
-      }
-      else
-      {   // fall back if one arm is missing
-        m_psi2_S = 0.5 * std::atan2(qyS, qxS);
-        m_psi2_N = 0.5 * std::atan2(qyN, qxN);
-      }
-    }
-    else     // EP map missing – keep the old estimate
+    LOG(11, CLR_BLUE, "[doSepdQA] EP-map present: "
+                     <<"S="<<(epdS?"yes":"no")<<"  N="<<(epdN?"yes":"no"));
+
+    if (epdS && epdN)
     {
-      m_psi2_S = 0.5 * std::atan2(qyS, qxS);
-      m_psi2_N = 0.5 * std::atan2(qyN, qxN);
+      const auto q2S = epdS->get_qvector(2);
+      const auto q2N = epdN->get_qvector(2);
+
+      Eventplaneinfov1 helper;      // provides GetPsi()
+      m_psi2_S = helper.GetPsi(q2S.first, q2S.second, 2);
+      m_psi2_N = helper.GetPsi(q2N.first, q2N.second, 2);
+      usedMap  = true;
+    }
   }
+
+  if (!usedMap)
+  {
+    LOG(5, CLR_YELLOW, "[doSepdQA] EP-map missing/incomplete – "
+                       "falling back to tower-based Q-vectors");
+    m_psi2_S = 0.5 * std::atan2(qyS, qxS);
+    m_psi2_N = 0.5 * std::atan2(qyN, qxN);
+  }
+
+  LOG(4, CLR_GREEN, "[doSepdQA] Ψ₂(S) = "<<m_psi2_S
+                    <<"   Ψ₂(N) = "<<m_psi2_N);
 
   const double cos2dPsi = std::cos(2 * (m_psi2_N - m_psi2_S));
 
-
-  for (auto& t : trig)
+  /* ------------------------------------------------------------------ */
+  /* 5. EP histograms                                                   */
+  /* ------------------------------------------------------------------ */
+  for (const auto& t : trig)
   {
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_Psi2_sEPD"])->Fill(m_psi2_S);
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_Psi2_sEPD"])
+        ->Fill(m_psi2_S);
     static_cast<TProfile*>(qaHistogramsByTrigger[t]["h_Psi2_res_vs_Qsum"])
         ->Fill(m_sepdQ, cos2dPsi);
   }
 
-  LOG(3, CLR_GREEN, "    SEPD #SigmaQ = " << m_sepdQ
-                     << "  (South hits: " << nFiredS
-                     << ", North hits: " << nFiredN << ")");
+  /* ------------------------------------------------------------------ */
+  /* 6. Footer message                                                  */
+  /* ------------------------------------------------------------------ */
+  LOG(3, CLR_GREEN, "    SEPD ΣQ="<<m_sepdQ
+                     <<"  (South hits="<<nFiredS
+                     <<", North hits="<<nFiredN<<")");
+  LOG(4, CLR_BLUE,  "[doSepdQA] ===============================================");
 }
+
 
 //==========================================================================
 //  doMbdQA – integrated charge + hex hit‑map
@@ -1378,49 +1560,79 @@ emcal_sepdCorrelator::getMaxJetEt(JetContainer* jets) const
 
 
 // ----------------------------------------------------------------------
-// Fill the jet QA histograms for this event
+//  doJetQA – fill jet QA histograms with exhaustive diagnostics
 // ----------------------------------------------------------------------
-int
-emcal_sepdCorrelator::doJetQA(PHCompositeNode* topNode,                    // <<< NEW
-                              const std::vector<std::string>& trig)
+int emcal_sepdCorrelator::doJetQA(PHCompositeNode*              topNode,
+                                  const std::vector<std::string>& trig)
 {
-  // 1) collect per‑radius maxima (abort run if any container is missing)
-  std::unordered_map<std::string, float> maxJetEt;
-  for (const auto& r : kJetRadii)
+  LOG(4, CLR_BLUE, "  [doJetQA] – entering");
+
+  /* ------------------------------------------------------------------ */
+  /* 1.  Gather max-E_T for every configured jet radius                 */
+  /* ------------------------------------------------------------------ */
+  std::unordered_map<std::string,float> maxJetEt;   // key = "R02", "R04", …
+
+  for (const auto& [radKey, nodeName] : kJetRadii)
   {
-    auto* jets = findNode::getClass<JetContainer>(topNode, r.second);
+    LOG(5, CLR_BLUE, "    checking jet node '" << nodeName << "' (" << radKey << ')');
+
+    JetContainer* jets = findNode::getClass<JetContainer>(topNode, nodeName);
     if (!jets)
     {
-      if (verbose)
-        std::cout << CLR_YELLOW << "[doJetQA] Aborting run: missing jet container "
-                  << r.second << CLR_RESET << std::endl;
+      LOG(4, CLR_YELLOW,
+          "    missing JetContainer '" << nodeName << "' – ABORTRUN");
       return Fun4AllReturnCodes::ABORTRUN;
     }
-    maxJetEt[r.first] = getMaxJetEt(jets);
+
+    const float etMax = getMaxJetEt(jets);
+    maxJetEt[radKey]  = etMax;
+
+    LOG(5, CLR_GREEN, "      max E_T = " << etMax << " GeV");
   }
 
-  // 2) work out the centrality slice tag
+  /* ------------------------------------------------------------------ */
+  /* 2.  Determine centrality slice tag                                 */
+  /* ------------------------------------------------------------------ */
   int lo = 0, hi = 100;
   if (m_centBin >= 0)
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
       if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
       { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
   const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
 
-  // 3) fill the histograms
-  for (const auto& [rad, etMax] : maxJetEt)
+  LOG(5, CLR_CYAN, "    centrality slice = " << lo << "–" << hi << " %  (tag '" << tag << "')");
+
+  /* ------------------------------------------------------------------ */
+  /* 3.  Fill histograms                                                */
+  /* ------------------------------------------------------------------ */
+  for (const auto& [radKey, etMax] : maxJetEt)
   {
-    const std::string base = "h_maxJetEt_" + rad;
+    const std::string base = "h_maxJetEt_" + radKey;
+
     for (const auto& t : trig)
     {
       auto& H = qaHistogramsByTrigger[t];
-      static_cast<TH1F*>(H[base + "_" + t])->Fill(etMax);
 
-      auto it = H.find(base + tag + "_" + t);
+      /* global histogram – must exist */
+      auto* hGlobal = dynamic_cast<TH1F*>(H[base + "_" + t]);
+      if (hGlobal) hGlobal->Fill(etMax);
+      else LOG(4, CLR_YELLOW, "      [WARN] missing hist '" << base << '_' << t << '\'');
+
+      /* centrality-tagged clone – may or may not exist                   */
+      const std::string cKey = base + tag + "_" + t;
+      auto it = H.find(cKey);
       if (it != H.end())
-        static_cast<TH1F*>(it->second)->Fill(etMax);
+      {
+        dynamic_cast<TH1F*>(it->second)->Fill(etMax);
+        LOG(6, CLR_GREEN, "        • wrote " << radKey << " to '" << cKey << '\'');
+      }
+      else if (Verbosity() >= 6)
+        LOG(6, CLR_BLUE,  "        • no cent-clone '" << cKey << '\'');
     }
   }
+
+  LOG(4, CLR_GREEN, "  [doJetQA] – finished OK");
   return Fun4AllReturnCodes::EVENT_OK;
 }
 

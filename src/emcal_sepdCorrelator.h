@@ -42,7 +42,7 @@
 #include <algorithm>
 #include <array>
 #include <unordered_map>
-#include <jetbase/JetContainer.h>
+#include <jegtbase/JetContainer.h>
 
 // --------------------------------------------------------------------------
 //  Helper alias: maps histogram name → ROOT object*
@@ -50,7 +50,7 @@
 using HistMap = std::map<std::string, TObject*>;
 
 // ==========================================================================
-//  CLASS DECLARATION
+//  CLASS DCaloTowerCalibECLARATION
 // ==========================================================================
 class emcal_sepdCorrelator : public SubsysReco
 {
