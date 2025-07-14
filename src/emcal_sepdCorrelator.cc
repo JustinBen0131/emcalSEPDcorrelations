@@ -28,14 +28,16 @@
 #include <globalvertex/GlobalVertex.h>
 #include <calobase/TowerInfo.h>
 #include <calobase/TowerInfoDefs.h>
-#include <calobase/TowerInfoContainerv4.h>
+#include <calobase/TowerInfoContainer.h>
 #include <calobase/RawCluster.h>
 #include <calobase/RawTowerGeomContainer_Cylinderv1.h>
 #include <calobase/RawClusterUtility.h>
 #include <mbd/MbdPmtHit.h>
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdGeomV2.h"
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdReco.h"
+#include <epd/EpdGeom.h>
+#include <epd/EpdReco.h>
 #include <centrality/CentralityInfo.h>
+#include <calotrigger/MinimumBiasInfo.h>
+#include <calotrigger/MinimumBiasClassifier.h>   // optional but handy
 
 #include <eventplaneinfo/Eventplaneinfo.h>
 #include <eventplaneinfo/Eventplaneinfov1.h>
@@ -644,56 +646,45 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   doCaloQA(activeTrig);
   doSepdQA(activeTrig);
 
-  /* ------------------------------------------------------------------ */
-  /* 6. Centrality lookup & diagnostics                                 */
-  /* ------------------------------------------------------------------ */
-  CentralityInfo* cent =
-      findNode::getClass<CentralityInfo>(topNode,"CentralityInfo");
-  if (!cent)
-  {
-    LOG(4, CLR_YELLOW,
-        "    CentralityInfo node **missing** – event skipped");
-    return Fun4AllReturnCodes::ABORTEVENT;
-  }
+    /* ------------------------------------------------------------------ */
+    /* 6. Centrality lookup & diagnostics                                 */
+    /* ------------------------------------------------------------------ */
 
-    auto describeCentrality = [&](CentralityInfo* c)
+    /* ----  grab CentralityInfo (keep it if it exists)  ----------------- */
+    CentralityInfo* _central =
+        findNode::getClass<CentralityInfo>(topNode,"CentralityInfo");
+
+    /* ----  quick-and-dirty fallback percentile                          */
+    /*        (linear in MBD ΣQ, tweak 1200 if your run is very different)*/
+    auto approx_centile_from_q = [&](float q)
     {
-      std::ostringstream oss;
-      int valid = 0;
-
-      // --- derive enum length at compile-time ---
-      constexpr int total =
-          static_cast<int>(CentralityInfo::PROP::epd_NS);  //<-- HERE
-
-      for (int p = 0; p < total; ++p)
-      {
-        auto prop = static_cast<CentralityInfo::PROP>(p);
-        if (c->has_centile(prop) &&
-            std::isfinite(c->get_centile(prop)))
-          ++valid;
-      }
-      oss << valid << '/' << total << " properties finite";
-      return oss.str();
+      const float qMax = 1200.f;                          // central Au+Au ≈1.2 kADC
+      float p = 100.f * (1.f - std::min(q,qMax)/qMax);    // 0 % = central
+      return std::clamp(p, 0.f, 99.9f);                   // keep inside 0-100
     };
 
-  float centile = cent->get_centile(CentralityInfo::PROP::mbd_NS);
-  LOG(5, CLR_CYAN,
-      "    CentralityInfo available (" << describeCentrality(cent) << ")  "
-      << "mbd_NS=" << centile);
+    float centile = std::numeric_limits<float>::quiet_NaN();
 
-  if (!std::isfinite(centile) || centile < 0.f)
-  {
-    LOG(4, CLR_YELLOW,
-        "    mbd_NS centile invalid – default to full 0-100 %");
-    m_centBin = -1;
-  }
-  else
-  {
-    m_centBin = static_cast<int>(centile);
-    LOG(5, CLR_GREEN,
-        "    centrality bin = " << m_centBin << "%");
-  }
+    if (_central && _central->has_centile(CentralityInfo::PROP::mbd_NS))
+      centile = _central->get_centile(CentralityInfo::PROP::mbd_NS);
 
+    /*  Fallback when mbd_NS is NaN, negative, or _central missing  */
+    if (!std::isfinite(centile) || centile < 0.f)
+      centile = approx_centile_from_q(m_mbdQ);
+
+    /* ----  convert to integer bin (-1 = minimum-bias) ------------------ */
+    if (!std::isfinite(centile))
+    {
+      LOG(4, CLR_YELLOW,
+          "    no valid centrality → treat as minimum-bias (0-100 %)");
+      m_centBin = -1;
+    }
+    else
+    {
+      m_centBin = static_cast<int>(centile);              // 0 … 99
+      LOG(5, CLR_GREEN, "    centrality bin ≈ " << m_centBin << " %");
+    }
+    
   /* ------------------------------------------------------------------ */
   /* 7. Remaining QA                                                    */
   /* ------------------------------------------------------------------ */
@@ -748,7 +739,7 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   }
 
   /* ––– remaining detectors –––––––––––––––––––––––––––––––––––––––––– */
-  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERS_SEPD");
+  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERINFO_CALIB_SEPD");
   m_mbdpmts  = findNode::getClass<MbdPmtContainer  >(top, "MbdPmtContainer");
   m_mbdgeom  = findNode::getClass<MbdGeom         >(top, "MbdGeom");
   m_epdgeom  = findNode::getClass<EpdGeom         >(top, "TOWERGEOM_EPD");

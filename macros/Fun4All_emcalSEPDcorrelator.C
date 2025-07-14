@@ -177,6 +177,10 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   std::unique_ptr<FlagHandler> flag = std::make_unique<FlagHandler>();
   se->registerSubsystem(flag.get());
     
+  auto* inDST = new Fun4AllDstInputManager("DSTcalofitting");
+  for (const auto& f : files) inDST->AddFile(f);
+  se->registerInputManager(inDST);
+    
   for (const std::string& det : {"CEMC","HCALIN","HCALOUT"})
     {
       auto *geom = new CaloGeomMapping(("Geom_"+det).c_str());
@@ -260,7 +264,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
     
   // sEPD Reconstruction--Calib Info
   std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
-  epdreco->Verbosity(2);
+  epdreco->Verbosity(10);
   se->registerSubsystem(epdreco.get());
     
   std::unique_ptr<ZdcReco> zdcreco = std::make_unique<ZdcReco>();
@@ -271,13 +275,13 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   std::unique_ptr<GlobalVertexReco> gvertex = std::make_unique<GlobalVertexReco>();
   se->registerSubsystem(gvertex.get());
     
-  auto *mb = new MinimumBiasClassifier();
-  mb->Verbosity(1);
-  se->registerSubsystem(mb);
-    
   auto *cent = new CentralityReco();
-  /* switch off the MB veto (added in PR #2162, ana .495 and up) */
+    /* switch off the MB veto (added in PR #2162, ana .495 and up) */
   se->registerSubsystem(cent);
+    
+//  auto *mb = new MinimumBiasClassifier();
+//  mb->Verbosity(1);
+//  se->registerSubsystem(mb);
 
   std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();
   epreco->set_sepd_epreco(true);
@@ -325,11 +329,11 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
       dtb->set_towerNodePrefix("TOWERINFO_CALIB");
       se->registerSubsystem(dtb);
 
-//      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
-//      auto* st = new SubtractTowers();
-//      st->set_towerinfo(true);
-//      st->set_towerNodePrefix("TOWERINFO_CALIB");
-//      se->registerSubsystem(st);
+      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
+      auto* st = new SubtractTowers();
+      st->set_towerinfo(true);
+      st->set_towerNodePrefix("TOWERINFO_CALIB");
+      se->registerSubsystem(st);
 
 //      // ── (v)  jet reco on *subtracted* towers – names must match DTB ────
 //      auto* subReco = new JetReco();
@@ -368,9 +372,6 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   correl->setVerbose(10);
   se->registerSubsystem(correl);
     
-  auto* inDST = new Fun4AllDstInputManager("DSTcalofitting");
-  for (const auto& f : files) inDST->AddFile(f);
-  se->registerInputManager(inDST);
 
   //--------------------------------------------------------------------
   // 5.  Run

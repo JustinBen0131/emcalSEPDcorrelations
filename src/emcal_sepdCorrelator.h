@@ -42,12 +42,16 @@
 #include <algorithm>
 #include <array>
 #include <unordered_map>
-#include <jegtbase/JetContainer.h>
+#include <jetbase/JetContainer.h>
 
 // --------------------------------------------------------------------------
 //  Helper alias: maps histogram name → ROOT object*
 // --------------------------------------------------------------------------
 using HistMap = std::map<std::string, TObject*>;
+class CentralityInfo;
+class MinimumBiasInfo;
+class Fun4AllHistoManager;
+class PHCompositeNode;
 
 // ==========================================================================
 //  CLASS DCaloTowerCalibECLARATION
