@@ -570,7 +570,7 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* 0. Banner & running counter                                        */
   /* ------------------------------------------------------------------ */
   ++event_count;
-  PROGRESS("=============================event " << std::setw(9) << event_count << "=================================== "
+  PROGRESS("=================================   event " << std::setw(3) << event_count << "===================================== "
            "(Verb=" << Verbosity() << ")");
 
   /* ------------------------------------------------------------------ */
