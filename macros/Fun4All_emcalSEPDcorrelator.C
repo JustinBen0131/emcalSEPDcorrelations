@@ -211,11 +211,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   statusHCALOUT->set_detector_type(CaloTowerDefs::HCALOUT);
   statusHCALOUT->set_time_cut(2);
   se->registerSubsystem(statusHCALOUT);
-    
-//  CaloTowerStatus *statusSEPD = new CaloTowerStatus("SEPDSTATUS");
-//  statusSEPD->set_detector_type(CaloTowerDefs::SEPD);
-//  statusSEPD->Verbosity(2);
-//  se->registerSubsystem(statusSEPD);
+
 
   ////////////////////
   // Calibrate towers
@@ -233,6 +229,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   CaloTowerCalib *calibIHCal = new CaloTowerCalib("HCALIN");
   calibIHCal->set_detector_type(CaloTowerDefs::HCALIN);
   se->registerSubsystem(calibIHCal);
+
 
     
 //  // ----  builder ---------------------------------------------------
@@ -258,14 +255,13 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   //--------------------------------------------------------------------
   // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
   //--------------------------------------------------------------------
+  std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
+  epdreco->Verbosity(0);
+  se->registerSubsystem(epdreco.get());
+    
   // // MBD/BBC Reconstruction
   std::unique_ptr<MbdReco> mbdreco = std::make_unique<MbdReco>();
   se->registerSubsystem(mbdreco.get());
-    
-  // sEPD Reconstruction--Calib Info
-  std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
-  epdreco->Verbosity(10);
-  se->registerSubsystem(epdreco.get());
     
   std::unique_ptr<ZdcReco> zdcreco = std::make_unique<ZdcReco>();
   zdcreco->set_zdc1_cut(0.0);
@@ -275,22 +271,44 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   std::unique_ptr<GlobalVertexReco> gvertex = std::make_unique<GlobalVertexReco>();
   se->registerSubsystem(gvertex.get());
     
-  auto *cent = new CentralityReco();
-    /* switch off the MB veto (added in PR #2162, ana .495 and up) */
+  auto* mb = new MinimumBiasClassifier();
+  mb->Verbosity(0);
+  mb->setOverwriteScale(
+        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/"
+        "cdb_centrality_scale_54912.root");
+  mb->setOverwriteVtx(
+        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/"
+        "cdb_centrality_vertex_scale_54912.root");
+  se->registerSubsystem(mb);
+
+    
+  auto* cent = new CentralityReco();
+  cent->Verbosity(0);
+  cent->setOverwriteScale(
+        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/"
+        "cdb_centrality_scale_54912.root");
+  cent->setOverwriteVtx(
+        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/"
+        "cdb_centrality_vertex_scale_54912.root");
+  cent->setOverwriteDivs(
+        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/divs/"
+        "cdb_centrality_54912.root");
   se->registerSubsystem(cent);
     
-//  auto *mb = new MinimumBiasClassifier();
-//  mb->Verbosity(1);
-//  se->registerSubsystem(mb);
+//
+//  // ── SEPD gain calibration  (→ TOWERINFO_CALIB_SEPD) ────────────────
+//  auto *calibSEPD = new CaloTowerCalib("SEPDCALIB");
+//  calibSEPD->set_detector_type(CaloTowerDefs::SEPD);
+//  calibSEPD->setCalibName("/cvmfs/sphenix.sdcc.bnl.gov/calibrations/"
+//                          "sphnxpro/cdb/SEPD_NMIP_CALIB/f2/3b/"
+//                          "f23b23c2017de9768ac5d7e67367a6ee_SEPD_NMIP_CALIB_v4.root");
+//  se->registerSubsystem(calibSEPD);
 
   std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();
   epreco->set_sepd_epreco(true);
   se->registerSubsystem(epreco.get());
-    
-//    CaloTowerCalib *calibSEPD = new CaloTowerCalib("SEPD");
-//    calibSEPD->Verbosity(2);
-//    calibSEPD->set_detector_type(CaloTowerDefs::SEPD);
-//    se->registerSubsystem(calibSEPD);
+
+
     
   //--------------------------------------------------------------------
   // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
@@ -316,24 +334,24 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
       seedReco->add_algo(detail::fjAlgo(0.2f), "AntiKt_TowerInfo_HIRecoSeedsRaw_r02");
       seedReco->set_algo_node("AntiKt_TowerInfo");   // ➜ nodes:
                                                      //   AntiKt_TowerInfo_HIRecoSeedsRaw_r0X
-      seedReco->set_input_node("TOWER");
-      seedReco->Verbosity(verbose ? 1 : 0);
+      seedReco->set_input_node("TOWERINFO_CALIB");
+      seedReco->Verbosity(0);
       se->registerSubsystem(seedReco);
+//
+//      // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
+//      auto* dtb = new DetermineTowerBackground();
+//      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
+//      dtb->SetSeedType(0);
+//      dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
+//      dtb->set_towerinfo(true);
+//      dtb->set_towerNodePrefix("TOWERINFO_CALIB");
+//      se->registerSubsystem(dtb);
 
-      // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
-      auto* dtb = new DetermineTowerBackground();
-      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
-      dtb->SetSeedType(0);
-      dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
-      dtb->set_towerinfo(true);
-      dtb->set_towerNodePrefix("TOWERINFO_CALIB");
-      se->registerSubsystem(dtb);
-
-      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
-      auto* st = new SubtractTowers();
-      st->set_towerinfo(true);
-      st->set_towerNodePrefix("TOWERINFO_CALIB");
-      se->registerSubsystem(st);
+//      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
+//      auto* st = new SubtractTowers();
+//      st->set_towerinfo(true);
+//      st->set_towerNodePrefix("TOWERINFO_CALIB");
+//      se->registerSubsystem(st);
 
 //      // ── (v)  jet reco on *subtracted* towers – names must match DTB ────
 //      auto* subReco = new JetReco();
@@ -367,7 +385,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
 
   // 3f) User analysis module – must come *last*
   auto* correl = new emcal_sepdCorrelator(outRoot);
-  correl->setVzCut(30.);
+  correl->setVzCut(100.);
   correl->enableVzCut(true);
   correl->setVerbose(10);
   se->registerSubsystem(correl);

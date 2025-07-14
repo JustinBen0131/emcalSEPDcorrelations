@@ -33,6 +33,9 @@
 #include <calobase/RawTowerGeomContainer_Cylinderv1.h>
 #include <calobase/RawClusterUtility.h>
 #include <mbd/MbdPmtHit.h>
+#include <mbd/MbdGeom.h>
+#include <mbd/MbdOut.h>
+#include <mbd/MbdPmtContainer.h>
 #include <epd/EpdGeom.h>
 #include <epd/EpdReco.h>
 #include <centrality/CentralityInfo.h>
@@ -567,7 +570,7 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* 0. Banner & running counter                                        */
   /* ------------------------------------------------------------------ */
   ++event_count;
-  PROGRESS("[event " << std::setw(9) << event_count << "] "
+  PROGRESS("=============================event " << std::setw(9) << event_count << "=================================== "
            "(Verb=" << Verbosity() << ")");
 
   /* ------------------------------------------------------------------ */
@@ -646,43 +649,73 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   doCaloQA(activeTrig);
   doSepdQA(activeTrig);
 
+    if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
+    {
+      LOG(4, CLR_YELLOW, "    Vertex z = " << m_vz << " out of calibration bounds – skip");
+      return Fun4AllReturnCodes::ABORTEVENT;
+    }
     /* ------------------------------------------------------------------ */
     /* 6. Centrality lookup & diagnostics                                 */
     /* ------------------------------------------------------------------ */
 
-    /* ----  grab CentralityInfo (keep it if it exists)  ----------------- */
-    CentralityInfo* _central =
-        findNode::getClass<CentralityInfo>(topNode,"CentralityInfo");
+    /* grab the two nodes we need --------------------------------------- */
+    CentralityInfo   *_central        = findNode::getClass<CentralityInfo>(topNode,"CentralityInfo");
+    MinimumBiasInfo  *_minimumbiasinfo= findNode::getClass<MinimumBiasInfo>(topNode,"MinimumBiasInfo");
 
-    /* ----  quick-and-dirty fallback percentile                          */
-    /*        (linear in MBD ΣQ, tweak 1200 if your run is very different)*/
-    auto approx_centile_from_q = [&](float q)
+    /* bail out gracefully if either of them is missing ----------------- */
+    if (!_central)
     {
-      const float qMax = 1200.f;                          // central Au+Au ≈1.2 kADC
-      float p = 100.f * (1.f - std::min(q,qMax)/qMax);    // 0 % = central
-      return std::clamp(p, 0.f, 99.9f);                   // keep inside 0-100
-    };
+      LOG(4, CLR_YELLOW, "    CentralityInfo node **missing** – event skipped");
+      return Fun4AllReturnCodes::ABORTEVENT;
+    }
 
-    float centile = std::numeric_limits<float>::quiet_NaN();
+    /* make sure the mbd_NS bin is there -------------------------------- */
+    if (!_central->has_centrality_bin(CentralityInfo::PROP::mbd_NS))
+    {
+      LOG(4, CLR_YELLOW, "    CentralityInfo mbd_NS not filled yet – skip");
+      return Fun4AllReturnCodes::ABORTEVENT;
+    }
 
-    if (_central && _central->has_centile(CentralityInfo::PROP::mbd_NS))
-      centile = _central->get_centile(CentralityInfo::PROP::mbd_NS);
+    if (!_minimumbiasinfo)
+    {
+      LOG(4, CLR_YELLOW, "    MinimumBiasInfo node **missing** – event skipped");
+      return Fun4AllReturnCodes::ABORTEVENT;
+    }
 
-    /*  Fallback when mbd_NS is NaN, negative, or _central missing  */
+    /* now it’s safe to fetch it ---------------------------------------- */
+    float centile = _central->get_centrality_bin(CentralityInfo::PROP::mbd_NS);
+
+    /* translate the percentile to an integer “centrality bin” ---------- */
     if (!std::isfinite(centile) || centile < 0.f)
-      centile = approx_centile_from_q(m_mbdQ);
-
-    /* ----  convert to integer bin (-1 = minimum-bias) ------------------ */
-    if (!std::isfinite(centile))
     {
       LOG(4, CLR_YELLOW,
-          "    no valid centrality → treat as minimum-bias (0-100 %)");
-      m_centBin = -1;
+          "    mbd_NS centile invalid – defaulting to full 0-100 %");
+      m_centBin = -1;                                   // minimum-bias
     }
     else
     {
-      m_centBin = static_cast<int>(centile);              // 0 … 99
-      LOG(5, CLR_GREEN, "    centrality bin ≈ " << m_centBin << " %");
+      m_centBin = static_cast<int>(centile);
+      LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
+    }
+    
+    if (!_minimumbiasinfo)
+    {
+      LOG(4, CLR_YELLOW, "    MinimumBiasInfo node **missing** – event skipped");
+      return Fun4AllReturnCodes::ABORTEVENT;
+    }
+
+
+    /* translate the percentile to an integer “centrality bin” ---------- */
+    if (!std::isfinite(centile) || centile < 0.f)
+    {
+      LOG(4, CLR_YELLOW,
+          "    mbd_NS centile invalid – defaulting to full 0-100 %");
+      m_centBin = -1;                                  // → treat as minimum-bias
+    }
+    else
+    {
+      m_centBin = static_cast<int>(centile);
+      LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
     }
     
   /* ------------------------------------------------------------------ */
@@ -739,7 +772,7 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   }
 
   /* ––– remaining detectors –––––––––––––––––––––––––––––––––––––––––– */
-  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERINFO_CALIB_SEPD");
+  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERS_SEPD");
   m_mbdpmts  = findNode::getClass<MbdPmtContainer  >(top, "MbdPmtContainer");
   m_mbdgeom  = findNode::getClass<MbdGeom         >(top, "MbdGeom");
   m_epdgeom  = findNode::getClass<EpdGeom         >(top, "TOWERGEOM_EPD");

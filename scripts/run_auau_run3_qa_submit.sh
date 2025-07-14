@@ -299,22 +299,28 @@ else
 fi
 
 ##############################################################################
-# 9. LOCAL MODE
+# 9. LOCAL MODE  (final, working version)
 ##############################################################################
 if [[ "$mode" == "local" ]]; then
   [[ -n "${runs[0]:-}" ]] || fatal "No runs available for local mode"
 
+  runNumber="${runs[0]}"        # default = first run in list
+  maxEvt=0                      # default = analyse everything
+
   if [[ -n "$limitSwitch" ]]; then
-    runNumDec=$((10#$limitSwitch))
-    runNumber=$(printf "$PAD_FMT" "$runNumDec")
-  else
-    runNumber="${runs[0]}"
-    runNumDec=$((10#$runNumber))
+    if [[ "$limitSwitch" =~ ^[0-9]+$ && "$limitSwitch" -ge 100000 ]]; then
+      # token looks like a real run number
+      runNumber=$(printf "$PAD_FMT" "$limitSwitch")
+      maxEvt="${3:-0}"          # 2-nd numeric token becomes event cap
+    else
+      # token is the event cap itself
+      maxEvt="$limitSwitch"
+    fi
   fi
 
-  maxEvt="${3:-0}"
+  runNumDec=$((10#$runNumber))  # we still need the decimal copy
   listFile="${DST_LIST_DIR}/$(printf "$LIST_FMT" "$runNumDec")"
-  [[ -s "$listFile" ]] || fatal "List‑file $listFile not found or empty"
+  [[ -s "$listFile" ]] || fatal "List-file $listFile not found or empty"
 
   firstDST=$(head -n1 "$listFile")
   say  "Local test  –  run $runNumber"
@@ -328,6 +334,7 @@ if [[ "$mode" == "local" ]]; then
   rm -f "$tmpList"
   exit 0
 fi
+
 
 ##############################################################################
 # 10. CONDOR / CONDORTEST LOOP

@@ -136,7 +136,7 @@ class emcal_sepdCorrelator : public SubsysReco
 
   // --- detector lists -----------------------------------------------------
   const std::vector<std::tuple<std::string,std::string,std::string>> m_caloInfo {
-        {"TOWERINFO_CALIB_CEMC_RETOWER",   "TOWERGEOM_CEMC",   "CEMC"},
+        {"TOWERINFO_CALIB_CEMC",   "TOWERGEOM_CEMC",   "CEMC"},
         {"TOWERINFO_CALIB_HCALIN", "TOWERGEOM_HCALIN", "IHCAL"},
         {"TOWERINFO_CALIB_HCALOUT","TOWERGEOM_HCALOUT","OHCAL"} };
 
