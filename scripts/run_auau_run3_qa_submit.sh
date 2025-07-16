@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-#!/usr/bin/env bash
 ##############################################################################
 #  run_auau_run3_qa_submit.sh
 #
@@ -169,6 +168,14 @@ DST_LIST_DIR="${PROJECT_BASE}/dst_list"
 TMP_LIST_DIR="${PROJECT_BASE}/tmp_condor_lists"
 EXEC="${PROJECT_BASE}/run_auau_run3_qa.sh"
 CONDOR_OUT_BASE="/sphenix/tg/tg01/bulk/jbennett/emcalSEPDcorrelations"
+
+# --- new helper: expand to <base>/<run> and mkdir if needed -------------
+outdir_for_run() {
+  local run="$1"
+  local dir="${CONDOR_OUT_BASE}/${run}"
+  mkdir -p "$dir"          # make sure it exists (harmless if it already does)
+  printf '%s' "$dir"
+}
 LOGDIR="${PROJECT_BASE}/log"
 OUTDIR="${PROJECT_BASE}/stdout"
 ERRDIR="${PROJECT_BASE}/error"
@@ -195,10 +202,12 @@ esac
 ##############################################################################
 split_run_list() {
   local master="$1"
-  [[ -f "$master" ]] || { warn "Run‑list not found → $master"; return 1; }
+  [[ -f "$master" ]] || { warn "Run-list not found → $master"; return 1; }
 
   say  "Splitting $(basename "$master") → $RUN_SPLIT_DIR"
-  local seg=1 jobs=0 current="${SEGMENT_PREFIX}${seg}.txt"
+
+  local seg=1 jobs=0              # <- define first
+  local current="${SEGMENT_PREFIX}${seg}.txt"
   : > "$current"
 
   while IFS= read -r raw; do
@@ -330,7 +339,7 @@ if [[ "$mode" == "local" ]]; then
   tmpList=$(mktemp "${TMP_LIST_DIR}/local_${runNumber}_XXXX.list")
   echo "$firstDST" > "$tmpList"
 
-  "${EXEC}" "$runNumber" "$tmpList" 0 "$CONDOR_OUT_BASE" "$maxEvt"
+  "${EXEC}"  "$runNumber"  "$tmpList"  0  "$(outdir_for_run "$runNumber")"  "$maxEvt"
   rm -f "$tmpList"
   exit 0
 fi
@@ -369,11 +378,11 @@ for idx in "${!runs[@]}"; do
     cat > "$subFile" <<EOS
 universe      = vanilla
 executable    = $EXEC
-arguments     = $runPad $listFile \$(Cluster) $CONDOR_OUT_BASE
+arguments     = $runPad  $listFile  \$(Cluster)  $(outdir_for_run $runPad)
 log           = ${LOGDIR}/${tag}.log
 output        = ${OUTDIR}/${tag}.out
 error         = ${ERRDIR}/${tag}.err
-request_memory= 1500MB
+request_memory= 3000MB
 +JobFlavour   = "tomorrow"
 queue
 EOS

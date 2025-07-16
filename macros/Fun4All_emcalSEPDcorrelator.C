@@ -246,7 +246,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   se->registerSubsystem(ClusterBuilder);
 
   std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
-  epdreco->Verbosity(20);
+  epdreco->Verbosity(0);
   se->registerSubsystem(epdreco.get());
 
   // // MBD/BBC Reconstruction
@@ -370,7 +370,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   auto* correl = new emcal_sepdCorrelator(outRoot);
   correl->setVzCut(100.);
   correl->enableVzCut(true);
-  correl->setVerbose(10);
+  correl->setVerbose(0);
   se->registerSubsystem(correl);
     
 
