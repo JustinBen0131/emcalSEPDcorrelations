@@ -49,6 +49,7 @@
 #include <caloreco/CaloTowerCalib.h>
 // new – high‑level reconstruction
 #include <eventplaneinfo/EventPlaneReco.h>
+#include <eventplaneinfo/Eventplaneinfo.h>
 #include <centrality/CentralityReco.h>
 #include <calotrigger/MinimumBiasClassifier.h>   // optional but handy
 #include <zdcinfo/ZdcReco.h>
@@ -80,7 +81,7 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
-R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libepd.so)
+R__LOAD_LIBRARY(libepd.so)
 R__LOAD_LIBRARY(libmbd.so)
 R__LOAD_LIBRARY(libglobalvertex.so)
 R__LOAD_LIBRARY(libeventplaneinfo.so)
@@ -180,6 +181,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   auto* inDST = new Fun4AllDstInputManager("DSTcalofitting");
   for (const auto& f : files) inDST->AddFile(f);
   se->registerInputManager(inDST);
+
     
   for (const std::string& det : {"CEMC","HCALIN","HCALOUT"})
     {
@@ -193,7 +195,8 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
 //  geomMap->set_UseDetailedGeometry(true);   // we want the 8-vertex blocks
 //  geomMap->Verbosity(0);
 //  se->registerSubsystem(geomMap);           // register *before* anything that uses it
-//    
+//
+    
   //////////////////////////////
   // set statuses on raw towers
   std::cout << "status setters" << std::endl;
@@ -230,6 +233,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   calibIHCal->set_detector_type(CaloTowerDefs::HCALIN);
   se->registerSubsystem(calibIHCal);
     
+    
   std::cout << "Building clusters" << std::endl;
   RawClusterBuilderTemplate *ClusterBuilder = new RawClusterBuilderTemplate("EmcRawClusterBuilderTemplate");
   ClusterBuilder->Detector("CEMC");
@@ -241,14 +245,10 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   ClusterBuilder->set_UseAltZVertex(1); // Use MBD Vertex for vertex-based corrections
   se->registerSubsystem(ClusterBuilder);
 
-  //--------------------------------------------------------------------
-  // 3.  Register reconstruction / analysis subsystems  (⟨strict order⟩)
-  //--------------------------------------------------------------------
   std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
-  epdreco->Verbosity(0);
+  epdreco->Verbosity(20);
   se->registerSubsystem(epdreco.get());
-    
-    
+
   // // MBD/BBC Reconstruction
   std::unique_ptr<MbdReco> mbdreco = std::make_unique<MbdReco>();
   se->registerSubsystem(mbdreco.get());

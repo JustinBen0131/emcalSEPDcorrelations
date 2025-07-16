@@ -27,7 +27,8 @@
 #include <globalvertex/GlobalVertexMap.h>
 #include <mbd/MbdGeom.h>
 #include <mbd/MbdPmtContainer.h>
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src_epdReco/EpdGeom.h"
+#include <epd/EpdGeom.h>
+#include <epd/EpdReco.h>
 #include <centrality/CentralityInfo.h>
 #include <eventplaneinfo/EventplaneinfoMap.h>
 
@@ -65,7 +66,7 @@ class emcal_sepdCorrelator : public SubsysReco
       
   // ---------- construction / destruction ----------------------------------
   explicit emcal_sepdCorrelator(const std::string& out = "caloTreeData.root");
-  ~emcal_sepdCorrelator() override = default;
+  ~emcal_sepdCorrelator() override;
 
   // ---------- Fun4All hooks ------------------------------------------------
   int Init          (PHCompositeNode*) override;
@@ -91,7 +92,8 @@ class emcal_sepdCorrelator : public SubsysReco
   TH2Poly*  makeMbdHitmap(const std::string&, const MbdGeom*, int arm);
   TH2F*     makeEpdHitmap(const std::string& name, EpdGeom* geom, int arm);
   bool      m_sepdMapReady {false};
-  void      buildSepdChannelMap();  
+  void      buildSepdChannelMap();
+  bool m_isMinBias {false};
   // ======================================================================
   // 2) Per‑event helpers (called in process_event)
   // ======================================================================

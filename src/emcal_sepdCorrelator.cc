@@ -91,6 +91,11 @@ emcal_sepdCorrelator::emcal_sepdCorrelator(const std::string& outFile)
   }
 }
 
+emcal_sepdCorrelator::~emcal_sepdCorrelator()
+{
+  
+}
+
 /* ======================================================================
  *  Init – one-time module setup
  *    • books QA histograms
@@ -741,6 +746,31 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 //==========================================================================
 bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
 {
+    
+  /* ------------------------------------------------------------------ */
+  /* 0.  Reject non‑minimum‑bias events up‑front                        */
+  /* ------------------------------------------------------------------ */
+  m_isMinBias = false;   // reset per event
+
+  MinimumBiasInfo* mbInfo =
+         findNode::getClass<MinimumBiasInfo>(top,"MinimumBiasInfo");
+
+  if (!mbInfo)
+  {
+       LOG(1, CLR_YELLOW,
+           "  – MinimumBiasInfo node **missing** → skip event");
+       return false;                       // ABORTEVENT at caller
+  }
+
+  m_isMinBias = mbInfo->isAuAuMinimumBias();
+
+  if (!m_isMinBias)
+  {
+       LOG(3, CLR_CYAN,
+           "  – event is NOT Au+Au minimum‑bias → skip event");
+       return false;                       // nothing else to do
+  }
+    
   /* ––– primary vertex –––––––––––––––––––––––––––––––––––––––––––––––– */
   GlobalVertexMap* vmap = findNode::getClass<GlobalVertexMap>(top,"GlobalVertexMap");
   m_vtx = nullptr; m_vx = m_vy = m_vz = 0.;
@@ -1003,8 +1033,8 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
   /* ------------------------------------------------------------------ */
   m_sepdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
-  double qxS = 0., qyS = 0.;
-  double qxN = 0., qyN = 0.;
+  float qxS = 0., qyS = 0.;
+  float qxN = 0., qyN = 0.;
 
   /* ------------------------------------------------------------------ */
   /* 2. Tower loop                                                      */
