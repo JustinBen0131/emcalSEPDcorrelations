@@ -772,7 +772,7 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   }
 
   /* ––– remaining detectors –––––––––––––––––––––––––––––––––––––––––– */
-  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERS_SEPD");
+  m_sepd     = findNode::getClass<TowerInfoContainer>(top, "TOWERINFO_CALIB_SEPD");
   m_mbdpmts  = findNode::getClass<MbdPmtContainer  >(top, "MbdPmtContainer");
   m_mbdgeom  = findNode::getClass<MbdGeom         >(top, "MbdGeom");
   m_epdgeom  = findNode::getClass<EpdGeom         >(top, "TOWERGEOM_EPD");
@@ -1014,6 +1014,7 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 
   for (unsigned ch = 0; ch < nChan; ++ch)
   {
+    if (ch >= 744) continue;
     auto *ti = m_sepd->get_tower_at_channel(ch);
     if (!ti)
     {
@@ -1077,47 +1078,102 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
                     <<"  SouthHits="<<nFiredS
                     <<"  NorthHits="<<nFiredN);
 
-  /* ------------------------------------------------------------------ */
-  /* 3. Scalar ΣQ histogram fill                                        */
-  /* ------------------------------------------------------------------ */
-  for (const auto& t : trig)
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])
-        ->Fill(m_sepdQ);
-
-  /* ------------------------------------------------------------------ */
-  /* 4. Event-plane angles from EP map (if available)                   */
-  /* ------------------------------------------------------------------ */
-  bool usedMap = false;
-  if (m_epmap && !m_epmap->empty())
-  {
-    auto *epdS = m_epmap->get(EventplaneinfoMap::sEPDS);
-    auto *epdN = m_epmap->get(EventplaneinfoMap::sEPDN);
-
-    LOG(11, CLR_BLUE, "[doSepdQA] EP-map present: "
-                     <<"S="<<(epdS?"yes":"no")<<"  N="<<(epdN?"yes":"no"));
-
-    if (epdS && epdN)
+    /* ------------------------------------------------------------------ */
+    /* 3. Scalar ΣQ histogram fill                                        */
+    /* ------------------------------------------------------------------ */
+    for (const auto& t : trig)
     {
-      const auto q2S = epdS->get_qvector(2);
-      const auto q2N = epdN->get_qvector(2);
-
-      Eventplaneinfov1 helper;      // provides GetPsi()
-      m_psi2_S = helper.GetPsi(q2S.first, q2S.second, 2);
-      m_psi2_N = helper.GetPsi(q2N.first, q2N.second, 2);
-      usedMap  = true;
+      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])
+          ->Fill(m_sepdQ);
     }
-  }
 
-  if (!usedMap)
-  {
-    LOG(5, CLR_YELLOW, "[doSepdQA] EP-map missing/incomplete – "
-                       "falling back to tower-based Q-vectors");
-    m_psi2_S = 0.5 * std::atan2(qyS, qxS);
-    m_psi2_N = 0.5 * std::atan2(qyN, qxN);
-  }
+    /* ------------------------------------------------------------------ */
+    /* 4. Event-plane angles from EventplaneinfoMap (⇒ Ψ2)                */
+    /* ------------------------------------------------------------------ */
 
-  LOG(4, CLR_GREEN, "[doSepdQA] Ψ₂(S) = "<<m_psi2_S
-                    <<"   Ψ₂(N) = "<<m_psi2_N);
+    bool usedMap = false;
+
+    /* ---- 4.1  Map sanity --------------------------------------------- */
+    if (!m_epmap)
+    {
+      LOG(5, CLR_YELLOW,
+          "[doSepdQA] EventplaneinfoMap pointer is NULL – "
+          "EventPlaneReco probably never ran (check module order)");
+    }
+    else if (m_epmap->empty())
+    {
+      LOG(5, CLR_YELLOW,
+          "[doSepdQA] EventplaneinfoMap is EMPTY – "
+          "all arms failed quality cuts or EventPlaneReco executed too early");
+    }
+    else
+    {
+      LOG(11, CLR_BLUE,
+          "[doSepdQA] EventplaneinfoMap contains South & North objects?");
+
+      /* ---- 4.2  South / North arm lookup ----------------------------- */
+      auto* epdS = m_epmap->get(EventplaneinfoMap::sEPDS);
+      auto* epdN = m_epmap->get(EventplaneinfoMap::sEPDN);
+
+      LOG(11, CLR_BLUE,
+          "              South = " << (epdS ? "present" : "MISSING")
+          << "  |  North = "      << (epdN ? "present" : "MISSING"));
+
+      if (!epdS || !epdN)
+      {
+        if (!epdS)
+          LOG(5, CLR_YELLOW,
+              "              South arm object absent – "
+              "did it fail <min_tiles>/<qsum> cuts in EventPlaneReco?");
+        if (!epdN)
+          LOG(5, CLR_YELLOW,
+              "              North arm object absent – "
+              "did it fail <min_tiles>/<qsum> cuts in EventPlaneReco?");
+      }
+      else
+      {
+        /* ---- 4.3  Q-vector content check ----------------------------- */
+        const auto q2S = epdS->get_qvector(2);
+        const auto q2N = epdN->get_qvector(2);
+
+        LOG(11, CLR_BLUE,
+            "              Q2-vectors  S=(" << q2S.first << ", " << q2S.second
+                                           << ")  N=(" << q2N.first << ", " << q2N.second << ')');
+
+        const bool badS = (q2S.first == 0. && q2S.second == 0.);
+        const bool badN = (q2N.first == 0. && q2N.second == 0.);
+
+        if (badS || badN)
+        {
+          if (badS)
+            LOG(5, CLR_YELLOW,
+                "              South Q2 = (0,0) – quality cut inside EventPlaneReco");
+          if (badN)
+            LOG(5, CLR_YELLOW,
+                "              North Q2 = (0,0) – quality cut inside EventPlaneReco");
+        }
+        else
+        {
+          /* ---- 4.4  All good → compute Ψ2 ----------------------------- */
+          Eventplaneinfov1 helper;          // supplies GetPsi()
+          m_psi2_S = helper.GetPsi(q2S.first, q2S.second, 2);
+          m_psi2_N = helper.GetPsi(q2N.first, q2N.second, 2);
+          usedMap  = true;
+        }
+      }
+    }
+
+    /* ---- 4.5  Fallback ------------------------------------------------ */
+    if (!usedMap)
+    {
+      LOG(5, CLR_YELLOW,
+          "[doSepdQA] EP-map unusable – falling back to tower-based Q-vectors");
+      m_psi2_S = 0.5 * std::atan2(qyS, qxS);
+      m_psi2_N = 0.5 * std::atan2(qyN, qxN);
+    }
+
+    LOG(4, CLR_GREEN,
+        "[doSepdQA] Ψ₂(S) = " << m_psi2_S << "   Ψ₂(N) = " << m_psi2_N);
 
   const double cos2dPsi = std::cos(2 * (m_psi2_N - m_psi2_S));
 

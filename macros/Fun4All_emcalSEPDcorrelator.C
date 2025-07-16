@@ -172,7 +172,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   recoConsts* rc = recoConsts::instance();
   rc->set_StringFlag("CDB_GLOBALTAG","ProdA_2024");
   rc->set_uint64Flag("TIMESTAMP",     run);
-  CDBInterface::instance() -> Verbosity(1);
+  CDBInterface::instance() -> Verbosity(0);
     
   std::unique_ptr<FlagHandler> flag = std::make_unique<FlagHandler>();
   se->registerSubsystem(flag.get());
@@ -229,17 +229,6 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   CaloTowerCalib *calibIHCal = new CaloTowerCalib("HCALIN");
   calibIHCal->set_detector_type(CaloTowerDefs::HCALIN);
   se->registerSubsystem(calibIHCal);
-
-
-    
-//  // ----  builder ---------------------------------------------------
-//  CaloTowerBuilder *ctbSEPD = new CaloTowerBuilder("SEPDBUILDER");
-//  ctbSEPD->set_detector_type(CaloTowerDefs::SEPD);
-//  ctbSEPD->set_builder_type(CaloTowerDefs::kPRDFTowerv4);
-//  ctbSEPD->set_processing_type(CaloWaveformProcessing::FAST);
-//  ctbSEPD->set_nsamples(12);
-//  ctbSEPD->set_offlineflag();
-//  se->registerSubsystem(ctbSEPD);
     
   std::cout << "Building clusters" << std::endl;
   RawClusterBuilderTemplate *ClusterBuilder = new RawClusterBuilderTemplate("EmcRawClusterBuilderTemplate");
@@ -258,6 +247,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
   epdreco->Verbosity(0);
   se->registerSubsystem(epdreco.get());
+    
     
   // // MBD/BBC Reconstruction
   std::unique_ptr<MbdReco> mbdreco = std::make_unique<MbdReco>();
@@ -295,17 +285,10 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
         "cdb_centrality_54912.root");
   se->registerSubsystem(cent);
     
-//
-//  // ── SEPD gain calibration  (→ TOWERINFO_CALIB_SEPD) ────────────────
-//  auto *calibSEPD = new CaloTowerCalib("SEPDCALIB");
-//  calibSEPD->set_detector_type(CaloTowerDefs::SEPD);
-//  calibSEPD->setCalibName("/cvmfs/sphenix.sdcc.bnl.gov/calibrations/"
-//                          "sphnxpro/cdb/SEPD_NMIP_CALIB/f2/3b/"
-//                          "f23b23c2017de9768ac5d7e67367a6ee_SEPD_NMIP_CALIB_v4.root");
-//  se->registerSubsystem(calibSEPD);
 
   std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();
   epreco->set_sepd_epreco(true);
+  epreco->Verbosity(0);
   se->registerSubsystem(epreco.get());
 
 
