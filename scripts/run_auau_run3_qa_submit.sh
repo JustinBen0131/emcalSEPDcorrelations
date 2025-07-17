@@ -244,12 +244,18 @@ if [[ "$mode" == "splitRunList" ]]; then
   exit 0
 fi
 
-##############################################################################
+# ------------------------------------------------------------------
 # 6. VERBOSITY / CAP
-##############################################################################
+# ------------------------------------------------------------------
 VERBOSE=0
-[[ "$mode" == "condorTest" || ( "$mode" == "condor" && "$limitSwitch" == "firstTen" ) ]] && VERBOSE=1
-vecho() { (( VERBOSE )) && echo -e "${CLR_B}•${CLR_RST} $*"; }
+[[ "$mode" == "condorTest" || "$mode" == "condor" ]] && VERBOSE=1   # verbose for *all* Condor submissions
+
+vecho() {                               # helper: prints only when VERBOSE=1
+  if (( VERBOSE )); then
+    printf "%b\n" "${CLR_B}•${CLR_RST} $*"
+  fi
+  return 0
+}
 
 # ──────────────────────────────────────────────────────────────────────────
 #  Clean previous output before a new Condor campaign / test run
@@ -370,7 +376,7 @@ for idx in "${!runs[@]}"; do
   runDec=$((10#$runPad))
   masterList=${listFiles[$idx]}
 
-  vecho "Considering run $runPad  (list: $(basename "$masterList"))"
+  echo "Considering run $runPad  (list: $(basename "$masterList"))"
 
   rm -f "${TMP_LIST_DIR}/run${runPad}_chunk_"* 2>/dev/null || true
   split -l "$CHUNK_SIZE" -d -a 3 "$masterList" "${TMP_LIST_DIR}/run${runPad}_chunk_"
@@ -405,14 +411,14 @@ queue
 EOS
     if condor_submit "$subFile" >/dev/null; then
       (( ++submitted ))
-      vecho "  submitted chunk $chunkNo/${#chunks[@]}"
+      echo "  submitted chunk $chunkNo/${#chunks[@]}"
     else
       warn "condor_submit failed for $subFile"
     fi
   done
 
-  vecho "Completed run $runPad – jobs now at $submitted"
-  [[ "$mode" == "condorTest" ]] && { vecho "condorTest done."; break; }
+  echo "Completed run $runPad – jobs now at $submitted"
+  [[ "$mode" == "condorTest" ]] && { echo "condorTest done."; break; }
 done
 
 good "Grand‑total Condor jobs submitted: $submitted"
