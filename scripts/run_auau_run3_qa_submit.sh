@@ -335,18 +335,20 @@ if [[ "$mode" == "local" ]]; then
     if [[ "$limitSwitch" =~ ^[0-9]+$ && "$limitSwitch" -ge 100000 ]]; then
       # token looks like a real run number
       runNumber=$(printf "$PAD_FMT" "$limitSwitch")
-      maxEvt="${3:-0}"          # 2-nd numeric token becomes event cap
+      maxEvt="${3:-0}"          # 2‑nd numeric token becomes event cap
     else
       # token is the event cap itself
       maxEvt="$limitSwitch"
     fi
   fi
 
-  runNumDec=$((10#$runNumber))  # we still need the decimal copy
+  runNumDec=$((10#$runNumber))                       # decimal copy
   listFile="${DST_LIST_DIR}/$(printf "$LIST_FMT" "$runNumDec")"
-  [[ -s "$listFile" ]] || fatal "List-file $listFile not found or empty"
+  [[ -s "$listFile" ]] || fatal "List‑file $listFile not found or empty"
 
   firstDST=$(head -n1 "$listFile")
+  tag=$(basename "${firstDST%.root}")                # ← new: build tag
+
   say  "Local test  –  run $runNumber"
   say  "First DST   : $firstDST"
   say  "maxEvt      : $maxEvt (0 → all)"
@@ -354,7 +356,7 @@ if [[ "$mode" == "local" ]]; then
   tmpList=$(mktemp "${TMP_LIST_DIR}/local_${runNumber}_XXXX.list")
   echo "$firstDST" > "$tmpList"
 
-  "${EXEC}"  "$runNumber"  "$tmpList"  0  "$(outdir_for_run "$runNumber")"  "$maxEvt"
+  "${EXEC}"  "$runNumber"  "$tmpList"  "${tag}"  "$(outdir_for_run "$runNumber")"  "$maxEvt"
   rm -f "$tmpList"
   exit 0
 fi
@@ -393,7 +395,7 @@ for idx in "${!runs[@]}"; do
     cat > "$subFile" <<EOS
 universe      = vanilla
 executable    = $EXEC
-arguments     = $runPad  $listFile  \$(Cluster)  $(outdir_for_run $runPad)
+arguments     = $runPad  $listFile  ${tag}  $(outdir_for_run $runPad)
 log           = ${LOGDIR}/${tag}.log
 output        = ${OUTDIR}/${tag}.out
 error         = ${ERRDIR}/${tag}.err

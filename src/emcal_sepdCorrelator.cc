@@ -2,16 +2,13 @@
 //  sPHENIX EMCal × sEPD × MBD correlator
 //  Implementation file  – no duplicated definitions
 //==========================================================================
-
 #include "emcal_sepdCorrelator.h"
-
 //––– Fun4All / PHOOL -------------------------------------------------------
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <fun4all/Fun4AllServer.h>
 #include <phool/getClass.h>
 #include <phool/recoConsts.h>
 #include <jetbase/JetContainer.h>
-
 //––– ROOT & CLHEP ----------------------------------------------------------
 #include <TProfile.h>
 #include <TDirectory.h>
@@ -20,10 +17,8 @@
 #include <TH2Poly.h>
 #include <CLHEP/Vector/ThreeVector.h>
 //––– CDB access ------------------------------------------------------------
-#include <cdbobjects/CDBTTree.h>        // <-- defines CDBTTree
-#include <ffamodules/CDBInterface.h>     // <-- gives you CDBInterface::instance()
-
-
+#include <cdbobjects/CDBTTree.h>
+#include <ffamodules/CDBInterface.h>
 //––– sPHENIX objects -------------------------------------------------------
 #include <globalvertex/GlobalVertex.h>
 #include <calobase/TowerInfo.h>
@@ -98,11 +93,6 @@ emcal_sepdCorrelator::~emcal_sepdCorrelator()
   
 }
 
-/* ======================================================================
- *  Init – one-time module setup
- *    • books QA histograms
- *    • (optional) prints the full DST node tree (Verbosity ≥ 2)
- * ====================================================================*/
 int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
 {
   LOG(1, CLR_BLUE, "[Init] emcal_sepdCorrelator – starting");
@@ -180,10 +170,6 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
-
-//======================================================================
-//  InitRun – geometry‑dependent booking (only once per run)
-//======================================================================
 int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
 {
   /* 0. banner -------------------------------------------------------- */
@@ -217,10 +203,6 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
 }
 
 
-
-//==========================================================================
-//  bookShapeHitMaps – hex (MBD) & polar (sEPD) hit‑maps, one per trigger
-//==========================================================================
 void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
 {
   auto* mbdg = findNode::getClass<MbdGeom>(topNode, "MbdGeom");
@@ -267,8 +249,6 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
   out->cd();
 }
 
-//–––––––––––––––––––– helper book‑ers (tower/cluster, charge, correlations,
-//                                  π0 spectra, EP/centrality) ––––––––––––
 void emcal_sepdCorrelator::bookTowerAndClusterQA(const std::string& trig, HistMap& H)
 {
   const int nbE = 200; const double eMax = 50.;
@@ -296,10 +276,6 @@ void emcal_sepdCorrelator::bookChargeQA(const std::string& trig, HistMap& H)
                                 "MBD PMT charge sum;Q [ADC]", nbQ, 0, qMax);
 }
 
-/* ----------------------------------------------------------------------
- * bookEnergyChargeCorrel  – detector–detector ΣE / ΣQ correlation maps
- *                           (global   +   centrality‑tagged clones)
- * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
                                                   HistMap&           H)
 {
