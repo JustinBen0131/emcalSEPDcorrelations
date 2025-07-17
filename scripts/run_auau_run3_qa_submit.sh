@@ -252,13 +252,13 @@ VERBOSE=0
 vecho() { (( VERBOSE )) && echo -e "${CLR_B}•${CLR_RST} $*"; }
 
 # ──────────────────────────────────────────────────────────────────────────
-#  ⬇⬇  *** NEW: one‑shot cleanup for condorTest ***  ⬇⬇
+#  Clean previous output before a new Condor campaign / test run
 # --------------------------------------------------------------------------
-if [[ "$mode" == "condorTest" ]]; then
-  say  "condorTest – removing previous test output"
-  # – remove *all* run sub‑folders and files in the main output tree
-  rm -rf "${CONDOR_OUT_BASE:?}/"*                 || warn "Nothing to clean in ${CONDOR_OUT_BASE}"
-  # – truncate the per‑job stdout / log / error directories
+if [[ "$mode" == "condorTest" || "$mode" == "condor" ]]; then
+  say  "$mode – removing previous output"
+  # – wipe every run-subfolder in the bulk tree
+  rm -rf "${CONDOR_OUT_BASE:?}/"* || warn "Nothing to clean in ${CONDOR_OUT_BASE}"
+  # – truncate per-job stdout / log / error directories
   rm -f  "${OUTDIR:?}/"* "${LOGDIR:?}/"* "${ERRDIR:?}/"* 2>/dev/null || true
 fi
 
