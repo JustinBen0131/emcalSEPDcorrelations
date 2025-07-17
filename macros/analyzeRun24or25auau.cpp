@@ -1,4 +1,4 @@
-// analyzeRun24auau.cpp  – ROOT ≥ 6, C++17
+// analyzeRun24or25auau.cpp  – ROOT ≥ 6, C++17
 // ===============================================================
 //  • Pass‑0: catalogue every histogram in the file  (console + .txt)
 //  • Pass‑1: modular QA (EMCal, HCal, sEPD, MBD, correlations,
@@ -40,7 +40,7 @@ namespace fs = std::filesystem;
 // ───────────────────────────────────────────────
 const string kInputFile =
     "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/"
-    "emcal_sepd_analysis_run54280_c0_DST_CALO_run2auau_new_2024p007-00054280-00000.root";
+    "emcal_sepd_analysis_run00066484_c0_DST_CALOFITTING_run3auau_new_newcdbtag_v006-00066484-00000.root";
 
 const string kOutputBase =
     "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output";
@@ -424,8 +424,8 @@ public:
     auto save=[&](const string& slice){
       fs::path outPng=cPath(root,slice,DERIVED::subdir)/(DERIVED::fileName(trig)+".png");
       TCanvas c("c","",1100,600); c.Divide(2,1,0.01,0.01);
-      c.cd(1); out.s->SetTitle(DERIVED::titleSouth); out.s->Draw(("COL POLZ");
-      c.cd(2); out.n->SetTitle(DERIVED::titleNorth); out.n->Draw(("COL POLZ");
+      c.cd(1); out.s->SetTitle(DERIVED::titleSouth); out.s->Draw("COL POLZ");
+      c.cd(2); out.n->SetTitle(DERIVED::titleNorth); out.n->Draw("COL POLZ");
       ensure_dir(outPng.parent_path()); c.SaveAs(outPng.string().c_str());
     };
     save(sl);
@@ -435,6 +435,7 @@ protected:
   NSCache<MapPair>& cache;
 };
 
+                                                                 
 struct MBDTag{
   // accept only true‑MBD histograms: must contain “MBD” and NOT “sEPD”
   static bool accept(const string& s)
@@ -458,8 +459,38 @@ struct sEPDTag{
 using MbdQA  = NSDetectorQA<MBDTag>;
 using SepdQA = NSDetectorQA<sEPDTag>;
 
+// ——— Jet QA ——————————————————————————————————————————
+class JetQA : public QA
+{
+ public: using QA::QA;
 
+   bool process(TObject* o) override
+   {
+     if (!o->InheritsFrom(TH1::Class())) return false;
 
+     // histogram names are “h_maxJetEt_R02_<trg>[…]”
+     std::string n = o->GetName();
+     if (n.rfind("h_maxJetEt_", 0) != 0) return false;
+
+     const std::string slice = sliceKey(n);
+
+     // extract the radius label “R02”, “R04”, … for a nicer directory tree
+     std::smatch m;
+     std::regex  re(R"(h_maxJetEt_(R[0-9]+)_)");
+     const std::string rLabel =
+           std::regex_search(n, m, re) ? m[1].str() : std::string("UnknownR");
+
+     auto save = [&](const std::string& sl)
+     {
+       fs::path sub = fs::path("Jets") / rLabel;
+       fs::path out = cPath(root, sl, sub) / (n + ".png");
+       save1D(static_cast<TH1*>(o), out);
+     };
+     save(slice);
+     return true;
+   }
+};
+                                                                 
 // ╔══════════════════════════════════════════════╗
 // ║ 9.  MAIN DRIVER                              ║
 // ╚══════════════════════════════════════════════╝
@@ -524,7 +555,7 @@ void analyzeRun24or25auau()
     for(auto& s:slices){
       fs::path b=fs::path(kOutputBase)/trg;
       if(s!="Inclusive") b/=("Cent_"+s);
-      for(auto sub:{"Correlations","EMCal/pi0QA","IHCal","OHCal","MBD","sEPD"})
+      for(auto sub:{"Correlations","EMCal/pi0QA","IHCal","OHCal","MBD","sEPD", "Jets" })
         ensure_dir(b/sub);
     }
 
@@ -537,6 +568,7 @@ void analyzeRun24or25auau()
     qa.emplace_back(std::make_unique<HcalQA >(trg,base,slices));
     qa.emplace_back(std::make_unique<MbdQA  >(trg,base,slices,mbdCache));
     qa.emplace_back(std::make_unique<SepdQA >(trg,base,slices,sepdCache));
+    qa.emplace_back(std::make_unique<JetQA >(trg, base, slices));
 
     // histogram loop
     TIter itH(dTrig->GetListOfKeys());

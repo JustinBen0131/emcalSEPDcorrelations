@@ -75,8 +75,10 @@
 
 /** Always print, independent of Verbosity() */
 #define PROGRESS(MSG)                                                     \
-  do { std::cout << CLR_CYAN << MSG << CLR_RESET << std::endl; } while (false)
-
+    do {                                                                  \
+        if (static_cast<int>(Verbosity()) >= 1)                           \
+            std::cout << CLR_CYAN << MSG << CLR_RESET << std::endl;       \
+    } while (false)
 //==========================================================================
 //  ctor
 //==========================================================================
@@ -575,7 +577,7 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* 0. Banner & running counter                                        */
   /* ------------------------------------------------------------------ */
   ++event_count;
-  PROGRESS("=================================   event " << std::setw(3) << event_count << "===================================== "
+  PROGRESS("=================================   event " << std::setw(3) << event_count << "    ===================================== "
            "(Verb=" << Verbosity() << ")");
 
   /* ------------------------------------------------------------------ */
@@ -1838,11 +1840,13 @@ int emcal_sepdCorrelator::End(PHCompositeNode*)
     for (const auto& [trig, hMap] : qaHistogramsByTrigger)
       for (const auto& [key, obj]  : hMap)
         if (const TH1* h = dynamic_cast<const TH1*>(obj))
-          std::cout << std::left << std::setw(30) << trig << " │ "
-                    << std::setw(32) << key  << " │ "
-                    << std::right<< std::setw(10)
-                    << static_cast<Long64_t>(h->GetEntries()) << '\n';
-
+        {
+            if (h->GetEntries() == 0) continue;          // <‑‑ only list filled ones
+            std::cout << std::left << std::setw(30) << trig << " │ "
+            << std::setw(32) << key  << " │ "
+            << std::right<< std::setw(10)
+            << static_cast<Long64_t>(h->GetEntries()) << '\n';
+        }
     if (!m_totStat.empty())
     {
       std::cout << "-------------------------------------------------------------------------------\n"
@@ -1862,8 +1866,11 @@ int emcal_sepdCorrelator::End(PHCompositeNode*)
   }
 
   //--------------------------------------------------------------------
-  // 4.  Write footer & close the file (histograms already written)
+  // 4.  Write footer & close the file
   //--------------------------------------------------------------------
+  if (Verbosity() >= 1)
+      std::cout << "\nOutput ROOT file →  " << out->GetName() << "\n\n";
+    
   info(1, "writing TFile footer and closing ("+std::to_string(nHistWritten)
            +" / "+std::to_string(nHistExpected)+" objects written)");
 
