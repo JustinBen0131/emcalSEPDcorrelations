@@ -40,7 +40,7 @@ namespace fs = std::filesystem;
 // ───────────────────────────────────────────────
 const string kInputFile =
     "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/"
-    "emcal_sepd_analysis_run00066484_c0_DST_CALOFITTING_run3auau_new_newcdbtag_v006-00066484-00000.root";
+    "DST_CALOFITTING_run3auau_new_newcdbtag_v006-00066484-00000.root";
 
 const string kOutputBase =
     "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output";

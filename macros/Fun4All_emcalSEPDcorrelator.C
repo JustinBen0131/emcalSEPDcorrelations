@@ -245,22 +245,27 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   ClusterBuilder->set_UseAltZVertex(1); // Use MBD Vertex for vertex-based corrections
   se->registerSubsystem(ClusterBuilder);
 
+  std::cout << "Calibrating sEPD" << std::endl;
   std::unique_ptr<EpdReco> epdreco = std::make_unique<EpdReco>();
   epdreco->Verbosity(0);
   se->registerSubsystem(epdreco.get());
 
   // // MBD/BBC Reconstruction
+  std::cout << "Calibrating MBD" << std::endl;
   std::unique_ptr<MbdReco> mbdreco = std::make_unique<MbdReco>();
   se->registerSubsystem(mbdreco.get());
     
+  std::cout << "Calibrating ZDC" << std::endl;
   std::unique_ptr<ZdcReco> zdcreco = std::make_unique<ZdcReco>();
   zdcreco->set_zdc1_cut(0.0);
   zdcreco->set_zdc2_cut(0.0);
   se->registerSubsystem(zdcreco.get());
-   
+    
+  std::cout << "Retrieving Vtx Info" << std::endl;
   std::unique_ptr<GlobalVertexReco> gvertex = std::make_unique<GlobalVertexReco>();
   se->registerSubsystem(gvertex.get());
     
+  std::cout << "building minbias classifier" << std::endl;
   auto* mb = new MinimumBiasClassifier();
   mb->Verbosity(0);
   mb->setOverwriteScale(
@@ -272,6 +277,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   se->registerSubsystem(mb);
 
     
+  std::cout << "building centrality classifier" << std::endl;
   auto* cent = new CentralityReco();
   cent->Verbosity(0);
   cent->setOverwriteScale(
@@ -285,7 +291,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
         "cdb_centrality_54912.root");
   se->registerSubsystem(cent);
     
-
+  std::cout << "building EP info" << std::endl;
   std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();
   epreco->set_sepd_epreco(true);
   epreco->Verbosity(0);
@@ -298,6 +304,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   //--------------------------------------------------------------------
   {
       // ── (i)  0.025×0.025 retower of the EMCal ─────────────────────────
+      std::cout << "Retowering EMCal Towers" << std::endl;
       auto* rcemc = new RetowerCEMC();
       rcemc->set_towerinfo(true);               // use TowerInfo containers
       rcemc->set_frac_cut(0.5);                 // ≥50 % masked ⇒ mask retower
@@ -305,18 +312,16 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
       se->registerSubsystem(rcemc);
 
       // ── (ii)  RAW‑SEED JETS  – must precede DetermineTowerBackground ──
+      std::cout << "Building Jets" << std::endl;
       auto* seedReco = new JetReco();
-
       seedReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_RETOWER,
                                             "TOWERINFO_CALIB"));
       seedReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO,
                                             "TOWERINFO_CALIB"));
       seedReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO,
                                             "TOWERINFO_CALIB"));
-
       seedReco->add_algo(detail::fjAlgo(0.2f), "AntiKt_TowerInfo_HIRecoSeedsRaw_r02");
-      seedReco->set_algo_node("AntiKt_TowerInfo");   // ➜ nodes:
-                                                     //   AntiKt_TowerInfo_HIRecoSeedsRaw_r0X
+      seedReco->set_algo_node("AntiKt_TowerInfo");
       seedReco->set_input_node("TOWERINFO_CALIB");
       seedReco->Verbosity(0);
       se->registerSubsystem(seedReco);
