@@ -18,7 +18,7 @@
 #include <TF1.h>
 #include <TStyle.h>
 #include <TH2Poly.h>
-
+#include <TFileMerger.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -38,13 +38,20 @@ namespace fs = std::filesystem;
 // ───────────────────────────────────────────────
 //            ▼  USER SETTINGS  ▼
 // ───────────────────────────────────────────────
-const string kInputFile =
-    "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/"
-    "DST_CALOFITTING_run3auau_new_newcdbtag_v006-00066484-00000.root";
+namespace {
+  /* directory that already contains all run‑merged ROOT files
+   * produced by your Condor step:  output_00066XXX.root, …            */
+  const fs::path kInputDir =
+      "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/input/output";
 
-const string kOutputBase =
-    "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output";
-
+  /* parent directory where PNGs/CSVs will appear:
+   *   <kOutputDir>/<run‑number>/…    (per‑run)
+   *   <kOutputDir>/Combined/…        (after hadd)                      */
+  const fs::path kOutputDir =
+      "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output";
+}
+std::string kInputFile   = "";   // gets filled inside the loop
+std::string kOutputBase  = "";   // ditto
 std::set<string> kTriggersWanted{ "MBD_NandS_geq_2" };
 
 /*  <<<   π0‐fit master switch   >>>                                         *
@@ -53,6 +60,20 @@ std::set<string> kTriggersWanted{ "MBD_NandS_geq_2" };
  *  true   → run the Gaussian‑plus‑poly fit and fill CSV.                    */
 constexpr bool kDoPi0Fit = false;
 // ───────────────────────────────────────────────
+
+// ---------- helper: collect *.root files, sorted -------------------
+static std::vector<fs::path> listRunFiles(const fs::path& dir)
+{
+  std::vector<fs::path> v;
+  std::regex re(R"(output_([0-9]{8})\.root)");
+  for (auto& e : fs::directory_iterator(dir))
+    if (e.is_regular_file() && e.path().extension() == ".root" &&
+        std::regex_match(e.path().filename().string(), re))
+      v.push_back(e.path());
+  std::sort(v.begin(), v.end(),
+            [](const fs::path& a, const fs::path& b){ return a.string() < b.string(); });
+  return v;
+}
 
 
 // ╔══════════════════════════════════════════════╗
@@ -437,17 +458,17 @@ protected:
 
                                                                  
 struct MBDTag{
-  // accept only true‑MBD histograms: must contain “MBD” and NOT “sEPD”
-  static bool accept(const string& s)
+  // accept only true‑MBD hit‑maps – histogram name must START with “h_MBD_”
+  static bool accept(const std::string& s)
   {
-    return s.find("MBD")  != string::npos &&   // MBD present
-           s.find("sEPD") == string::npos;     // but no sEPD substring
+    return s.rfind("h_MBD_", 0) == 0;   // good MBD names: h_MBD_…
   }
   static constexpr const char* subdir = "MBD";
-  static string fileName(const string& t){ return "MBD_Hitmap_NS_" + t; }
+  static std::string fileName(const std::string& t){ return "MBD_Hitmap_NS_" + t; }
   static constexpr const char* titleSouth = "MBD South";
   static constexpr const char* titleNorth = "MBD North";
 };
+
 struct sEPDTag{
   static bool accept(const string& s){return s.find("sEPD")!=string::npos;}
   static constexpr const char* subdir="sEPD";
@@ -459,146 +480,198 @@ struct sEPDTag{
 using MbdQA  = NSDetectorQA<MBDTag>;
 using SepdQA = NSDetectorQA<sEPDTag>;
 
-// ——— Jet QA ——————————————————————————————————————————
+// --- Jet QA ----------------------------------------------------------------
 class JetQA : public QA
 {
  public: using QA::QA;
 
-   bool process(TObject* o) override
-   {
-     if (!o->InheritsFrom(TH1::Class())) return false;
+  bool process(TObject* o) override
+  {
+    if (!o->InheritsFrom(TH1::Class())) return false;
+    std::string n = o->GetName();
+    if (n.rfind("h_maxJetEt_", 0) != 0) return false;
 
-     // histogram names are “h_maxJetEt_R02_<trg>[…]”
-     std::string n = o->GetName();
-     if (n.rfind("h_maxJetEt_", 0) != 0) return false;
+    const std::string slice  = sliceKey(n);
+    std::smatch m; std::regex  re(R"(h_maxJetEt_(R[0-9]+)_)");
+    const std::string rLabel = std::regex_search(n, m, re) ? m[1].str() : "UnknownR";
 
-     const std::string slice = sliceKey(n);
-
-     // extract the radius label “R02”, “R04”, … for a nicer directory tree
-     std::smatch m;
-     std::regex  re(R"(h_maxJetEt_(R[0-9]+)_)");
-     const std::string rLabel =
-           std::regex_search(n, m, re) ? m[1].str() : std::string("UnknownR");
-
-     auto save = [&](const std::string& sl)
-     {
-       fs::path sub = fs::path("Jets") / rLabel;
-       fs::path out = cPath(root, sl, sub) / (n + ".png");
-       save1D(static_cast<TH1*>(o), out);
-     };
-     save(slice);
-     return true;
-   }
+    fs::path sub  = fs::path("jetQA") / rLabel;        // <‑‑ changed “Jets” → “jetQA”
+    fs::path out  = cPath(root, slice, sub) / (n + ".png");
+    save1D(static_cast<TH1*>(o), out);
+    return true;
+  }
 };
                                                                  
 // ╔══════════════════════════════════════════════╗
-// ║ 9.  MAIN DRIVER                              ║
+// ║ 9.  MAIN DRIVER  – run‑by‑run + combined     ║
 // ╚══════════════════════════════════════════════╝
 void analyzeRun24or25auau()
 {
-  gStyle->SetOptStat(0);
+  gStyle->SetOptStat(0);          // ROOT style once is enough
 
-  log::banner("sPHENIX Run‑24 Au+Au QA – Enhanced Macro");
+  // ------------------------------------------------------------
+  // 0.  Collect all “output_########.root” files in kInputDir
+  // ------------------------------------------------------------
+  std::vector<fs::path> runFiles = listRunFiles(kInputDir);
 
-  std::unique_ptr<TFile> in(TFile::Open(kInputFile.c_str(),"READ"));
-  if(!in||in->IsZombie()){ log::err("Cannot open "+kInputFile); return; }
-  log::ok("Input file opened");
+  /*  If the directory is empty we fall back to the original
+   *  single‑file behaviour: whatever kInputFile already points to
+   *  (this lets you keep testing on one file if you want).       */
+  if (runFiles.empty()) {
+    if (kInputFile.empty()) {
+      log::err("No input files found and kInputFile is empty – nothing to do.");
+      return;
+    }
+    runFiles.push_back(kInputFile);          // “single‑file” mode
+  }
 
-  CentList slices = discoverSlices(in.get());
+  // ------------------------------------------------------------
+  // 1.  Lambda = ONE COMPLETE QA PASS  (the old body unchanged)
+  // ------------------------------------------------------------
+  auto runOneQaPass = [&]()
   {
-    std::ostringstream o; o<<"Centrality slices: ";
-    for(auto& s:slices) o<<s<<"  ";
-    log::info(o.str());
-  }
+    log::banner("sPHENIX Run‑24 Au+Au QA – Enhanced Macro");
 
-  // ─── Pass 0 catalogue ─────────────────────────
-  log::banner("Pass 0 – Catalogue");
-  fs::path catTxt=fs::path(kOutputBase)/"AllHistogramNames.txt";
-  ensure_dir(catTxt.parent_path());
-  std::ofstream cat(catTxt);
-  cat<<"# Histogram catalogue for "<<kInputFile<<"\n";
+    std::unique_ptr<TFile> in(TFile::Open(kInputFile.c_str(), "READ"));
+    if (!in || in->IsZombie()) { log::err("Cannot open " + kInputFile); return; }
+    log::ok("Input file opened");
 
-  std::unordered_map<string,int> hCount;
-  TIter it0(in->GetListOfKeys());
-  while(auto* kd=dynamic_cast<TKey*>(it0())){
-    if(strcmp(kd->GetClassName(),"TDirectoryFile")) continue;
-    string trg=kd->GetName(); if(!kTriggersWanted.count(trg)) continue;
-    TDirectory* d=(TDirectory*)kd->ReadObj();
-    TIter itH(d->GetListOfKeys());
-    while(auto* kh=dynamic_cast<TKey*>(itH())){
-      cat<<"["<<trg<<"] "<<kh->GetName()<<"\n"; ++hCount[trg];
-    }
-  }
-  log::ok("Histogram list written → "+catTxt.string());
-
-  // ─── Pass 1 QA ────────────────────────────────
-  log::banner("Pass 1 – QA Production");
-
-  fs::path csvPath=fs::path(kOutputBase)/"InvariantMassSummary.csv";
-  ensure_dir(csvPath.parent_path());
-  std::ofstream csv(csvPath);
-  csv<<"trigger,E,Chi,Asym,pTlo,pThi,meanPi0,errPi0,sigmaPi0,errSigmaPi0,"
-        "meanEta,errEta,sigmaEta,errSigmaEta\n";
-
-  NSCache<MapPair> mbdCache, sepdCache;
-
-  struct Counter{ int hTotal=0,hUsed=0; };
-  std::unordered_map<string,Counter> trigStat;
-
-  TIter itDir(in->GetListOfKeys());
-  while(auto* kd=dynamic_cast<TKey*>(itDir())){
-    if(strcmp(kd->GetClassName(),"TDirectoryFile")) continue;
-    string trg=kd->GetName(); if(!kTriggersWanted.count(trg)) continue;
-    TDirectory* dTrig=(TDirectory*)kd->ReadObj();
-
-    // set up output directories
-    for(auto& s:slices){
-      fs::path b=fs::path(kOutputBase)/trg;
-      if(s!="Inclusive") b/=("Cent_"+s);
-      for(auto sub:{"Correlations","EMCal/pi0QA","IHCal","OHCal","MBD","sEPD", "Jets" })
-        ensure_dir(b/sub);
+    CentList slices = discoverSlices(in.get());
+    {
+      std::ostringstream o; o << "Centrality slices: ";
+      for (auto& s : slices) o << s << "  ";
+      log::info(o.str());
     }
 
-    // instantiate QA modules
-    std::vector<std::unique_ptr<QA>> qa;
-    fs::path base=fs::path(kOutputBase)/trg;
-    qa.emplace_back(std::make_unique<Pi0QA >(trg,base,slices,csv));
-    qa.emplace_back(std::make_unique<CorrQA>(trg,base,slices));
-    qa.emplace_back(std::make_unique<EmcalQA>(trg,base,slices));
-    qa.emplace_back(std::make_unique<HcalQA >(trg,base,slices));
-    qa.emplace_back(std::make_unique<MbdQA  >(trg,base,slices,mbdCache));
-    qa.emplace_back(std::make_unique<SepdQA >(trg,base,slices,sepdCache));
-    qa.emplace_back(std::make_unique<JetQA >(trg, base, slices));
+    // ─── Pass‑0 catalogue ──────────────────────────────────────
+    log::banner("Pass 0 – Catalogue");
+    fs::path catTxt = fs::path(kOutputBase) / "AllHistogramNames.txt";
+    ensure_dir(catTxt.parent_path());
+    std::ofstream cat(catTxt);
+    cat << "# Histogram catalogue for " << kInputFile << "\n";
 
-    // histogram loop
-    TIter itH(dTrig->GetListOfKeys());
-    while(auto* kh=dynamic_cast<TKey*>(itH())){
-      log::trace("Handling ["+trg+"] histogram \""+string(kh->GetName())+"\"");
-      TObject* obj=kh->ReadObj();
-      if(obj->InheritsFrom(TH1::Class()))
-        static_cast<TH1*>(obj)->SetDirectory(nullptr);
+    std::unordered_map<string,int> hCnt;
+    TIter it0(in->GetListOfKeys());
+    while (auto* kd = dynamic_cast<TKey*>(it0())) {
+      if (strcmp(kd->GetClassName(), "TDirectoryFile")) continue;
+      string trg = kd->GetName(); if (!kTriggersWanted.count(trg)) continue;
+      TDirectory* d = static_cast<TDirectory*>(kd->ReadObj());
+      TIter itH(d->GetListOfKeys());
+      while (auto* kh = dynamic_cast<TKey*>(itH())) {
+        cat << "[" << trg << "] " << kh->GetName() << "\n"; ++hCnt[trg];
+      }
+    }
+    log::ok("Histogram list written → " + catTxt.string());
 
-      ++trigStat[trg].hTotal;
-      for(auto& m:qa) if(m->process(obj)){ ++trigStat[trg].hUsed; break; }
+    // ─── Pass‑1 QA ─────────────────────────────────────────────
+    log::banner("Pass 1 – QA Production");
+
+    fs::path csvPath = fs::path(kOutputBase) / "InvariantMassSummary.csv";
+    ensure_dir(csvPath.parent_path());
+    std::ofstream csv(csvPath);
+    csv << "trigger,E,Chi,Asym,pTlo,pThi,meanPi0,errPi0,sigmaPi0,errSigmaPi0,"
+           "meanEta,errEta,sigmaEta,errSigmaEta\n";
+
+    NSCache<MapPair> mbdCache, sepdCache;
+    struct Cnt { int tot = 0, used = 0; };
+    std::unordered_map<string,Cnt> stat;
+
+    TIter itDir(in->GetListOfKeys());
+    while (auto* kd = dynamic_cast<TKey*>(itDir())) {
+      if (strcmp(kd->GetClassName(), "TDirectoryFile")) continue;
+      string trg = kd->GetName(); if (!kTriggersWanted.count(trg)) continue;
+      TDirectory* dTrig = static_cast<TDirectory*>(kd->ReadObj());
+
+      // directory skeleton for this trigger
+      for (auto& s : slices) {
+        fs::path b = fs::path(kOutputBase) / trg;
+        if (s != "Inclusive") b /= ("Cent_" + s);
+        for (auto sub : { "Correlations", "EMCal/pi0QA", "IHCal", "OHCal",
+                          "MBD", "sEPD", "jetQA" })
+          ensure_dir(b / sub);
+      }
+
+      // QA modules
+      std::vector<std::unique_ptr<QA>> qa;
+      fs::path base = fs::path(kOutputBase) / trg;
+      qa.emplace_back(std::make_unique<Pi0QA >(trg,base,slices,csv));
+      qa.emplace_back(std::make_unique<CorrQA>(trg,base,slices));
+      qa.emplace_back(std::make_unique<EmcalQA>(trg,base,slices));
+      qa.emplace_back(std::make_unique<HcalQA >(trg,base,slices));
+      qa.emplace_back(std::make_unique<MbdQA  >(trg,base,slices,mbdCache));
+      qa.emplace_back(std::make_unique<SepdQA >(trg,base,slices,sepdCache));
+      qa.emplace_back(std::make_unique<JetQA >(trg,base,slices));
+
+      // histogram loop
+      TIter itH(dTrig->GetListOfKeys());
+      while (auto* kh = dynamic_cast<TKey*>(itH())) {
+        log::trace("Handling [" + trg + "] \"" + string(kh->GetName()) + "\"");
+        TObject* obj = kh->ReadObj();
+        if (obj->InheritsFrom(TH1::Class()))
+          static_cast<TH1*>(obj)->SetDirectory(nullptr);
+
+        ++stat[trg].tot;
+        for (auto& m : qa) if (m->process(obj)) { ++stat[trg].used; break; }
+      }
+
+      log::ok("Trigger " + trg + ": processed " +
+              std::to_string(stat[trg].tot) + " objects");
     }
 
-    log::ok("Trigger "+trg+": processed "+
-            std::to_string(trigStat[trg].hTotal)+" objects");
+    csv.close();
+
+    // ─── Summary ───────────────────────────────────────────────
+    log::banner("Summary");
+    std::cout << term::CLR_BOLD
+              << std::left  << std::setw(20) << "Trigger"
+              << std::right << std::setw(12) << "Total"
+              << std::setw(12)                << "Written"
+              << term::CLR_RST << "\n";
+    for (auto& [t,c] : stat)
+      std::cout << std::left  << std::setw(20) << t
+                << std::right << std::setw(12) << c.tot
+                << std::setw(12)               << c.used << "\n";
+
+    log::ok("All outputs under " + kOutputBase);
+  };   // <‑‑ end lambda runOneQaPass
+  // ------------------------------------------------------------
+  // 2.  Run the QA pass for every individual run file
+  // ------------------------------------------------------------
+  std::regex reRun(R"(output_([0-9]{8})\.root)");
+  for (const auto& f : runFiles) {
+    std::smatch m;
+    std::string fname = f.filename().string();
+    std::regex_search(fname.cbegin(), fname.cend(), m, reRun);
+    const std::string run = m.empty() ? "Single" : m[1].str();
+
+    kInputFile  = f.string();
+    kOutputBase = (kOutputDir / run).string();
+
+    log::info("▶  Run " + run + "  →  " + kOutputBase);
+    runOneQaPass();
   }
 
-  csv.close();
+  // ------------------------------------------------------------
+  // 3.  Merge (“hadd”) all run files and do one final pass
+  // ------------------------------------------------------------
+  if (runFiles.size() > 1) {
+    fs::path combined = kInputDir / "output_ALL_COMBINED.root";
+    log::banner("Hadd – building " + combined.string());
 
-  // ─── Summary ──────────────────────────────────
-  log::banner("Summary");
-  std::cout<<term::CLR_BOLD
-           <<std::left<<std::setw(20)<<"Trigger"
-           <<std::right<<std::setw(12)<<"Total"
-           <<std::setw(12)<<"Written"<<term::CLR_RST<<"\n";
-  for(auto& [t,c]:trigStat)
-    std::cout<<std::left<<std::setw(20)<<t
-             <<std::right<<std::setw(12)<<c.hTotal
-             <<std::setw(12)<<c.hUsed<<"\n";
+    TFileMerger merger(false, true);           // print summary
+    merger.OutputFile(combined.c_str(), "RECREATE");
+    for (const auto& f : runFiles) merger.AddFile(f.string().c_str());
 
-  log::ok("All outputs under "+kOutputBase);
+    if (!merger.Merge()) {
+      log::err("TFileMerger failed – combined QA skipped");
+      return;
+    }
+    log::ok("Combined ROOT file written");
+
+    kInputFile  = combined.string();
+    kOutputBase = (kOutputDir / "Combined").string();
+
+    log::banner("Final QA pass on combined file");
+    runOneQaPass();
+  }
 }
-
