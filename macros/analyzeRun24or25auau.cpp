@@ -20,6 +20,7 @@
 #include <TH2Poly.h>
 #include <TFileMerger.h>
 #include <filesystem>
+#include <TH2.h>
 #include <TH3.h>
 #include <fstream>
 #include <iomanip>
@@ -32,6 +33,8 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>   // uintptr_t cast
+#include <algorithm>
+#include <cmath>
 
 using std::string;
 namespace fs = std::filesystem;
@@ -54,7 +57,15 @@ namespace {
 std::string kInputFile   = "";   // gets filled inside the loop
 std::string kOutputBase  = "";   // ditto
 std::set<string> kTriggersWanted{ "MBD_NandS_geq_2" };
+/* ----------  PLOT CANVAS SIZES  -----------
+ * Set a value ≤0 to keep the old automatic size
+ * (nEta × px for width, nPhi × px for height).
+ * -------------------------------------------------------- */
+constexpr int kHCalCanvasW = 800;   // IHCal / OHCal width   [px]
+constexpr int kHCalCanvasH = 1200;  // IHCal / OHCal height  [px]
 
+constexpr int kEMCalCanvasW = 800;  // EMCal  hit‑map width  [px]
+constexpr int kEMCalCanvasH = 1200; // EMCal  hit‑map height [px]
 /*  <<<   π0‐fit master switch   >>>                                         *
  *  false  → spectra are drawn, but *no* TF1 fit is attempted and            *
  *           InvariantMassSummary.csv is left empty (except header).         *
@@ -189,21 +200,15 @@ bool decodeInvName(const string& n, CutKey& k)
   return true;
 }
 
-std::array<double,8> fitPi0(TH1* h,bool& ok)
+// ------------------------------------------------------------------
+// Return the bin index whose centre is closest to x (1‑based)
+// ------------------------------------------------------------------
+static inline int binAt(const TH1* h, double x)
 {
-  double lo=h->GetXaxis()->GetXmin(), hi=h->GetXaxis()->GetXmax();
-  TF1* f=new TF1("f","[0]+[1]*x+[2]*x*x+[3]*exp(-0.5*((x-[4])/[5])**2)+[6]*exp(-0.5*((x-[7])/[8])**2)",lo,hi);
-  f->SetParameters(1,0,0,h->GetMaximum(),0.135,0.01,h->GetMaximum()/5.,0.55,0.02);
-  f->SetParLimits(4,0.11,0.16); f->SetParLimits(5,0.005,0.05);
-  f->SetParLimits(7,0.45,0.70); f->SetParLimits(8,0.01,0.06);
-  ok=(h->Fit(f,"QNRS")==0);
-  return {f->GetParameter(4),f->GetParError(4),
-          f->GetParameter(5),f->GetParError(5),
-          f->GetParameter(7),f->GetParError(7),
-          f->GetParameter(8),f->GetParError(8)};
+    const double bw = h->GetBinWidth(1);
+    int idx = static_cast<int>(std::round((x - h->GetXaxis()->GetXmin())/bw)) + 1;
+    return std::clamp(idx, 1, h->GetNbinsX());
 }
-
-
 
 // ╔══════════════════════════════════════════════╗
 // ║ 5.  SAVE HELPERS  (with TRACE)               ║
@@ -260,221 +265,257 @@ protected:
 
 
 // ╔══════════════════════════════════════════════╗
-// ║ 8.  QA MODULES                              ║
+// ║     π0   I N V A R I A N T ‑ M A S S   QA    ║
 // ╚══════════════════════════════════════════════╝
 class Pi0QA : public QA
 {
-public:
-  /* pT bins that appear in the file names – must match CutKey values   */
+ public:
+  // pT bins that appear in the file names – must match CutKey values
   const std::vector<std::pair<float,float>> m_ptBins {
       {2,4},{4,6},{6,8},{8,10},{10,12},{12,15},{15,20},{20,30} };
 
   struct FitInfo {
-    std::string slice;  double pLo, pHi;         // bin identifiers
-    double mean, sigma;                          // Gaussian parameters
-    double chi2; int ndf;                        // fit quality
+    std::string slice;  double pLo, pHi;
+    double mean, sigma, chi2;  int ndf;
   };
 
-  Pi0QA(std::string t, fs::path b, const CentList& s, std::ofstream& csv)
-      : QA(std::move(t), std::move(b), s), csv(csv) {}
-
-  // --------------------------------------------------------------------
-  // D E S T R U C T O R   – creates the multi‑panel summary canvases
-  // --------------------------------------------------------------------
-  ~Pi0QA() override
+  Pi0QA(std::string t, fs::path b, const CentList& s,
+        std::ofstream& csvFit) :
+        QA(std::move(t), std::move(b), s),
+        csvFit(csvFit)
   {
-    // -------- 2×3 canvas: one pad per centrality (pT‑integrated) ------
-    if (!_centralHists.empty()) {
-      TCanvas cCent("c_pi0Cent", "Pi0 mass – all centralities", 1800, 1000);
-      cCent.Divide(3, 2, 0.01, 0.01);
-
-      int pad = 1;
-      for (const auto& sl : slices) {
-        auto it = _centralHists.find(sl);
-        if (it == _centralHists.end()) continue;
-
-        cCent.cd(pad++);
-        it->second->SetStats(0);
-        it->second->Draw();
-
-        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.035);
-        std::string centTxt = (sl == "Inclusive")
-                                  ? "Inclusive"
-                                  : ("Centrality: " +
-                                     sl.substr(0, sl.find('_')) + " to " +
-                                     sl.substr(sl.find('_') + 1) + " %");
-        tl.DrawLatex(0.12, 0.85, centTxt.c_str());
-      }
-      fs::path out = root / "EMCal/pi0QA" / "Pi0Mass_AllCentrality.png";
-      ensure_dir(out.parent_path());
-      cCent.SaveAs(out.string().c_str());
-    }
-
-    // -------- 2×3 canvas per centrality: one pad per pT bin ----------
-    for (const auto& [slice, vec] : _ptHists) {
-      const int padsPerPage = 6;
-      int page = 0, padInPage = 0;
-      std::unique_ptr<TCanvas> cPT;
-
-      auto newCanvas = [&](int pg){
-        std::string cname = "c_pi0PT_" + slice + "_p" + std::to_string(pg);
-        cPT.reset(new TCanvas(cname.c_str(), cname.c_str(), 1800, 1000));
-        cPT->Divide(3, 2, 0.01, 0.01);
-        padInPage = 0;
-      };
-
-      newCanvas(page);
-
-      for (size_t i = 0; i < vec.size(); ++i) {
-        if (!vec[i]) continue;                    // pT bin absent
-
-        if (padInPage == padsPerPage) {          // new page
-          fs::path out = root / "EMCal/pi0QA" /
-                         ("Pi0Mass_pT_" + slice +
-                          "_page" + std::to_string(page) + ".png");
-          ensure_dir(out.parent_path());
-          cPT->SaveAs(out.string().c_str());
-          ++page;
-          newCanvas(page);
-        }
-
-        cPT->cd(++padInPage);
-        vec[i]->SetStats(0);
-        vec[i]->Draw();
-
-        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
-        const auto& bin = m_ptBins[i];
-        tl.DrawLatex(0.10, 0.85,
-                       Form("%.0f #leq p_{T}^{M#gamma#gamma} < %.0f GeV",
-                            bin.first, bin.second));
-      }
-
-      /* write last (or single) canvas */
-      if (padInPage) {
-        fs::path out = root / "EMCal/pi0QA" /
-                       ("Pi0Mass_pT_" + slice +
-                        "_page" + std::to_string(page) + ".png");
-        ensure_dir(out.parent_path());
-        cPT->SaveAs(out.string().c_str());
-      }
-    }
+    /* new CSV for S/B */
+    fs::path p = root / "EMCal/pi0QA" / "Pi0SignalBackground.csv";
+    ensure_dir(p.parent_path());
+    csvSB.open(p);
+    csvSB << "trigger,cent,pTlo,pThi,slice,windowSigma,sb,err\n";
   }
+
+  ~Pi0QA() override { writeSummaryPanels(); }
 
   const auto& fitSummary() const { return _fitSummary; }
 
-  // --------------------------------------------------------------------
-  // P R O C E S S   – called for every TObject in the ROOT file
-  // --------------------------------------------------------------------
+  // ----------------------------------------------------------------
+  // MAIN ENTRY – called once per histogram
+  // ----------------------------------------------------------------
   bool process(TObject* o) override
   {
     if (!o->InheritsFrom(TH1::Class())) return false;
     std::string n = o->GetName();
-    if (n.rfind("mInv_", 0) != 0) return false;          // not π0 spectrum
+    if (n.rfind("mInv_",0)!=0) return false;          // not a π0 spectrum
 
-    CutKey ck;
+    CutKey ck;              // parse name
     if (!decodeInvName(n, ck)) return false;
 
     const std::string slice = sliceKey(n);
-    const bool isPtInt      = (ck.pLo < 0 || ck.pHi < 0);
+    const bool        pTInt = (ck.pLo<0 || ck.pHi<0);
 
-    // ----- build output sub‑directory path identical to before --------
-    fs::path sub = "EMCal/pi0QA";
-    sub /= ("E"    + sf3(ck.E)   +
-            "_Chi" + sf3(ck.chi) +
-            "_Asym" + sf3(ck.asy));
-    if (!isPtInt)
-      sub /= ("pT_" + sf3(ck.pLo) + "_to_" + sf3(ck.pHi));
-
-    fs::path outPng = cPath(root, slice, sub) / (n + ".png");
+    //----------------------------------------------------------------
+    // 0. Book‑keeping: where will the PNG go?
+    //----------------------------------------------------------------
+    fs::path subDir = "EMCal/pi0QA";
+    subDir /= ("E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy));
+    if(!pTInt) subDir/=("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
+    fs::path outPng = cPath(root,slice,subDir)/(n+".png");
     ensure_dir(outPng.parent_path());
 
-    // -------------------- perform the single‑Gaussian fit -------------
+    //----------------------------------------------------------------
+    // 1.  Robust peak‑search  → initial μ, A
+    //----------------------------------------------------------------
     TH1* h = static_cast<TH1*>(o);
-    const double lo = 0.08, hi = 0.20;                // fixed fit region
+    const double fitLo = 0.10, fitHi = 0.35;                  // safe window
+    const int    iLo   = binAt(h,fitLo),  iHi = binAt(h,fitHi);
 
-    TF1 fitFun("fPi0", "[0]+[1]*x+[2]*x*x+[3]*exp(-0.5*((x-[4])/[5])**2)",
-               lo, hi);
-    fitFun.SetParameters(1, 0, 0, h->GetMaximum(), 0.135, 0.01);
-    fitFun.SetParLimits(4, 0.12, 0.14);               // μ window
-    fitFun.SetParLimits(5, 0.005, 0.03);              // σ upper bound
+    int iMax = iLo;
+    double maxCnt = 0;
+    for(int i=iLo;i<=iHi;++i)
+      if(h->GetBinContent(i)>maxCnt){ maxCnt=h->GetBinContent(i); iMax=i; }
 
-    bool fitOK = (h->Fit(&fitFun, "QNRS") == 0);
+    const double mu0     = h->GetBinCenter(iMax);             // ~peak
+    const double amp0    = maxCnt;
+    const double sigma0  = 0.025;
 
-    TF1 polyBg("polyBg", "[0]+[1]*x+[2]*x*x", lo, hi);
-    polyBg.SetParameters(fitFun.GetParameter(0),
-                         fitFun.GetParameter(1),
-                         fitFun.GetParameter(2));
-    polyBg.SetLineColor(kBlue+1); polyBg.SetLineWidth(2);
+    //----------------------------------------------------------------
+    // 2.  Build the composite fit function
+    //----------------------------------------------------------------
+    TF1 total("total","gaus(0)+pol2(3)",fitLo,fitHi);
+    total.SetParNames("A","mu","sigma","c0","c1","c2");
+    total.SetParameters(amp0,mu0,sigma0,  // Gaussian
+                        1,0,0);           // poly (flat start)
+    total.SetParLimits(1,0.12,0.15);      // μ
+    total.SetParLimits(2,0.010,0.040);    // σ
 
-    TF1 gausSig("gausSig", "[0]*exp(-0.5*((x-[1])/[2])**2)", lo, hi);
-    gausSig.SetParameters(fitFun.GetParameter(3),
-                            fitFun.GetParameter(4),
-                            fitFun.GetParameter(5));
-    gausSig.SetLineColor(kRed);   gausSig.SetLineWidth(2);
+    /* be generous with Minuit */
+    ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
+    ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(5'000);
 
-    // ----------------------------- draw & save ------------------------
-    TCanvas c1;
-    h->SetStats(0);
-    h->Draw();
-    polyBg.Draw("SAME"); gausSig.Draw("SAME");
+    bool fitOK = (h->Fit(&total,"SRQN")==0);
 
-    TLegend leg(0.55, 0.70, 0.88, 0.88); leg.SetBorderSize(0);
-    leg.AddEntry(&gausSig, "Gaussian signal",      "l");   // red
-    leg.AddEntry(&polyBg,  "Polynomial background","l");   // blue
-    leg.Draw();
-
-    TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
-    tl.DrawLatex(0.55, 0.63,
-                   Form("Gaussian: %.4f #pm %.4f GeV",
-                        gausSig.GetParameter(1),
-                        gausSig.GetParameter(2)));
-    c1.SaveAs(outPng.string().c_str());
-
-    // ----------------------------- CSV + map --------------------------
-    if (fitOK) {
-      csv << trig  << ',' << ck.E   << ',' << ck.chi << ',' << ck.asy << ','
-          << ck.pLo << ',' << ck.pHi << ','
-          << gausSig.GetParameter(1) << ','         // mean
-          << gausSig.GetParameter(2) << ','         // sigma
-          << fitFun.GetChisquare()   << ','         // χ²
-          << fitFun.GetNDF()         << '\n';       // ndf
-
-      _fitSummary.emplace(n, FitInfo{slice, ck.pLo, ck.pHi,
-                                     gausSig.GetParameter(1),
-                                     gausSig.GetParameter(2),
-                                     fitFun.GetChisquare(),
-                                     fitFun.GetNDF()});
+    //----------------------------------------------------------------
+    // 3.  Extract parameters (or sentinel values)
+    //----------------------------------------------------------------
+    double A = amp0, mu = mu0, sig = sigma0, chi2 = 0; int ndf = 1;
+    if(fitOK){
+      A    = total.GetParameter(0);
+      mu   = total.GetParameter(1);
+      sig  = total.GetParameter(2);
+      chi2 = total.GetChisquare();
+      ndf  = total.GetNDF();
     }
 
-    // ------ cache histograms for overview canvases --------------------
-    if (isPtInt) {
-      auto* cl = static_cast<TH1*>(h->Clone(("__cl_" + n).c_str()));
-      cl->SetDirectory(nullptr);
-      _centralHists.emplace(slice, cl);
-    } else {
-      // find the matching pT bin index
-      auto it = std::find_if(m_ptBins.begin(), m_ptBins.end(),
-                             [&](auto& p){ return fabs(p.first-ck.pLo)<1e-3
-                                                && fabs(p.second-ck.pHi)<1e-3; });
-      if (it != m_ptBins.end()) {
-        size_t idx = std::distance(m_ptBins.begin(), it);
-        auto& vec  = _ptHists[slice];
-        if (vec.size() < m_ptBins.size()) vec.resize(m_ptBins.size(), nullptr);
-        auto* cl = static_cast<TH1*>(h->Clone(("__cl_" + n).c_str()));
-        cl->SetDirectory(nullptr);
-        vec[idx] = cl;
+    //----------------------------------------------------------------
+    // 4.  Background TF1  (clone of the poly part)
+    //----------------------------------------------------------------
+    TF1 poly("bg","pol2",fitLo,fitHi);
+    poly.SetParameters(total.GetParameter(3),
+                       total.GetParameter(4),
+                       total.GetParameter(5));
+    poly.SetLineColor(kAzure+2); poly.SetLineWidth(2);
+
+    //----------------------------------------------------------------
+    // 5.  Signal / Background ratios  (±1.25…2.25 σ windows)
+    //----------------------------------------------------------------
+    const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
+    for(double w : ws)
+    {
+      const int i1 = binAt(h, std::max(mu-w*sig, fitLo));
+      const int i2 = binAt(h, std::min(mu+w*sig, fitHi));
+
+      double sErr=0, bErr=0;
+      double B = 0, S = 0;
+      for(int i=i1;i<=i2;++i){
+        const double x  = h->GetBinCenter(i);
+        const double bg = std::max(poly.Eval(x),0.);          // ≥0
+        const double cnt= h->GetBinContent(i);
+
+        B += bg;          bErr += bg;          // Poisson
+        S += cnt-bg;      sErr += cnt;         // Poisson (conservative)
       }
+      bErr = std::sqrt(bErr);
+      sErr = std::sqrt(sErr);
+
+      const double ratio = (B>0)? S/B : 0;
+      const double rErr  = (ratio>0)? ratio*std::sqrt((sErr*sErr)/(S*S) +
+                                                      (bErr*bErr)/(B*B)) : 0;
+
+      csvSB << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
+            << slice << ',' << w << ',' << ratio << ',' << rErr << '\n';
     }
+
+    //----------------------------------------------------------------
+    // 6.  Pretty plot -------------------------------------------------
+    //----------------------------------------------------------------
+    TCanvas c;  h->SetStats(0); h->Draw();
+
+    poly.Draw("SAME");
+    total.Draw("SAME");
+
+    TLegend leg(0.55,0.68,0.88,0.88); leg.SetBorderSize(0);
+    leg.AddEntry((TObject*)nullptr, ("#mu = "    + sf3(mu)  + " GeV").c_str(), "");
+    leg.AddEntry((TObject*)nullptr, ("#sigma = " + sf3(sig) + " GeV").c_str(), "");
+
+    /* S/B annotation in ±2σ window */
+    const double wCore = 2.0;
+    const int i1c = binAt(h,std::max(mu-wCore*sig,fitLo));
+    const int i2c = binAt(h,std::min(mu+wCore*sig,fitHi));
+    double coreSigErr=0, coreBgErr=0, S=0,B=0;
+    for(int i=i1c;i<=i2c;++i){
+      const double x=h->GetBinCenter(i), cnt=h->GetBinContent(i);
+      const double bg=std::max(poly.Eval(x),0.);
+      B+=bg; S+=cnt-bg; coreSigErr+=cnt; coreBgErr+=bg;
+    }
+    double sb = (B>0)?S/B:0;
+
+    TLatex tx; tx.SetNDC(); tx.SetTextSize(0.04);
+    tx.DrawLatex(0.55,0.60,
+                 Form("S/B (|#Deltam|<2#sigma):  %.2f", sb));
+
+    c.SaveAs(outPng.string().c_str());
+
+    //----------------------------------------------------------------
+    // 7.  CSV for fit parameters
+    //----------------------------------------------------------------
+    if(fitOK){
+      csvFit << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
+             << ck.pLo << ',' << ck.pHi << ','
+             << mu     << ',' << total.GetParError(1) << ','
+             << sig    << ',' << total.GetParError(2) << ','
+             << chi2   << ',' << ndf << '\n';
+
+      _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,mu,sig,chi2,ndf});
+    }
+
+    //----------------------------------------------------------------
+    // 8.  Cache for overview canvases
+    //----------------------------------------------------------------
+    cacheForOverview(slice, n, h, pTInt);
+
     return true;
   }
 
-private:
-  std::ofstream&                                   csv;
-  std::unordered_map<std::string, TH1*>            _centralHists;  // pT‑int
+ private:
+  //---------------- helper: put clone into the right cache ----------
+  void cacheForOverview(const std::string& slice,const std::string& n,
+                        TH1* src,bool pTIntegrated)
+  {
+    auto* cl = static_cast<TH1*>(src->Clone(("__cl_"+n).c_str()));
+    cl->SetDirectory(nullptr);
+
+    if(pTIntegrated)
+      _centralHists.emplace(slice,cl);
+    else{
+      auto it=std::find_if(m_ptBins.begin(),m_ptBins.end(),
+                           [&](auto& p){return fabs(p.first -cl->GetXaxis()->GetXmin())<1e-3;});
+      if(it!=m_ptBins.end()){
+        size_t idx=std::distance(m_ptBins.begin(),it);
+        auto& v = _ptHists[slice];
+        if(v.size()<m_ptBins.size()) v.resize(m_ptBins.size(),nullptr);
+        v[idx]=cl;
+      }
+    }
+  }
+
+  //---------------- write 2×3 overview canvases --------------------
+  void writeSummaryPanels()
+  {
+    if(_centralHists.empty()) return;
+
+    TCanvas c("c_pi0Cent","π0 – all centralities",1800,1000);
+    c.Divide(3,2,0.01,0.01);
+
+    /* find common Y‑max for prettier comparison */
+    double yMax=0;
+    for(auto& [sl,h]:_centralHists) yMax=std::max(yMax,h->GetMaximum());
+
+    int pad=1;
+    for(const auto& sl: slices){
+      auto it=_centralHists.find(sl);
+      if(it==_centralHists.end()) continue;
+      c.cd(pad++);
+      it->second->SetStats(0);
+      it->second->SetMaximum(yMax*1.05);
+      it->second->Draw();
+      TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
+      const std::string lbl = (sl == "Inclusive")
+              ? "Inclusive"
+              : "Centrality: " + sl.substr(0, sl.find('_')) + "–" +
+                sl.substr(sl.find('_') + 1) + " %";
+      tl.DrawLatex(0.14, 0.83, lbl.c_str());
+    }
+    fs::path out = root/"EMCal/pi0QA"/"Pi0Mass_AllCentrality.png";
+    ensure_dir(out.parent_path());
+    c.SaveAs(out.string().c_str());
+  }
+
+  //-----------------------------------------------------------------
+  std::ofstream&                                   csvFit; // existing file
+  std::ofstream                                    csvSB;  // new S/B file
+  std::unordered_map<std::string, TH1*>            _centralHists;
   std::unordered_map<std::string,
-                     std::vector<TH1*>>            _ptHists;       // by pT
-  std::unordered_map<std::string, FitInfo>         _fitSummary;    // all fits
+                     std::vector<TH1*>>            _ptHists;
+  std::unordered_map<std::string, FitInfo>         _fitSummary;
 };
+
 
 
 // ——— Detector–detector correlations ————————————
@@ -603,14 +644,16 @@ public:
         rot->GetYaxis()->SetNdivisions(32,kFALSE);   // every 8 φ
 
         /* 3)  square‑pixel canvas --------------------------------------- */
-        const int cw = nEta * px;                    // 96⋅6 = 576 px
-        const int ch = nPhi * px;                    // 256⋅6 = 1536 px
+        const int cw = (kEMCalCanvasW > 0) ? kEMCalCanvasW : nEta * px;
+        const int ch = (kEMCalCanvasH > 0) ? kEMCalCanvasH : nPhi * px;
 
         fs::path outPng = cPath(root, slice, "EMCal") / (src->GetName() + std::string(".png"));
         ensure_dir(outPng.parent_path());
 
         TCanvas c("c_emcal","",cw,ch);
         c.SetRightMargin(0.17);
+        /* allow free stretching */
+        c.SetFixedAspectRatio(false);
         c.SetLeftMargin (0.08);
         c.SetBottomMargin(0.08);
         c.SetTopMargin  (0.04);
@@ -665,73 +708,107 @@ private:
 };
 
 
-// ——— HCal QA ————————————————————————————————————
-class HcalQA : public QA{
-public: using QA::QA;
+// ─── HCal QA – proportional η–φ hit‑maps (IHCal / OHCal) ─────────────
+class HcalQA : public QA
+{
+ public: using QA::QA;
+
   bool process(TObject* o) override
   {
-    if(!o->InheritsFrom(TH1::Class())) return false;
-    string n=o->GetName();
-    bool isI=n.rfind("h_IHCAL_",0)==0, isO=n.rfind("h_OHCAL_",0)==0;
-    if(!isI && !isO) return false;
-    string sl=sliceKey(n); bool etaPhi=n.find("_EtaPhiMap_")!=string::npos;
+    if (!o->InheritsFrom(TH1::Class())) return false;
 
-    auto save=[&](const string& slice){
-      fs::path sub=isI?"IHCal":"OHCal";
-      fs::path out=cPath(root,slice,sub)/(n+".png");
-      if(etaPhi && o->InheritsFrom(TH2::Class()))
-      {
-        auto* h=static_cast<TH2*>(o);
-        std::unique_ptr<TH2> h2(static_cast<TH2*>(h->Clone()));
-        h2->SetDirectory(nullptr); h2->SetStats(0); h2->SetContour(99); h2->SetMinimum(1.);
-        for(int iphi=0;iphi<64;++iphi)
-          for(int ieta=0;ieta<24;++ieta)
-            if(isBadHcalPlate(hcal_sector_from_idx(ieta,iphi),
-                              hcal_plate_from_idx(ieta,iphi)))
-              h2->SetBinContent(h2->FindBin(iphi,ieta),-9999.);
-          // replacement – identical hit‑map but with the sector/board/tower grid
-          TCanvas c("c","IHCal/OHCal hit‑map",1300,800);
-          c.SetRightMargin(0.16);
-          c.SetBottomMargin(0.07);
-          c.SetLeftMargin(0.08);
+    const std::string n = o->GetName();
+    const bool isI = n.rfind("h_IHCAL_",0)==0;
+    const bool isO = n.rfind("h_OHCAL_",0)==0;
+    if (!isI && !isO) return false;
 
-          /* axis labelling identical to the online monitor */
-          h2->GetXaxis()->SetTitle("#eta index");
-          h2->GetYaxis()->SetTitle("#phi index");
-          h2->GetXaxis()->SetNdivisions(24, kFALSE);   // 24 η bins
-          h2->GetYaxis()->SetNdivisions(64, kFALSE);   // 64 φ bins
-          h2->Draw("COLZ");
+    const std::string slice   = sliceKey(n);
+    const bool        isMap   = (n.find("_EtaPhiMap_")!=std::string::npos);
 
-          /* ── thick horizontal lines: 32 sectors (every 2 φ towers) ── */
-          for (int s = 0; s < 32; ++s) {
-            TLine *ls = new TLine(0, (s+1)*2, 24, (s+1)*2);
-            ls->SetLineColor(kBlack); ls->SetLineWidth(4); ls->Draw();
-          }
+    auto makePanel = [&](TH2* src, const fs::path& outPng)
+    {
+      /* 0) constants -------------------------------------------------- */
+      constexpr int nPhi = 64;                      // rows     (Y)
+      constexpr int nEta = 24;                      // columns  (X)
+      constexpr int px   = 18;                      // pixel‑size (PNG)
 
-          /* ── thick vertical lines at η = 8 and 16 (inner‑board groups) ── */
-          TLine lB1(8,  0, 8, 64);  lB1.SetLineColor(kBlack); lB1.SetLineWidth(4); lB1.Draw();
-          TLine lB2(16, 0, 16, 64); lB2.SetLineColor(kBlack); lB2.SetLineWidth(4); lB2.Draw();
+      /* 1) local clone + bad‑plate masking ---------------------------- */
+      std::unique_ptr<TH2> h(static_cast<TH2*>(src->Clone()));
+      h->SetDirectory(nullptr); h->SetStats(0); h->SetContour(99);
 
-          /* ── fine grid: individual towers (1 × 1) ── */
-          for (int iphi = 0; iphi < 64; ++iphi) {
-            TLine *ly = new TLine(0, iphi+1, 24, iphi+1);
-            ly->SetLineColor(kBlack); ly->SetLineWidth(1); ly->Draw();
-          }
-          for (int ieta = 0; ieta < 24; ++ieta) {
-            TLine *lx = new TLine(ieta+1, 0, ieta+1, 64);
-            lx->SetLineColor(kBlack); lx->SetLineWidth(1); lx->Draw();
-          }
+      for (int ip = 0; ip < nPhi; ++ip)
+        for (int ie = 0; ie < nEta; ++ie)
+          if (isBadHcalPlate(hcal_sector_from_idx(ie,ip),
+                             hcal_plate_from_idx(ie,ip)))
+            h->SetBinContent(h->FindBin(ip,ie),-9999.);   // white holes
 
-          ensure_dir(out.parent_path());
-          c.SaveAs(out.string().c_str());
-      }
-      else if(o->InheritsFrom(TH2::Class())) save2D(static_cast<TH2*>(o),out);
-      else                                   save1D(static_cast<TH1*>(o),out);
+      /* 2) rotate  (η → X,  φ → Y) ----------------------------------- */
+      std::unique_ptr<TH2F> rot(new TH2F(("hRot_"+std::string(src->GetName())).c_str(),
+                                         h->GetTitle(),
+                                         nEta, 0, nEta,         // X‑bins
+                                         nPhi, 0, nPhi));       // Y‑bins
+      for (int ip = 1; ip <= nPhi; ++ip)
+        for (int ie = 1; ie <= nEta; ++ie)
+          rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
+
+      rot->SetDirectory(nullptr);
+      rot->SetMinimum(1.);
+      rot->GetXaxis()->SetTitle("#eta index");
+      rot->GetYaxis()->SetTitle("#phi index");
+      rot->GetXaxis()->SetNdivisions(nEta, kFALSE);
+      rot->GetYaxis()->SetNdivisions(nPhi, kFALSE);
+
+      /* --- canvas size: use user constant unless ≤0 ------------------ */
+      const int cw = (kHCalCanvasW > 0) ? kHCalCanvasW : nEta * px;
+      const int ch = (kHCalCanvasH > 0) ? kHCalCanvasH : nPhi * px;
+
+      TCanvas c("c_hcal","",cw,ch);
+      c.SetRightMargin(0.16);
+
+      c.SetFixedAspectRatio(false);
+      c.SetRightMargin(0.16);
+      c.SetLeftMargin (0.08);
+      c.SetBottomMargin(0.08);
+      c.SetTopMargin  (0.04);
+      c.SetFixedAspectRatio();                  // 1 bin ⇔ 1 pixel
+
+      rot->Draw("COLZ");
+
+      /* 4) grid ------------------------------------------------------- */
+      TLine l; l.SetLineColor(kBlack);
+
+      // thin: individual towers
+      l.SetLineWidth(1);
+      for (int x=1; x<nEta; ++x) l.DrawLine(x,0,x,nPhi);
+      for (int y=1; y<nPhi; ++y) l.DrawLine(0,y,nEta,y);
+
+      // thick: sector & plate structure
+      l.SetLineWidth(4);
+      for (int y=0; y<=nPhi; y+=2) l.DrawLine(0,y,nEta,y);     // 32 sectors
+      l.DrawLine( 8,0, 8,nPhi);                                // inner‑boards
+      l.DrawLine(16,0,16,nPhi);
+
+      /* 5) save ------------------------------------------------------- */
+      ensure_dir(outPng.parent_path());
+      c.SaveAs(outPng.string().c_str());
     };
-    save(sl);
+    /* ----------------------------------------------------------------- */
+
+    // ---------- write outputs -----------------------------------------
+    fs::path subDir = isI ? "IHCal" : "OHCal";
+    fs::path out    = cPath(root, slice, subDir) / (n + ".png");
+
+    if (isMap && o->InheritsFrom(TH2::Class()))
+      makePanel(static_cast<TH2*>(o), out);
+    else if (o->InheritsFrom(TH2::Class()))
+      save2D(static_cast<TH2*>(o), out);
+    else
+      save1D(static_cast<TH1*>(o), out);
+
     return true;
   }
 };
+
 
 // ——— sEPD & MBD QA (NS combiner) ——————————————
 template<class DERIVED> class NSDetectorQA : public QA{
@@ -780,13 +857,45 @@ public:
                "  n="+std::to_string((uintptr_t)out.n)+
                "  s="+std::to_string((uintptr_t)out.s));
 
-    auto save=[&](const string& slice){
-      fs::path outPng=cPath(root,slice,DERIVED::subdir)/(DERIVED::fileName(trig)+".png");
-      TCanvas c("c","",1100,600); c.Divide(2,1,0.01,0.01);
-      c.cd(1); out.s->SetTitle(DERIVED::titleSouth); out.s->Draw("COL POLZ");
-      c.cd(2); out.n->SetTitle(DERIVED::titleNorth); out.n->Draw("COL POLZ");
-      ensure_dir(outPng.parent_path()); c.SaveAs(outPng.string().c_str());
+    // -----------------------------------------------------------------
+    // ONE finished South–North canvas
+    // -----------------------------------------------------------------
+    auto save = [&](const std::string& slice)
+      {
+        fs::path outPng = cPath(root, slice, DERIVED::subdir)
+                          / (DERIVED::fileName(trig) + ".png");
+
+        /* -------- 1)  prepare uniform colour scale (log‑friendly) ------ */
+        const double zMin = 0.;                                     // >0 for log
+        const double zMax = std::max(out.s->GetMaximum(),
+                                     out.n->GetMaximum());
+        out.s->SetMinimum(zMin);  out.n->SetMinimum(zMin);
+        out.s->SetMaximum(zMax);  out.n->SetMaximum(zMax);
+
+        /* -------- 2)  canvas & two pads -------------------------------- */
+        TCanvas c("c_mbd", "", 1200, 600);
+        c.Divide(2, 1, 0.01, 0.01);
+
+        auto drawPad = [&](TH2* h, const char* ttl)
+        {
+          gPad->SetRightMargin(0.20);          // leave room for palette + labels
+          gPad->SetLeftMargin (0.10);
+          gPad->SetBottomMargin(0.10);
+          gPad->SetTopMargin  (0.08);
+
+          h->SetTitle(ttl);
+          h->GetZaxis()->SetTitle("Counts");
+          h->GetZaxis()->SetTitleOffset(1.3);  // pull title away from palette
+          h->Draw("POLZ");                     // hexagons + palette
+        };
+
+        c.cd(1); drawPad(out.s, DERIVED::titleSouth);
+        c.cd(2); drawPad(out.n, DERIVED::titleNorth);
+
+        ensure_dir(outPng.parent_path());
+        c.SaveAs(outPng.string().c_str());
     };
+
     save(sl);
     return true;
   }
@@ -907,13 +1016,27 @@ class JetQA : public QA
     c.SaveAs(png.string().c_str());
   }
 
-  static void saveProjection(TH3* h3, const char* axes,
-                             const fs::path& png)
-  {
-    std::unique_ptr<TH2> h2(h3->Project3D(axes));  // ROOT owns → copy
-    h2->SetDirectory(nullptr); h2->SetStats(0);
-    h2->SetTitle((std::string(h3->GetTitle())+"  –  "+axes).c_str());
-    save2D(h2.get(), png);
+  static void saveProjection(TH3* h3,
+                               const char* axes,
+                               const fs::path& png)
+    {
+        TH1*   tmp = h3->Project3D(axes);                 // ROOT gives TH1*
+        auto h2 = std::unique_ptr<TH2>(                  // take ownership
+                      dynamic_cast<TH2*>(tmp));          // safe cast → TH2*
+
+        if (!h2) {                                       // should never happen
+            log::warn(std::string("Projection '")+axes+
+                       "' of '"+h3->GetName()+"' is not TH2 – skipped");
+            delete tmp;                                  // avoid leak
+            return;
+        }
+
+        h2->SetDirectory(nullptr);                       // detach from gDirectory
+        h2->SetStats(0);
+        h2->SetTitle((std::string(h3->GetTitle())+
+                     "  –  "+axes).c_str());
+
+        save2D(h2.get(), png);
   }
 
   static std::string makeTitle(const std::string& hname)
@@ -931,8 +1054,7 @@ class JetQA : public QA
 // ╚══════════════════════════════════════════════╝
 void analyzeRun24or25auau()
 {
-  gStyle->SetOptStat(0);          // ROOT style once is enough
-  gStyle->SetPalette(kViridis);
+  gStyle->SetOptStat(0);
   // ------------------------------------------------------------
   // 0.  Collect all “output_########.root” files in kInputDir
   // ------------------------------------------------------------
