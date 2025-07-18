@@ -257,27 +257,37 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
                                               "OHCAL tower map;#phi (0...63);#eta (0...23)",
                                               64, 0, 64, 24, 0, 24);
       
-    /* –– centrality‑binned clones –– */
-    auto cloneHitMap = [&](const std::string& base, TH2F* src)
-    {
+    /* generic centrality‑clone helper – works for TH2F, TH2Poly, … */
+    auto cloneHitMap = [&](const std::string& base, TObject* src)
+      {
         for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
         {
           const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
-          std::ostringstream n;  n << base << '_' << lo << '_' << hi << '_' << trig;
-          H[n.str()] = dynamic_cast<TH2F*>(src->Clone(n.str().c_str()));
-          TH2F* hclone = dynamic_cast<TH2F*>(src->Clone(n.str().c_str()));
-          if (hclone) {
-                hclone->Reset();               // start empty
-                hclone->SetDirectory(nullptr); // detach from any directory
+
+          std::ostringstream n;
+          n << base << '_' << lo << '_' << hi << '_' << trig;   // final key
+
+          TObject* c = src->Clone(n.str().c_str());             // deep copy
+          if (auto* h = dynamic_cast<TH1*>(c))
+          {
+            h->Reset();                 // start empty
+            h->SetDirectory(nullptr);   // detach from current directory
           }
-          H[n.str()] = hclone;               // store the clone in the map
+          H[n.str()] = c;               // register in map
         }
     };
 
-    /* create centrality clones for every calorimeter map */
-    cloneHitMap("h_EMC_EtaPhiMap",  static_cast<TH2F*>(H["h_EMC_EtaPhiMap_"  + trig]));
-    cloneHitMap("h_IHCAL_EtaPhiMap",static_cast<TH2F*>(H["h_IHCAL_EtaPhiMap_" + trig]));
-    cloneHitMap("h_OHCAL_EtaPhiMap",static_cast<TH2F*>(H["h_OHCAL_EtaPhiMap_" + trig]));
+    /* ── calorimeters  ─────────────────────────── */
+    cloneHitMap("h_EMC_EtaPhiMap",   H["h_EMC_EtaPhiMap_"   + trig]);
+    cloneHitMap("h_IHCAL_EtaPhiMap", H["h_IHCAL_EtaPhiMap_" + trig]);
+    cloneHitMap("h_OHCAL_EtaPhiMap", H["h_OHCAL_EtaPhiMap_" + trig]);
+
+
+    cloneHitMap("h_MBD_Hitmap_South", H["h_MBD_Hitmap_South_" + trig]);
+    cloneHitMap("h_MBD_Hitmap_North", H["h_MBD_Hitmap_North_" + trig]);
+
+    cloneHitMap("h_sEPD_Hitmap_South", H["h_sEPD_Hitmap_South_" + trig]);
+    cloneHitMap("h_sEPD_Hitmap_North", H["h_sEPD_Hitmap_North_" + trig]);
 
   }
 
@@ -1058,193 +1068,101 @@ emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
 }
 
 //==========================================================================
-//  doCaloQA – tower and cluster spectra   +   vn (n = 2,3) accumulators
+//  doSepdQA – sEPD charge, hit‑maps (global + centrality) & event‑plane QA
+//            (Ψ1, Ψ2, Ψ3 – South planes used as reference)
 //==========================================================================
-void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
-{
-  LOG(3, CLR_BLUE, "  [doCaloQA] processing calorimeter towers");
-
-  /* ------------------------------------------------------------------ */
-  /* 0.  clear per‑event FlowAcc containers                             */
-  /* ------------------------------------------------------------------ */
-  for (auto& kv : m_flowAcc)
-    for (auto& acc : kv.second) acc.reset();
-
-  /* ------------------------------------------------------------------ */
-  /* 1.  loop over calorimeter subsystems                               */
-  /* ------------------------------------------------------------------ */
-  for (auto& ck : m_calo)
-  {
-    const std::string&  lbl   = ck.first;          // "CEMC", "IHCAL", …
-    TowerInfoContainer* twC   = ck.second.tw;
-    double&             sumE  = ck.second.sumE;
-    std::size_t         nHit  = 0;
-
-    for (unsigned ch = 0; ch < twC->size(); ++ch)
-    {
-      auto* tw = twC->get_tower_at_channel(ch); if (!tw) continue;
-      const double e = tw->get_energy();        if (e <= 0) continue;
-
-      /* ---------- bookkeeping & 1‑D spectra ------------------------- */
-      sumE += e; ++nHit;
-      for (const auto& t : trig)
-        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + lbl])->Fill(e);
-
-      /* ---------- geometry look‑up --------------------------------- */
-      const unsigned key  = twC->encode_key(ch);
-      const unsigned iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
-      const unsigned ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
-
-      RawTowerGeom* tg  = ck.second.g->get_tower_geometry(key);
-      const double  eta = tg ? tg->get_eta() : 0.;
-      const double  et  = e / std::cosh(eta);
-
-      /* ---------- arm‑separated ΣE​T -------------------------------- */
-      if (lbl == "CEMC")       (eta < 0 ? m_cemcEt_arm[0] : m_cemcEt_arm[1]) += et;
-      else if (lbl == "IHCAL") (eta < 0 ? m_ihcalEt_arm[0] : m_ihcalEt_arm[1]) += et;
-      else if (lbl == "OHCAL") (eta < 0 ? m_ohcalEt_arm[0] : m_ohcalEt_arm[1]) += et;
-
-      /* ---------- η–φ hit‑maps (global + centrality) ---------------- */
-      std::string Hmap;
-      if      (lbl == "CEMC")  Hmap = "h_EMC_EtaPhiMap_";
-      else if (lbl == "IHCAL") Hmap = "h_IHCAL_EtaPhiMap_";
-      else if (lbl == "OHCAL") Hmap = "h_OHCAL_EtaPhiMap_";
-      else                     Hmap.clear();                // safety
-
-      if (!Hmap.empty())
-      {
-        for (const auto& t : trig)
-        {
-          /* global map */
-          static_cast<TH2F*>(qaHistogramsByTrigger[t][Hmap + t])
-              ->Fill(iphi, ieta, e);
-
-          /* centrality‑tagged clone */
-          if (m_centBin >= 0)
-          {
-            int lo = 0, hi = 100;
-            for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-              if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-              { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
-
-            std::ostringstream k;
-            k << Hmap.substr(0, Hmap.size() - 1)     // drop trailing ‘_’
-              << '_' << lo << '_' << hi << '_' << t;
-
-            auto it = qaHistogramsByTrigger[t].find(k.str());
-            if (it != qaHistogramsByTrigger[t].end())
-              static_cast<TH2F*>(it->second)->Fill(iphi, ieta, e);
-          }
-        }
-      }
-
-      /* ----------------------------------------------------------------
-       *  v​n accumulators  (harmonics n = 1, 2, 3) – one entry / pT bin
-       * -------------------------------------------------------------- */
-      int ptBin = -1;
-      for (std::size_t b = 0; b < m_ptBins.size(); ++b)
-        if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
-        { ptBin = static_cast<int>(b); break; }
-
-      if (ptBin >= 0)
-      {
-        const double phi = tg ? tg->get_phi() : 0.;
-
-        const double c1 = std::cos(phi),  s1 = std::sin(phi);
-        const double c2 = c1 * c1 - s1 * s1;          // cos 2φ
-        const double s2 = 2.0 * c1 * s1;              // sin 2φ
-        const double c3 = c1 * c2 - s1 * s2;          // cos 3φ
-        const double s3 = s1 * c2 + c1 * s2;          // sin 3φ
-
-        auto accumulate = [&](const std::string& det)
-        {
-          auto& a = m_flowAcc[det][ptBin];
-          a.sumW  += et;
-          a.qx[1] += et * c1;  a.qy[1] += et * s1;
-          a.qx[2] += et * c2;  a.qy[2] += et * s2;
-          a.qx[3] += et * c3;  a.qy[3] += et * s3;
-        };
-
-        accumulate(lbl);                         // native subsystem
-        if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL");
-        accumulate("ALL");
-      }
-    } /* tower loop */
-
-    LOG(3, CLR_GREEN, "    " << lbl << " : "
-                             << nHit << " fired, ΣE = " << sumE);
-  }   /* detector loop */
-
-  /* ------------------------------------------------------------------ */
-  /* 2.  EMC clusters – simple E spectrum                               */
-  /* ------------------------------------------------------------------ */
-  if (!m_clus) return;
-
-  RawClusterContainer::ConstRange cr = m_clus->getClusters();
-  LOG(3, CLR_GREEN, "    EMC clusters : " << std::distance(cr.first, cr.second));
-
-  for (auto it = cr.first; it != cr.second; ++it)
-    for (const auto& t : trig)
-      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_clusterE_EMC"])
-          ->Fill(it->second->get_energy());
-}
-
-
-
-//==========================================================================
-//  doSepdQA – sEPD charge, hit‑map & event‑plane QA
-//            (Ψ1, Ψ2, Ψ3 for both arms;   South planes used as reference)
-//==========================================================================
-void
-emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
+void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 {
   LOG(2, CLR_BLUE, "[doSepdQA] ===============================================");
-  if (!m_sepd || !m_epdgeom)
-  { LOG(1, CLR_YELLOW, "[doSepdQA] SEPD nodes missing – skip"); return; }
 
-  /* 1. initialise ---------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* 0. Sanity check on required nodes                                  */
+  /* ------------------------------------------------------------------ */
+  if (!m_sepd || !m_epdgeom)
+  {
+    LOG(1, CLR_YELLOW, "[doSepdQA] SEPD nodes missing – skip");
+    return;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Event‑level initialisation                                      */
+  /* ------------------------------------------------------------------ */
   m_sepdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
 
-  /*  Q‑vector accumulators  ----------------------------------------- */
-  float qx1S=0., qy1S=0., qx1N=0., qy1N=0.;   // harmonic 1
-  float qx2S=0., qy2S=0., qx2N=0., qy2N=0.;   // harmonic 2
-  float qx3S=0., qy3S=0., qx3N=0., qy3N=0.;   // harmonic 3
+  float qx1S = 0., qy1S = 0.,   qx1N = 0., qy1N = 0.;   // harmonic 1
+  float qx2S = 0., qy2S = 0.,   qx2N = 0., qy2N = 0.;   // harmonic 2
+  float qx3S = 0., qy3S = 0.,   qx3N = 0., qy3N = 0.;   // harmonic 3
 
-  /* 2. tower loop ---------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* 2. Work out the event’s centrality slice once                      */
+  /* ------------------------------------------------------------------ */
+  int lo = 0, hi = 100;                                // default (min‑bias)
+  if (m_centBin >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Loop over SEPD channels                                         */
+  /* ------------------------------------------------------------------ */
   const auto nChan = m_sepd->size();
   for (unsigned ch = 0; ch < nChan; ++ch)
   {
-    if (ch >= 744) continue;                           // electronics limit
-    auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
-    const double w = ti->get_energy();               if (w <= 0) continue;
+    /* hardware guard – last FED channel is 743                        */
+    if (ch >= 744) continue;
+
+    auto* ti = m_sepd->get_tower_at_channel(ch);
+    if (!ti) continue;
+
+    const double w = ti->get_energy();        // calibrated ADC → charge
+    if (w <= 0.) continue;
 
     const unsigned key = m_epdKey[ch];
     if (key == std::numeric_limits<unsigned>::max()) continue;
 
-    const int    arm = TowerInfoDefs::get_epd_arm(key);  // 0 = S, 1 = N
+    const int    arm = TowerInfoDefs::get_epd_arm(key);      // 0 = S, 1 = N
     const double phi = m_epdgeom->get_phi(key);
     const double r   = m_epdgeom->get_r  (key);
 
-    /* hit‑maps ------------------------------------------------------ */
-    const std::string hp = (arm == 0) ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_";
-    const double phPlot = (phi < 0) ? phi + 2 * M_PI : phi;  // [0,2π) for plotting
-    for (const auto& t : trig)
-      static_cast<TH2F*>(qaHistogramsByTrigger[t][hp + t])->Fill(phPlot, r, w);
+    /* ---- (a) fill hit‑maps (global + centrality) ------------------ */
+    const std::string baseKey = (arm == 0 ?
+                                 "h_sEPD_Hitmap_South_" :
+                                 "h_sEPD_Hitmap_North_");
+    const double phPlot = (phi < 0) ? phi + 2. * M_PI : phi;     // [0,2π)
 
-    /* harmonic‑1 / 2 / 3 Q‑vectors --------------------------------- */
+    for (const auto& t : trig)
+    {
+      /* global */
+      static_cast<TH2F*>(qaHistogramsByTrigger[t][baseKey + t])
+          ->Fill(phPlot, r, w);
+
+      /* centrality clone */
+      if (m_centBin >= 0)
+      {
+        std::ostringstream k;
+        k << baseKey.substr(0, baseKey.size() - 1)     // drop trailing ‘_’
+          << '_' << lo << '_' << hi << '_' << t;
+
+        auto it = qaHistogramsByTrigger[t].find(k.str());
+        if (it != qaHistogramsByTrigger[t].end())
+          static_cast<TH2F*>(it->second)->Fill(phPlot, r, w);
+      }
+    }
+
+    /* ---- (b) harmonic‑1/2/3 Q‑vectors ----------------------------- */
     const double c1 = std::cos(      phi), s1 = std::sin(      phi);
     const double c2 = std::cos(2.0 * phi), s2 = std::sin(2.0 * phi);
     const double c3 = std::cos(3.0 * phi), s3 = std::sin(3.0 * phi);
 
-    if (arm == 0)          /* South (reference) */
+    if (arm == 0)                 // South  (reference)
     {
       qx1S += w * c1;  qy1S += w * s1;
       qx2S += w * c2;  qy2S += w * s2;
       qx3S += w * c3;  qy3S += w * s3;
       ++nFiredS;
     }
-    else                   /* North */
+    else                          // North
     {
       qx1N += w * c1;  qy1N += w * s1;
       qx2N += w * c2;  qy2N += w * s2;
@@ -1252,17 +1170,22 @@ emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
       ++nFiredN;
     }
 
-    /* bookkeeping --------------------------------------------------- */
-    m_sepdQ          += w;
-    m_sepdQ_arm[arm] += w;
-  }
+    /* ---- (c) running sums ----------------------------------------- */
+    m_sepdQ            += w;
+    m_sepdQ_arm[arm]   += w;
+  } // channel loop
 
-  /* 3. ΣQ spectrum --------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* 4. ΣQ spectrum (per‑event)                                         */
+  /* ------------------------------------------------------------------ */
   for (const auto& t : trig)
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])->Fill(m_sepdQ);
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])
+        ->Fill(m_sepdQ);
 
-  /* 4. ψn (n=1,2,3) -------------------------------------------------- */
-  // --- try to fetch EventPlaneReco map for ψ2 (legacy support) -------
+  /* ------------------------------------------------------------------ */
+  /* 5. Event‑plane reconstruction                                      */
+  /* ------------------------------------------------------------------ */
+  // ---  ψ₂ : prefer Eventplaneinfo map (legacy) ------------------------
   bool usedMap = false;
   if (m_epmap && !m_epmap->empty())
   {
@@ -1282,7 +1205,7 @@ emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     }
   }
 
-  /* tower‑based fallback (all harmonics) ----------------------------- */
+  /* ---  fallback: tower‑based Ψn (n = 1,2,3) ------------------------- */
   if (!usedMap)
   {
     m_psi2_S = 0.5 * std::atan2(qy2S, qx2S);
@@ -1295,14 +1218,16 @@ emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
              ? 0. : std::atan2(qy1N, qx1N);
 
   m_psi3_S = (std::abs(qx3S) < 1e-9 && std::abs(qy3S) < 1e-9)
-             ? 0. : (1. / 3.) * std::atan2(qy3S, qx3S);
+             ? 0. : (1./3.) * std::atan2(qy3S, qx3S);
   m_psi3_N = (std::abs(qx3N) < 1e-9 && std::abs(qy3N) < 1e-9)
-             ? 0. : (1. / 3.) * std::atan2(qy3N, qx3N);
+             ? 0. : (1./3.) * std::atan2(qy3N, qx3N);
 
-  /* 5. fill EP QA histograms ---------------------------------------- */
-  const double cos1dPsi = std::cos(    m_psi1_N - m_psi1_S);
-  const double cos2dPsi = std::cos(2 * (m_psi2_N - m_psi2_S));
-  const double cos3dPsi = std::cos(3 * (m_psi3_N - m_psi3_S));
+  /* ------------------------------------------------------------------ */
+  /* 6. EP QA histograms                                                */
+  /* ------------------------------------------------------------------ */
+  const double cos1dPsi = std::cos(     m_psi1_N - m_psi1_S);
+  const double cos2dPsi = std::cos(2. * (m_psi2_N - m_psi2_S));
+  const double cos3dPsi = std::cos(3. * (m_psi3_N - m_psi3_S));
 
   for (const auto& t : trig)
   {
@@ -1317,56 +1242,106 @@ emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     static_cast<TProfile*>(H["h_Psi3_res_vs_Qsum"])->Fill(m_sepdQ, cos3dPsi);
   }
 
-  /* 6. verbose summary ---------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* 7. Verbose summary                                                 */
+  /* ------------------------------------------------------------------ */
   LOG(3, CLR_GREEN,
       "    SEPD ΣQ=" << m_sepdQ
-      << "  Ψ1(S)=" << m_psi1_S
-      << "  Ψ2(S)=" << m_psi2_S
-      << "  Ψ3(S)=" << m_psi3_S
+      << "  Ψ1(S)="  << m_psi1_S
+      << "  Ψ2(S)="  << m_psi2_S
+      << "  Ψ3(S)="  << m_psi3_S
       << "  hits(S,N)=" << nFiredS << ',' << nFiredN);
+
   LOG(4, CLR_BLUE, "[doSepdQA] ===============================================");
 }
 
 
-
 //==========================================================================
-//  doMbdQA – integrated charge + hex hit‑map
+//  doMbdQA – integrated charge  +  hex‑hitmaps (global *and* centrality)
 //==========================================================================
 void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
 {
   LOG(3, CLR_BLUE, "  [doMbdQA]");
 
-  m_mbdQ = 0.;
-  std::size_t nFiredS = 0, nFiredN = 0;
+  /* ------------------------------------------------------------------ */
+  /* 0. Event‑level bookkeeping                                         */
+  /* ------------------------------------------------------------------ */
+  m_mbdQ      = 0.;
+  std::size_t nFiredS = 0,            // PMT multiplicities
+              nFiredN = 0;
 
+  /* ------------------------------------------------------------------ */
+  /* 1. Determine this event’s centrality slice once                    */
+  /* ------------------------------------------------------------------ */
+  int lo = 0, hi = 100;               // “minimum‑bias” default
+  if (m_centBin >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Loop over all PMTs                                              */
+  /* ------------------------------------------------------------------ */
   const unsigned nPmt = static_cast<unsigned>(m_mbdpmts->get_npmt());
   for (unsigned ip = 0; ip < nPmt; ++ip)
   {
     MbdPmtHit* p = m_mbdpmts->get_pmt(ip);
-    const double q = p->get_q(); if (q <= 0) continue;
+    if (!p) continue;
 
-    double cx = m_mbdgeom->get_x(ip);
-    double cy = m_mbdgeom->get_y(ip);
-    const std::string key = (m_mbdgeom->get_arm(ip) == 0 ? "h_MBD_Hitmap_South_"
-                                                         : "h_MBD_Hitmap_North_");
+    const double q = p->get_q();        // calibrated charge
+    if (q <= 0.) continue;              // skip empty PMTs
 
-    for (auto& t : trig)
-      static_cast<TH2Poly*>(qaHistogramsByTrigger[t][key + t])->Fill(cx, cy, q);
+    const double cx = m_mbdgeom->get_x(ip);
+    const double cy = m_mbdgeom->get_y(ip);
 
+    /* decide which hit‑map this PMT belongs to --------------------- */
+    const bool isSouth = (m_mbdgeom->get_arm(ip) == 0);
+    const std::string baseKey = isSouth ?
+                                "h_MBD_Hitmap_South_" :
+                                "h_MBD_Hitmap_North_";
+
+    for (const auto& t : trig)
+    {
+      /* ---- (a) global map --------------------------------------- */
+      static_cast<TH2Poly*>(qaHistogramsByTrigger[t][baseKey + t])
+          ->Fill(cx, cy, q);
+
+      /* ---- (b) centrality‑tagged clone (only if cent info valid) - */
+      if (m_centBin >= 0)
+      {
+        std::ostringstream keyC;
+        keyC << baseKey.substr(0, baseKey.size() - 1)   // drop trailing ‘_’
+             << '_' << lo << '_' << hi << '_' << t;
+
+        auto it = qaHistogramsByTrigger[t].find(keyC.str());
+        if (it != qaHistogramsByTrigger[t].end())
+          static_cast<TH2Poly*>(it->second)->Fill(cx, cy, q);
+      }
+    }
+
+    /* ---- book‑keeping -------------------------------------------- */
     m_mbdQ += q;
-    m_mbdQ_arm[m_mbdgeom->get_arm(ip)] += q;
-    ++(m_mbdgeom->get_arm(ip) ? nFiredN : nFiredS);
-  }
+    m_mbdQ_arm[isSouth ? 0 : 1] += q;
+    isSouth ? ++nFiredS : ++nFiredN;
+  } // PMT loop
 
-  for (auto& t : trig)
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_charge_MBD"])->Fill(m_mbdQ);
+  /* ------------------------------------------------------------------ */
+  /* 3. Per‑event ΣQ spectrum                                          */
+  /* ------------------------------------------------------------------ */
+  for (const auto& t : trig)
+    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_charge_MBD"])
+        ->Fill(m_mbdQ);
 
-  LOG(3, CLR_GREEN, "    MBD #SigmaQ = " << m_mbdQ
+  /* ------------------------------------------------------------------ */
+  /* 4. Verbose summary + downstream correlations                       */
+  /* ------------------------------------------------------------------ */
+  LOG(3, CLR_GREEN, "    MBD ΣQ = " << m_mbdQ
                      << "  (South PMTs: " << nFiredS
                      << ", North PMTs: " << nFiredN << ")");
 
-  fillCentralityQA(trig);
+  fillCentralityQA(trig);              // keeps existing behaviour
 }
+
 
 //==========================================================================
 //  fillCentralityQA – #SigmaQ histos & correlation map (MBD ↔ sEPD)
