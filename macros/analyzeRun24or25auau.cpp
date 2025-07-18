@@ -568,94 +568,81 @@ public:
     const std::string slice   = sliceKey(n);
     const bool        isMap   = (n.find("_EtaPhiMap_") != std::string::npos);
 
-    // ----------------------------------------------------------------
-    // helper – build a rotated map with grid/labels identical to the
-    //          on‑line monitor (8 φ × 8 η IB segmentation, sector id …)
-    // ----------------------------------------------------------------
     auto makePanel = [&](TH2* src) -> std::unique_ptr<TH2F>
     {
-      /* clone and mask known bad boards */
-      const int nPhi = 256, nEta = 96;
-      std::unique_ptr<TH2> h(static_cast<TH2*>(src->Clone()));
-      h->SetDirectory(nullptr); h->SetStats(0); h->SetContour(99);
+        /* 0)  constants -------------------------------------------------- */
+        constexpr int nPhi = 256;                // rows  (Y)
+        constexpr int nEta =  96;                // cols  (X)
+        constexpr int px   =   6;                // pixel‑size in the PNG
 
-      for (int ip = 0; ip < nPhi; ++ip)
-        for (int ie = 0; ie < nEta; ++ie)
-          if (isBadBoard(sector_from_idx(ie, ip),
-                         ib_from_idx(ie, ip)))
-            h->SetBinContent(h->FindBin(ip, ie), -9999.);
+        /* 1)  local clone + bad‑board masking ---------------------------- */
+        std::unique_ptr<TH2> h(static_cast<TH2*>(src->Clone()));
+        h->SetDirectory(nullptr);   h->SetStats(0);   h->SetContour(100);
 
-      /* rotate: η → X,  φ → Y */
-      std::unique_ptr<TH2F> rot(new TH2F(("hRot_"+std::string(src->GetName())).c_str(),
-                                         h->GetTitle(),
-                                         nEta, 0, nEta,     // X
-                                         nPhi, 0, nPhi));   // Y
-      for (int ip = 1; ip <= nPhi; ++ip)
-        for (int ie = 1; ie <= nEta; ++ie)
-          rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
+        for (int ip = 0; ip < nPhi; ++ip)
+          for (int ie = 0; ie < nEta; ++ie)
+            if (isBadBoard(sector_from_idx(ie, ip),
+                           ib_from_idx(ie, ip)))
+              h->SetBinContent(h->FindBin(ip, ie), -9999.);   // hole = white
 
-      rot->SetDirectory(nullptr);
-      rot->SetStats(0);  rot->SetContour(99);  rot->SetMinimum(1.);
-      rot->GetXaxis()->SetTitle("Tower #eta");
-      rot->GetYaxis()->SetTitle("Tower #phi");
-      rot->GetXaxis()->SetNdivisions(12, kFALSE);   // label every 8 η
-      rot->GetYaxis()->SetNdivisions(32, kFALSE);   // label every 8 φ
+        /* 2)  rotate  (η → X,  φ → Y) ----------------------------------- */
+        std::unique_ptr<TH2F> rot(new TH2F(("hRot_"+std::string(src->GetName())).c_str(),
+                                           h->GetTitle(),
+                                           nEta, 0, nEta,       // X
+                                           nPhi, 0, nPhi));     // Y
+        for (int ip = 1; ip <= nPhi; ++ip)
+          for (int ie = 1; ie <= nEta; ++ie)
+            rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
 
-      /* aspect‑ratio‑aware canvas: height ~ 256/96 ≃ 2.67 × width */
-      const int cw = 1200;
-      const int ch = static_cast<int>(cw * double(nPhi) / double(nEta) + 0.5);
+        rot->SetDirectory(nullptr);
+        rot->SetMinimum(1.);                         // under‑flow = white
+        rot->SetTitleOffset(0.9,"X"); rot->SetTitleOffset(0.9,"Y");
+        rot->GetXaxis()->SetTitle("Tower #eta");
+        rot->GetYaxis()->SetTitle("Tower #phi");
+        rot->GetXaxis()->SetNdivisions(12,kFALSE);   // every 8 η
+        rot->GetYaxis()->SetNdivisions(32,kFALSE);   // every 8 φ
 
-      fs::path outPng = cPath(root, slice, "EMCal") / (n + ".png");
-      TCanvas c("c_emcal", "", cw, ch);
-      c.SetRightMargin(0.18);
-      c.SetLeftMargin(0.10);
-      c.SetBottomMargin(0.10);
-      c.SetTopMargin(0.05);
-      rot->Draw("COLZ");
+        /* 3)  square‑pixel canvas --------------------------------------- */
+        const int cw = nEta * px;                    // 96⋅6 = 576 px
+        const int ch = nPhi * px;                    // 256⋅6 = 1536 px
 
-      // thin grid – sector / IB boundaries every 8 towers
-      for (int x = 0; x <= nEta; x += 8) {
-          auto *v = new TLine(x, 0, x, nPhi);
-          v->SetLineColor(kBlack);
-          v->SetLineWidth(2);
-          v->Draw("same");
-      }
-      for (int y = 0; y <= nPhi; y += 8) {
-          auto *h = new TLine(0, y, nEta, y);
-          h->SetLineColor(kBlack);
-          h->SetLineWidth(2);
-          h->Draw("same");
-      }
-      /* make sure the freshly‑drawn primitives are flushed to the file */
-      gPad->Modified();
-      gPad->Update();
+        fs::path outPng = cPath(root, slice, "EMCal") / (src->GetName() + std::string(".png"));
+        ensure_dir(outPng.parent_path());
 
-      /* North / South separator (η = 48) */
-      TLine ns(48, 0, 48, nPhi); ns.SetLineColor(kBlack); ns.SetLineWidth(3); ns.Draw();
+        TCanvas c("c_emcal","",cw,ch);
+        c.SetRightMargin(0.17);
+        c.SetLeftMargin (0.08);
+        c.SetBottomMargin(0.08);
+        c.SetTopMargin  (0.04);
+        c.SetFixedAspectRatio();                     // 1 bin ⇔ 1 pixel
 
-      /* labels */
-      TLatex tSec; tSec.SetTextSize(0.020); tSec.SetTextAlign(22); tSec.SetTextColor(kRed);
-      TLatex tIB;  tIB.SetTextSize(0.025); tIB.SetTextAlign(22);  tIB.SetTextColor(kRed);
+        rot->Draw("COLZ");
 
-      for (int s = 0; s < 64; ++s) {
-        int basePhi = (s % 32) * 8;
-        double yMid = basePhi + 4.0;
-        double xSec = (s < 32) ?  72.0 : 24.0;
-        tSec.DrawLatex(xSec, yMid, Form("S%d", s));
+        /* 4)  ultra‑light grid (every 8 towers) -------------------------- */
+        TLine l;
+        l.SetLineColor(kBlack); l.SetLineWidth(1);
+        for (int x = 0; x <= nEta; x += 8) { l.DrawLine(x, 0, x, nPhi); }
+        for (int y = 0; y <= nPhi; y += 8) { l.DrawLine(0, y, nEta, y); }
 
-        for (int ib = 0; ib < 6; ++ib) {
-          double xIB = (s < 32) ? (48 + ib * 8 + 4)
-                                : ((5 - ib) * 8 + 4);
-          tIB.DrawLatex(xIB, yMid, Form("%d", ib));
+        /* 5)  North / South divider (η = 48) ----------------------------- */
+        TLine ns(48, 0, 48, nPhi); ns.SetLineColor(kBlack); ns.SetLineWidth(3);
+        ns.Draw();
+
+        /* 6)  sector / inner‑board labels (subtle grey) ------------------ */
+        TLatex tx; tx.SetTextSize(0.020); tx.SetTextAlign(22); tx.SetTextColorAlpha(kGray+2,0.7);
+
+        for (int s = 0; s < 64; ++s) {                      // 32 per hemisphere
+          const int basePhi = (s % 32) * 8;
+          const double yMid = basePhi + 4;
+          const double xSec = (s < 32) ? 72 : 24;
+          tx.DrawLatex(xSec, yMid, Form("S%d", s));
         }
-      }
 
-      ensure_dir(outPng.parent_path());
-      c.SaveAs(outPng.string().c_str());
-      return rot;
+        c.SaveAs(outPng.string().c_str());
+        return rot;
     };
-    // ----------------------------------------------------------------
 
+      
     if (isMap && o->InheritsFrom(TH2::Class())) {
       auto p = makePanel(static_cast<TH2*>(o));
       if (_centralMaps.find(slice) == _centralMaps.end())
@@ -945,7 +932,7 @@ class JetQA : public QA
 void analyzeRun24or25auau()
 {
   gStyle->SetOptStat(0);          // ROOT style once is enough
-
+  gStyle->SetPalette(kViridis);
   // ------------------------------------------------------------
   // 0.  Collect all “output_########.root” files in kInputDir
   // ------------------------------------------------------------
