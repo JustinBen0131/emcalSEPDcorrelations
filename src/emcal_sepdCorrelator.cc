@@ -59,7 +59,7 @@
 #define CLR_BLUE   "\033[1;34m"
 #define CLR_CYAN   "\033[1;36m"
 #define CLR_GREEN  "\033[1;32m"
-#define CLR_YELLOW "\033[1;33m"v
+#define CLR_YELLOW "\033[1;33m"
 #define CLR_MAGENTA "\033[1;35m"
 #define CLR_RESET  "\033[0m"
 
@@ -737,28 +737,33 @@ void emcal_sepdCorrelator::buildSepdChannelMap()
   m_sepdMapReady = true;
 }
 
+// ======================================================================
+//  process_event – one‑event driver, with streamlined logging
+// ======================================================================
 int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 {
   /* ------------------------------------------------------------------ */
-  /* 0. Banner & running counter                                        */
+  /* 0.  Banner & running counter                                       */
   /* ------------------------------------------------------------------ */
   ++event_count;
-  PROGRESS("=================================   event " << std::setw(3) << event_count << "    ===================================== "
-           "(Verb=" << Verbosity() << ")");
+  PROGRESS("=================================   event "
+           << std::setw(4) << event_count
+           << "   =====================================  (Verb="
+           << Verbosity() << ')');
 
   /* ------------------------------------------------------------------ */
-  /* 1. Mandatory node check                                            */
+  /* 1.  Mandatory node check                                           */
   /* ------------------------------------------------------------------ */
   LOG(4, CLR_BLUE, "  [process_event] – node sanity");
-
   if (!fetchNodes(topNode))
   {
-    LOG(4, CLR_YELLOW, "    mandatory node missing OR not auau minbias! → ABORTEVENT");
+    LOG(4, CLR_YELLOW,
+        "    mandatory node missing OR not Au+Au minimum‑bias →  ABORTEVENT");
     return Fun4AllReturnCodes::ABORTEVENT;
   }
 
   /* ------------------------------------------------------------------ */
-  /* 2. On-the-fly SEPD map build                                       */
+  /* 2.  Build the SEPD channel map on the fly (first event only)       */
   /* ------------------------------------------------------------------ */
   if (!m_sepdMapReady)
   {
@@ -771,25 +776,25 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
           "    SEPD container not yet present – event skipped");
       return Fun4AllReturnCodes::ABORTEVENT;
     }
-    buildSepdChannelMap();
+    buildSepdChannelMap();     // sets m_sepdMapReady = true
   }
 
   /* ------------------------------------------------------------------ */
-  /* 3. Trigger decoding                                                */
+  /* 3.  Trigger decoding                                               */
   /* ------------------------------------------------------------------ */
   trigAna->decodeTriggers(topNode);
 
   std::vector<std::string> activeTrig;
   if (Verbosity() >= 4) LOG(4, CLR_BLUE, "    Trigger matrix:");
 
-  for (auto& [bitname, key] : triggerNameMap)
+  for (auto& [bitName, key] : triggerNameMap)
   {
     ++m_trigStat[key].tested;
-    const bool fired = trigAna->didTriggerFire(bitname);
+    const bool fired = trigAna->didTriggerFire(bitName);
     if (fired) { activeTrig.push_back(key); ++m_trigStat[key].fired; }
 
     if (Verbosity() >= 4)
-      std::cout << "      • " << std::left << std::setw(25) << bitname
+      std::cout << "      • " << std::left << std::setw(25) << bitName
                 << " → "
                 << (fired ? CLR_GREEN "FIRED" : CLR_YELLOW "–")
                 << CLR_RESET << '\n';
@@ -803,100 +808,82 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   }
 
   /* ------------------------------------------------------------------ */
-  /* 4. Vertex-z QA & cut                                               */
+  /* 4.  Vertex‑z QA & online cut                                       */
   /* ------------------------------------------------------------------ */
   for (const auto& t : activeTrig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])->Fill(m_vz);
 
   if (m_useVzCut && std::fabs(m_vz) >= m_vzCut)
   {
-    LOG(4, CLR_YELLOW, "    |vz| = " << std::fabs(m_vz)
-                       << " cm ≥ cut (" << m_vzCut << ") – skip");
+    LOG(4, CLR_YELLOW,
+        "    |vz| = " << std::fabs(m_vz) << " cm  ≥ cut (" << m_vzCut
+        << ") – skip");
     return Fun4AllReturnCodes::ABORTEVENT;
   }
 
   /* ------------------------------------------------------------------ */
-  /* 5. Detector-level QA                                               */
+  /* 5.  Detector‑level QA                                              */
   /* ------------------------------------------------------------------ */
-  LOG(5, CLR_BLUE, "    running detector-level QA");
-  doCaloQA(activeTrig);
-  doSepdQA(activeTrig);
+  LOG(5, CLR_BLUE, "    running detector‑level QA");
+  doCaloQA(activeTrig);   // towers  + vn accumulators
+  doSepdQA(activeTrig);   // SEPD charge maps & ψn
 
+  /* guard: vz must be reasonable for centrality calibration ---------- */
   if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
   {
-      LOG(4, CLR_YELLOW, "    Vertex z = " << m_vz << " out of calibration bounds – skip");
-      return Fun4AllReturnCodes::ABORTEVENT;
-  }
-  /* ------------------------------------------------------------------ */
-  /* 6. Centrality lookup & diagnostics                                 */
-  /* ------------------------------------------------------------------ */
-
-  /* grab the two nodes we need --------------------------------------- */
-  CentralityInfo   *_central        = findNode::getClass<CentralityInfo>(topNode,"CentralityInfo");
-  MinimumBiasInfo  *_minimumbiasinfo= findNode::getClass<MinimumBiasInfo>(topNode,"MinimumBiasInfo");
-
-  /* bail out gracefully if either of them is missing ----------------- */
-  if (!_central)
-  {
-      LOG(4, CLR_YELLOW, "    CentralityInfo node **missing** – event skipped");
-      return Fun4AllReturnCodes::ABORTEVENT;
-  }
-
-  /* make sure the mbd_NS bin is there -------------------------------- */
-  if (!_central->has_centrality_bin(CentralityInfo::PROP::mbd_NS))
-  {
-      LOG(4, CLR_YELLOW, "    CentralityInfo mbd_NS not filled yet – skip");
-      return Fun4AllReturnCodes::ABORTEVENT;
-  }
-
-  if (!_minimumbiasinfo)
-  {
-      LOG(4, CLR_YELLOW, "    MinimumBiasInfo node **missing** – event skipped");
-      return Fun4AllReturnCodes::ABORTEVENT;
-  }
-
-  /* now it’s safe to fetch it ---------------------------------------- */
-  float centile = _central->get_centrality_bin(CentralityInfo::PROP::mbd_NS);
-
-  /* translate the percentile to an integer “centrality bin” ---------- */
-  if (!std::isfinite(centile) || centile < 0.f)
-  {
     LOG(4, CLR_YELLOW,
-          "    mbd_NS centile invalid – defaulting to full 0-100 %");
-    m_centBin = -1;                                   // minimum-bias
-  }
-  else
-  {
-    m_centBin = static_cast<int>(centile);
-    LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
-  }
-    
-  if (!_minimumbiasinfo)
-  {
-    LOG(4, CLR_YELLOW, "    MinimumBiasInfo node **missing** – event skipped");
+        "    Vertex‑z (" << m_vz
+        << " cm) outside calibration bounds – skip event");
     return Fun4AllReturnCodes::ABORTEVENT;
   }
 
-  /* translate the percentile to an integer “centrality bin” ---------- */
+  /* ------------------------------------------------------------------ */
+  /* 6.  Centrality lookup & diagnostics                                */
+  /* ------------------------------------------------------------------ */
+  CentralityInfo*  central =
+      findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
+  MinimumBiasInfo* mbInfo  =
+      findNode::getClass<MinimumBiasInfo>(topNode, "MinimumBiasInfo");
+
+  if (!central || !mbInfo)
+  {
+    LOG(4, CLR_YELLOW,
+        "    CentralityInfo or MinimumBiasInfo node missing – skip");
+    return Fun4AllReturnCodes::ABORTEVENT;
+  }
+  if (!central->has_centrality_bin(CentralityInfo::PROP::mbd_NS))
+  {
+    LOG(4, CLR_YELLOW,
+        "    CentralityInfo::mbd_NS not filled yet – skip");
+    return Fun4AllReturnCodes::ABORTEVENT;
+  }
+
+  const float centile =
+      central->get_centrality_bin(CentralityInfo::PROP::mbd_NS);
+
   if (!std::isfinite(centile) || centile < 0.f)
   {
     LOG(4, CLR_YELLOW,
-          "    mbd_NS centile invalid – defaulting to full 0-100 %");
-    m_centBin = -1;                                  // → treat as minimum-bias
+        "    mbd_NS centile invalid – treating as minimum‑bias (0–100 %)");
+    m_centBin = -1;       // minimum‑bias
   }
   else
   {
     m_centBin = static_cast<int>(centile);
     LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
   }
-  /* fill centrality histogram */
-  if (std::isfinite(centile) && centile >= 0.f && centile <= 100.f)
-      for (const auto& t : activeTrig)
-        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
-            ->Fill(centile);
-    
-  doMbdQA (activeTrig);
-  doPi0QA (activeTrig);
+
+  /* centrality histogram (filled once the value is validated) -------- */
+  if (centile >= 0.f && centile <= 100.f)
+    for (const auto& t : activeTrig)
+      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
+          ->Fill(centile);
+
+  /* ------------------------------------------------------------------ */
+  /* 7.  Sub‑detector QA that needs centrality                          */
+  /* ------------------------------------------------------------------ */
+  doMbdQA(activeTrig);
+  doPi0QA(activeTrig);
   fillCorrelations(activeTrig);
   fillFlowHists(activeTrig);
 
@@ -906,7 +893,7 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
     return Fun4AllReturnCodes::ABORTRUN;
   }
 
-  LOG(4, CLR_GREEN, "  [process_event] finished OK");
+  LOG(4, CLR_GREEN, "  [process_event] – completed OK");
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -1294,12 +1281,10 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
   /* 7. Summary                                                         */
   /* ------------------------------------------------------------------ */
   LOG(3, CLR_GREEN,
-      "    ΣQ=" << m_sepdQ
-      << "  Ψ1S=" << m_psi1_S << "  Ψ2S=" << m_psi2_S
-      << "  Ψ3S=" << m_psi3_S << "  hits(S,N)=" << nFiredS << ',' << nFiredN
-      << (usedMap ? "  (Ψ2 from EventplaneinfoMap)" : "  (Ψ2 from towers)"));
-
-  LOG(2, CLR_BLUE, "[doSepdQA] ──────────────────────────────────────────────");
+        "    ΣQ=" << m_sepdQ
+        << "  Ψ1S=" << m_psi1_S << "  Ψ2S=" << m_psi2_S
+        << "  Ψ3S=" << m_psi3_S << "  hits(S,N)=" << nFiredS << ',' << nFiredN
+        << (usedMap ? "  (Ψ2 from EventplaneinfoMap)" : "  (Ψ2 from towers)"));
 }
 
 
@@ -1444,7 +1429,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 
       RawTowerGeom* tg  = ck.second.g->get_tower_geometry(key);
       const double  eta = tg ? tg->get_eta() : 0.;
-      const double  et  = e / std::cosh(eta);
+      const double  et  = e;
 
       /* ---------- arm‑separated ΣE​T -------------------------------- */
       if (lbl == "CEMC")       (eta < 0 ? m_cemcEt_arm[0] : m_cemcEt_arm[1]) += et;
@@ -1485,37 +1470,102 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
         }
       }
 
-      /* ----------------------------------------------------------------
-       *  v​n accumulators  (harmonics n = 1, 2, 3) – one entry / pT bin
-       * -------------------------------------------------------------- */
-      int ptBin = -1;
+      /* ------------------------------------------------------------------
+       * (A)  v_n  accumulators  (harmonics n = 1, 2, 3)
+       *      – one entry per pT‑bin per detector -------------------------
+       * ----------------------------------------------------------------*/
+      int  ptBin = -1;
       for (std::size_t b = 0; b < m_ptBins.size(); ++b)
-        if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
-        { ptBin = static_cast<int>(b); break; }
+      if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
+      { ptBin = static_cast<int>(b); break; }
 
-      if (ptBin >= 0)
+      /* ---------- consistency checks ---------------------------------- */
+      if (et < 0)
       {
-        const double phi = tg ? tg->get_phi() : 0.;
+          LOG(1, CLR_YELLOW, "      [WARN] negative energy et=" << et
+                                 << " – tower skipped");
+          continue;                 // skip this tower
+      }
 
-        const double c1 = std::cos(phi),  s1 = std::sin(phi);
-        const double c2 = c1 * c1 - s1 * s1;          // cos 2φ
-        const double s2 = 2.0 * c1 * s1;              // sin 2φ
-        const double c3 = c1 * c2 - s1 * s2;          // cos 3φ
-        const double s3 = s1 * c2 + c1 * s2;          // sin 3φ
-
-        auto accumulate = [&](const std::string& det)
+        if (ptBin < 0)
         {
+            /* et fell below the first bin or above the last one.
+             * Instead of discarding the tower, clamp it to the nearest
+             * valid bin so that it still contributes to v₂,v₃.           */
+            if (et < m_ptBins.front().first)
+                ptBin = 0;                                   // under‑flow  → first bin
+            else
+                ptBin = static_cast<int>(m_ptBins.size() - 1); // over‑flow → last bin
+
+            static bool warned = false;
+            if (!warned)
+            {
+                LOG(1, CLR_YELLOW, "      [INFO] et=" << et
+                                   << " outside configured pT range – clamped to bin "
+                                   << ptBin << " (tower kept)");
+                warned = true;
+            }
+        }
+
+      if (Verbosity() >= 7)
+          LOG(7, CLR_MAGENTA, "      et=" << et << "  →  bin " << ptBin);
+
+        /* ---------- harmonic basis (φ from tower/cluster tg) ------------- */
+      const double phi = tg ? tg->get_phi() : 0.0;
+
+      const double c1 = std::cos(phi),  s1 = std::sin(phi);
+      const double c2 = c1 * c1 - s1 * s1;            // cos 2φ
+      const double s2 = 2.0 * c1 * s1;                // sin 2φ
+      const double c3 = c1 * c2 - s1 * s2;            // cos 3φ
+      const double s3 = s1 * c2 + c1 * s2;            // sin 3φ
+
+      /* ---------- helper to accumulate into a detector key ------------ */
+      auto accumulate = [&](const std::string& det)
+        {
+          /* key must exist and bin index valid ---------------------------- */
+          if (!m_flowAcc.count(det) ||
+                static_cast<std::size_t>(ptBin) >= m_flowAcc[det].size())
+          {
+            static std::unordered_set<std::string> bad;
+            if (bad.insert(det).second)
+              LOG(1, CLR_YELLOW, "      [WARN] detector \"" << det
+                                 << "\" missing or bin index out‑of‑range – first occurrence");
+            return;
+          }
+
           auto& a = m_flowAcc[det][ptBin];
           a.sumW  += et;
           a.qx[1] += et * c1;  a.qy[1] += et * s1;
           a.qx[2] += et * c2;  a.qy[2] += et * s2;
           a.qx[3] += et * c3;  a.qy[3] += et * s3;
-        };
+      };
 
-        accumulate(lbl);                         // native subsystem
-        if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL");
-        accumulate("ALL");
-      }
+      /* ---------- do the actual accumulation -------------------------- */
+      accumulate(lbl);                       // native subsystem
+      if (lbl == "IHCAL" || lbl == "OHCAL")  // merged HCAL view
+          accumulate("HCAL");
+      accumulate("ALL");
+
+      /* ---------- per‑event debug summary ------------------------------ */
+      if (Verbosity() >= 6)
+        {
+          static std::unordered_map<std::string,double> evtSum;
+          evtSum[lbl]   += et;
+          evtSum["ALL"] += et;
+          if (lbl == "IHCAL" || lbl == "OHCAL")
+            evtSum["HCAL"] += et;
+
+          static long long lastEvt = -1;
+
+          if (static_cast<long long>(event_count) != lastEvt && lastEvt >= 0)
+          {
+              LOG(6, CLR_BLUE, "    [flow‑acc] event " << lastEvt << "  Σet per detector:");
+              for (const auto& [d, s] : evtSum)
+                LOG(6, CLR_BLUE, "               " << std::setw(6) << d << " : " << s);
+              evtSum.clear();
+           }
+           lastEvt = event_count;
+        }
     } /* tower loop */
 
     LOG(3, CLR_GREEN, "    " << lbl << " : "
