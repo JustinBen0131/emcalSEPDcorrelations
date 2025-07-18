@@ -466,14 +466,14 @@ emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
   for (const auto& r : kJetRadii)              // r.first = "r02", "r04", …
   {
     /* -------- (A) max‑jet‑E_T (global) ----------------------------- */
-    const std::string base1 = "h_maxJetEt_" + r.first;
+    const std::string base1 = std::string("h_maxJetEt_")            + r.first;
     H[base1 + "_" + trig] =
         new TH1F((base1 + "_" + trig).c_str(),
                  ("max jet E_{T} ("+std::string(r.first)+");E_{T} [GeV]").c_str(),
                  nbEt, 0, etMax);
 
     /* -------- (B) E_T–area–Nconst (global) ------------------------- */
-    const std::string base3 = "h_jetEt_area_nConst_" + r.first;
+    const std::string base3 = std::string("h_jetEt_area_nConst_")   + r.first;
     H[base3 + "_" + trig] =
         new TH3F((base3 + "_" + trig).c_str(),
                  ("Jet E_{T} vs area vs N_{const} ("+std::string(r.first)+
@@ -481,7 +481,7 @@ emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
                  nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
 
     /* -------- OPTIONAL 2‑D lead‑vs‑sub plot (global) --------------- */
-    const std::string base2 = "h_leadEt_vs_subEt_" + r.first;
+    const std::string base2 = std::string("h_leadEt_vs_subEt_")     + r.first;
     H[base2 + "_" + trig] =
         new TH2F((base2 + "_" + trig).c_str(),
                  ("Leading vs sub‑leading jet E_{T} ("+std::string(r.first)+
@@ -1767,8 +1767,11 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
       {
         if (!j) continue;
         const float et   = j->get_et();
-        const float area = j->get_area();
-        const int   nC   = static_cast<int>(j->size());
+        float area = 0.0f;
+        if (j->has_property(Jet::PROPERTY::prop_area))
+              area = j->get_property(Jet::PROPERTY::prop_area);
+
+        const int nC = static_cast<int>(j->size_comp());
 
         static_cast<TH3F*>(H[base3 + "_" + t])->Fill(et, area, nC);
 
