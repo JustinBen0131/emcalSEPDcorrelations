@@ -256,7 +256,27 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
     H["h_OHCAL_EtaPhiMap_" + trig] = new TH2F(("h_OHCAL_EtaPhiMap_" + trig).c_str(),
                                               "OHCAL tower map;#phi (0...63);#eta (0...23)",
                                               64, 0, 64, 24, 0, 24);
+      
+    /* –– centrality‑binned clones –– */
+    auto cloneHitMap = [&](const std::string& base, TH2F* src)
+    {
+        for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+        {
+          const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
+          std::ostringstream n;  n << base << '_' << lo << '_' << hi << '_' << trig;
+          H[n.str()] = dynamic_cast<TH2F*>(src->Clone(n.str().c_str()));
+          H[n.str()]->Reset();                       // start empty
+          H[n.str()]->SetDirectory(nullptr);         // detach from file
+        }
+    };
+
+    /* create centrality clones for every calorimeter map */
+    cloneHitMap("h_EMC_EtaPhiMap",  static_cast<TH2F*>(H["h_EMC_EtaPhiMap_"  + trig]));
+    cloneHitMap("h_IHCAL_EtaPhiMap",static_cast<TH2F*>(H["h_IHCAL_EtaPhiMap_" + trig]));
+    cloneHitMap("h_OHCAL_EtaPhiMap",static_cast<TH2F*>(H["h_OHCAL_EtaPhiMap_" + trig]));
+
   }
+
   out->cd();
 }
 
@@ -441,7 +461,6 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
 {
   /* one TProfile per {detector, harmonic, cent bin} filled versus pT‑bin index */
   const int nPt = m_ptBins.size();
-  const double bins[9] = {2,4,6,8,10,12,15,20,30};          // ⇐ m_ptBins edges
 
   auto make = [&](const std::string& det, int n, int lo, int hi)
   {
@@ -461,34 +480,69 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
 }
 
 
-void emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig, HistMap& H)
+//==========================================================================
+//  bookEventPlaneCentralityQA – charge spectra, ψn distributions
+//                              + sub‑event resolution proxies  (n = 1,2,3)
+//==========================================================================
+void
+emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig,
+                                                 HistMap&           H)
 {
-  /* 1. #SigmaQ spectra */
+  /* 1. ΣQ spectra ---------------------------------------------------- */
   H["h_Qsum_MBD"]  = new TH1F(("h_Qsum_MBD_"  + trig).c_str(),
-                              "MBD #SigmaQ;#SigmaQ_{MBD} [ADC]",   600, 0, 1200);
+                              "MBD #SigmaQ;#SigmaQ_{MBD} [ADC]",
+                              600, 0, 1200);
+
   H["h_Qsum_sEPD"] = new TH1F(("h_Qsum_sEPD_" + trig).c_str(),
-                              "sEPD #SigmaQ;#SigmaQ_{sEPD} [ADC]", 600, 0, 1200);
+                              "sEPD #SigmaQ;#SigmaQ_{sEPD} [ADC]",
+                              600, 0, 1200);
 
-  /* 2. detector‑to‑detector #SigmaQ map */
-  H["h_Qsum_MBD_vs_sEPD"] = new TH2F(("h_Qsum_MBD_vs_sEPD_" + trig).c_str(),
-                                     "#Sigma Q_{MBD} vs #Sigma Q_{sEPD};#Sigma Q_{MBD};#Sigma Q_{sEPD}",
-                                     300, 0, 1200, 300, 0, 1200);
+  /* 2. detector‑to‑detector ΣQ map ---------------------------------- */
+  H["h_Qsum_MBD_vs_sEPD"] =
+      new TH2F(("h_Qsum_MBD_vs_sEPD_" + trig).c_str(),
+               "#Sigma Q_{MBD} vs #Sigma Q_{sEPD};#Sigma Q_{MBD};#Sigma Q_{sEPD}",
+               300, 0, 1200, 300, 0, 1200);
 
-  /* 3. #Psi₂ distributions & resolution proxy */
+  /* 3. ψ n distributions (South, n = 1,2,3) ------------------------- */
+  H["h_Psi1_sEPD"] =
+      new TH1F(("h_Psi1_sEPD_" + trig).c_str(),
+               "sEPD #Psi_{1};#Psi_{1} [rad]", 120, -TMath::Pi(), TMath::Pi());
+
   H["h_Psi2_sEPD"] =
-      new TH1F(("h_Psi2_sEPD_" + trig).c_str(), "sEPD #Psi_{2};#Psi_{2} [rad]",
-               120, -TMath::Pi(), TMath::Pi());
+      new TH1F(("h_Psi2_sEPD_" + trig).c_str(),
+               "sEPD #Psi_{2};#Psi_{2} [rad]", 120, -TMath::Pi(), TMath::Pi());
+
+  H["h_Psi3_sEPD"] =
+      new TH1F(("h_Psi3_sEPD_" + trig).c_str(),
+               "sEPD #Psi_{3};#Psi_{3} [rad]", 120, -TMath::Pi(), TMath::Pi());
+
+  /* 4. sub‑event resolution proxies  ⟨cos n(Ψ^N–Ψ^S)⟩ vs ΣQ --------- */
+  const int nBinsQ = 12;              // same binning for all three
+  H["h_Psi1_res_vs_Qsum"] =
+      new TProfile(("h_Psi1_res_vs_Qsum_" + trig).c_str(),
+                   "cos (#Psi_{1}^{N}-#Psi_{1}^{S}) vs #Sigma Q_{sEPD};"
+                   "#Sigma Q_{sEPD};#LT cosΔ#Psi #GT",
+                   nBinsQ, 0, 1200, "s");
 
   H["h_Psi2_res_vs_Qsum"] =
       new TProfile(("h_Psi2_res_vs_Qsum_" + trig).c_str(),
-                   "cos 2(#Psi_{N}-#Psi_{S}) vs #Sigma Q_{sEPD};#Sigma Q_{sEPD};#langle cos2Δ#Psi #rangle",
-                   12, 0, 1200, "s");
+                   "cos 2(#Psi_{2}^{N}-#Psi_{2}^{S}) vs #Sigma Q_{sEPD};"
+                   "#Sigma Q_{sEPD};#LT cos2Δ#Psi #GT",
+                   nBinsQ, 0, 1200, "s");
+
+  H["h_Psi3_res_vs_Qsum"] =
+      new TProfile(("h_Psi3_res_vs_Qsum_" + trig).c_str(),
+                   "cos 3(#Psi_{3}^{N}-#Psi_{3}^{S}) vs #Sigma Q_{sEPD};"
+                   "#Sigma Q_{sEPD};#LT cos3Δ#Psi #GT",
+                   nBinsQ, 0, 1200, "s");
 }
+
 
 // ----------------------------------------------------------------------
 // Book jet QA spectra:
 //   (A) 1‑D   max‑E_T
-//   (B) 3‑D   E_T • area • Nconst  (and optional 2‑D lead‑vs‑sub)
+//   (B) 3‑D   E_T • area • Nconst           (+ optional 2‑D lead‑vs‑sub)
+//   (C) jet‑flow profiles  v_n^{jet}(pT)    (n = 1,2,3)
 // ----------------------------------------------------------------------
 void
 emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
@@ -497,32 +551,33 @@ emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
   const int nbA  =  80;  const double aMax  = 0.80;   // ΔA = 0.01
   const int nbN  = 200;  const double nMax  = 200.;   // 1 constituent/bin
 
-  for (const auto& r : kJetRadii)              // r.first = "r02", "r04", …
+  for (const auto& r : kJetRadii)            // r.first = "r02", …
   {
     /* -------- (A) max‑jet‑E_T (global) ----------------------------- */
-    const std::string base1 = std::string("h_maxJetEt_")            + r.first;
+    const std::string base1 = "h_maxJetEt_" + std::string(r.first);
     H[base1 + "_" + trig] =
         new TH1F((base1 + "_" + trig).c_str(),
-                 ("max jet E_{T} ("+std::string(r.first)+");E_{T} [GeV]").c_str(),
+                 ("max jet E_{T} (" + std::string(r.first) +
+                  ");E_{T} [GeV]").c_str(),
                  nbEt, 0, etMax);
 
     /* -------- (B) E_T–area–Nconst (global) ------------------------- */
-    const std::string base3 = std::string("h_jetEt_area_nConst_")   + r.first;
+    const std::string base3 = "h_jetEt_area_nConst_" + std::string(r.first);
     H[base3 + "_" + trig] =
         new TH3F((base3 + "_" + trig).c_str(),
-                 ("Jet E_{T} vs area vs N_{const} ("+std::string(r.first)+
+                 ("Jet E_{T} vs area vs N_{const} (" + std::string(r.first) +
                   ");E_{T} [GeV];Area;N_{const}").c_str(),
                  nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
 
     /* -------- OPTIONAL 2‑D lead‑vs‑sub plot (global) --------------- */
-    const std::string base2 = std::string("h_leadEt_vs_subEt_")     + r.first;
+    const std::string base2 = "h_leadEt_vs_subEt_" + std::string(r.first);
     H[base2 + "_" + trig] =
         new TH2F((base2 + "_" + trig).c_str(),
-                 ("Leading vs sub‑leading jet E_{T} ("+std::string(r.first)+
+                 ("Leading vs sub‑leading jet E_{T} (" + std::string(r.first) +
                   ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
                  nbEt, 0, etMax, nbEt, 0, etMax);
 
-    /* -------- centrality clones for all three objects -------------- */
+    /* -------- centrality clones for the three objects -------------- */
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
     {
       const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
@@ -532,24 +587,45 @@ emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
       n3 << base3 << '_' << lo << '_' << hi << '_' << trig;
 
       H[n1.str()] = new TH1F(n1.str().c_str(),
-                             ("max jet E_{T} ("+std::string(r.first)+
+                             ("max jet E_{T} (" + std::string(r.first) +
                               ");E_{T} [GeV]").c_str(),
                              nbEt, 0, etMax);
 
       H[n2.str()] = new TH2F(n2.str().c_str(),
-                             ("Leading vs sub‑leading jet E_{T} ("+
-                              std::string(r.first)+");E_{T}^{lead} [GeV];"
-                              "E_{T}^{sub} [GeV]").c_str(),
+                             ("Leading vs sub‑leading jet E_{T} (" +
+                              std::string(r.first) +
+                              ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
                              nbEt, 0, etMax, nbEt, 0, etMax);
 
       H[n3.str()] = new TH3F(n3.str().c_str(),
-                             ("Jet E_{T} vs area vs N_{const} ("+
-                              std::string(r.first)+");E_{T} [GeV];Area;"
-                              "N_{const}").c_str(),
+                             ("Jet E_{T} vs area vs N_{const} (" +
+                              std::string(r.first) +
+                              ");E_{T} [GeV];Area;N_{const}").c_str(),
                              nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
     }
-  }
+
+    /* =================================================================
+     * (C)  v_n^{jet}(p_T)  profiles   (n = 1,2,3)
+     *     – one per {harmonic, centrality slice, trigger}
+     * ================================================================= */
+    const int nPtBins = 40;                     // 5 GeV bins up to 200 GeV
+    for (int n : {1, 2, 3})
+      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      {
+        const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
+        std::ostringstream nm;
+        nm << "p_v" << n << "_JET_" << r.first << '_'   // e.g. p_v2_JET_r02_20_40_MB
+           << lo << '_' << hi << '_' << trig;
+
+        H[nm.str()] = new TProfile(
+            nm.str().c_str(),
+            Form("v_{%d}^{jet} (%s);p_{T}^{jet} [GeV];v_{%d}",
+                 n, r.first, n),
+            nPtBins, 0, 200, "s");
+      }
+  } // radii loop
 }
+
 
 void emcal_sepdCorrelator::createHistos_Data()
 {
@@ -985,65 +1061,84 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
   LOG(3, CLR_BLUE, "  [doCaloQA] processing calorimeter towers");
 
   /* ------------------------------------------------------------------ */
-  /* (re‑)set per‑event FlowAcc containers                              */
+  /* 0.  clear per‑event FlowAcc containers                             */
   /* ------------------------------------------------------------------ */
   for (auto& kv : m_flowAcc)
     for (auto& acc : kv.second) acc.reset();
 
   /* ------------------------------------------------------------------ */
-  /* loop over calorimeter containers                                   */
+  /* 1.  loop over calorimeter subsystems                               */
   /* ------------------------------------------------------------------ */
   for (auto& ck : m_calo)
   {
-    const std::string&      lbl = ck.first;          // "CEMC" / "IHCAL" …
-    TowerInfoContainer*     twC = ck.second.tw;
-    double&                 sumE = ck.second.sumE;
-    std::size_t             nHit = 0;
+    const std::string&  lbl   = ck.first;          // "CEMC", "IHCAL", …
+    TowerInfoContainer* twC   = ck.second.tw;
+    double&             sumE  = ck.second.sumE;
+    std::size_t         nHit  = 0;
 
     for (unsigned ch = 0; ch < twC->size(); ++ch)
     {
       auto* tw = twC->get_tower_at_channel(ch); if (!tw) continue;
       const double e = tw->get_energy();        if (e <= 0) continue;
 
-      /* -------------------------------------------------------------- */
-      /* bookkeeping & QA histos                                        */
-      /* -------------------------------------------------------------- */
+      /* ---------- bookkeeping & 1‑D spectra ------------------------- */
       sumE += e; ++nHit;
       for (const auto& t : trig)
-        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + lbl])
-            ->Fill(e);
+        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + lbl])->Fill(e);
 
-      /* maps & ΣE_T (arm‑separated) ---------------------------------- */
-      unsigned int key  = twC->encode_key(ch);
-      unsigned int iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
-      unsigned int ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
+      /* ---------- geometry look‑up --------------------------------- */
+      const unsigned key  = twC->encode_key(ch);
+      const unsigned iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
+      const unsigned ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
 
-      RawTowerGeom* tg   = ck.second.g->get_tower_geometry(key);
-      const double  eta  = tg ? tg->get_eta() : 0.;
-      const double  et   = e / std::cosh(eta);
+      RawTowerGeom* tg  = ck.second.g->get_tower_geometry(key);
+      const double  eta = tg ? tg->get_eta() : 0.;
+      const double  et  = e / std::cosh(eta);
 
-      if (lbl == "CEMC")       { if (eta<0) m_cemcEt_arm[0]+=et; else m_cemcEt_arm[1]+=et; }
-      else if (lbl == "IHCAL") { if (eta<0) m_ihcalEt_arm[0]+=et; else m_ihcalEt_arm[1]+=et; }
-      else if (lbl == "OHCAL") { if (eta<0) m_ohcalEt_arm[0]+=et; else m_ohcalEt_arm[1]+=et; }
+      /* ---------- arm‑separated ΣE​T -------------------------------- */
+      if (lbl == "CEMC")       (eta < 0 ? m_cemcEt_arm[0] : m_cemcEt_arm[1]) += et;
+      else if (lbl == "IHCAL") (eta < 0 ? m_ihcalEt_arm[0] : m_ihcalEt_arm[1]) += et;
+      else if (lbl == "OHCAL") (eta < 0 ? m_ohcalEt_arm[0] : m_ohcalEt_arm[1]) += et;
 
-      for (const auto& t : trig)
+      /* ---------- η–φ hit‑maps (global + centrality) ---------------- */
+      std::string Hmap;
+      if      (lbl == "CEMC")  Hmap = "h_EMC_EtaPhiMap_";
+      else if (lbl == "IHCAL") Hmap = "h_IHCAL_EtaPhiMap_";
+      else if (lbl == "OHCAL") Hmap = "h_OHCAL_EtaPhiMap_";
+      else                     Hmap.clear();                // safety
+
+      if (!Hmap.empty())
       {
-        if      (lbl=="CEMC")
-          static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_EMC_EtaPhiMap_" + t])
+        for (const auto& t : trig)
+        {
+          /* global map */
+          static_cast<TH2F*>(qaHistogramsByTrigger[t][Hmap + t])
               ->Fill(iphi, ieta, e);
-        else if (lbl=="IHCAL")
-          static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_IHCAL_EtaPhiMap_" + t])
-              ->Fill(iphi, ieta, e);
-        else if (lbl=="OHCAL")
-          static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_OHCAL_EtaPhiMap_" + t])
-              ->Fill(iphi, ieta, e);
+
+          /* centrality‑tagged clone */
+          if (m_centBin >= 0)
+          {
+            int lo = 0, hi = 100;
+            for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+              if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+              { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
+            std::ostringstream k;
+            k << Hmap.substr(0, Hmap.size() - 1)     // drop trailing ‘_’
+              << '_' << lo << '_' << hi << '_' << t;
+
+            auto it = qaHistogramsByTrigger[t].find(k.str());
+            if (it != qaHistogramsByTrigger[t].end())
+              static_cast<TH2F*>(it->second)->Fill(iphi, ieta, e);
+          }
+        }
       }
 
-      /* ------------------------------------------------------------------
-       * vn accumulators  (harmonics n = 1,2,3) – one entry per pT bin
-       * ----------------------------------------------------------------*/
+      /* ----------------------------------------------------------------
+       *  v​n accumulators  (harmonics n = 1, 2, 3) – one entry / pT bin
+       * -------------------------------------------------------------- */
       int ptBin = -1;
-      for (std::size_t b=0; b<m_ptBins.size(); ++b)
+      for (std::size_t b = 0; b < m_ptBins.size(); ++b)
         if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
         { ptBin = static_cast<int>(b); break; }
 
@@ -1051,36 +1146,38 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
       {
         const double phi = tg ? tg->get_phi() : 0.;
 
-        const double c1 = std::cos(phi),     s1 = std::sin(phi);
-        const double c2 = c1*c1 - s1*s1;     // cos 2φ
-        const double s2 = 2*c1*s1;           // sin 2φ
-        const double c3 = c1*c2 - s1*s2;     // cos 3φ
-        const double s3 = s1*c2 + c1*s2;     // sin 3φ
+        const double c1 = std::cos(phi),  s1 = std::sin(phi);
+        const double c2 = c1 * c1 - s1 * s1;          // cos 2φ
+        const double s2 = 2.0 * c1 * s1;              // sin 2φ
+        const double c3 = c1 * c2 - s1 * s2;          // cos 3φ
+        const double s3 = s1 * c2 + c1 * s2;          // sin 3φ
 
         auto accumulate = [&](const std::string& det)
         {
           auto& a = m_flowAcc[det][ptBin];
           a.sumW  += et;
-          a.qx[1] += et*c1;  a.qy[1] += et*s1;
-          a.qx[2] += et*c2;  a.qy[2] += et*s2;
-          a.qx[3] += et*c3;  a.qy[3] += et*s3;
+          a.qx[1] += et * c1;  a.qy[1] += et * s1;
+          a.qx[2] += et * c2;  a.qy[2] += et * s2;
+          a.qx[3] += et * c3;  a.qy[3] += et * s3;
         };
 
-        accumulate(lbl);                              // native subsystem
-        if (lbl=="IHCAL" || lbl=="OHCAL") accumulate("HCAL");
+        accumulate(lbl);                         // native subsystem
+        if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL");
         accumulate("ALL");
       }
-    } // tower loop
+    } /* tower loop */
 
-    LOG(3, CLR_GREEN, "    " << lbl << " : " << nHit
-                             << " fired, ΣE = " << sumE);
-  }   // detector loop
+    LOG(3, CLR_GREEN, "    " << lbl << " : "
+                             << nHit << " fired, ΣE = " << sumE);
+  }   /* detector loop */
 
-  /* EMC clusters ------------------------------------------------------ */
+  /* ------------------------------------------------------------------ */
+  /* 2.  EMC clusters – simple E spectrum                               */
+  /* ------------------------------------------------------------------ */
   if (!m_clus) return;
+
   RawClusterContainer::ConstRange cr = m_clus->getClusters();
-  LOG(3, CLR_GREEN, "    EMC clusters : "
-                    << std::distance(cr.first, cr.second));
+  LOG(3, CLR_GREEN, "    EMC clusters : " << std::distance(cr.first, cr.second));
 
   for (auto it = cr.first; it != cr.second; ++it)
     for (const auto& t : trig)
@@ -1089,66 +1186,80 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 }
 
 
+
 //==========================================================================
-//  doSepdQA – sEPD charge, hit‑map & event‑plane QA   (Ψ₂  &  Ψ₃ South)
+//  doSepdQA – sEPD charge, hit‑map & event‑plane QA
+//            (Ψ1, Ψ2, Ψ3 for both arms;   South planes used as reference)
 //==========================================================================
-void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
+void
+emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 {
-  /* 0. sanity --------------------------------------------------------- */
   LOG(2, CLR_BLUE, "[doSepdQA] ===============================================");
   if (!m_sepd || !m_epdgeom)
   { LOG(1, CLR_YELLOW, "[doSepdQA] SEPD nodes missing – skip"); return; }
 
-  /* 1. initialisation ------------------------------------------------- */
+  /* 1. initialise ---------------------------------------------------- */
   m_sepdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
-  float qxS=0., qyS=0., qxN=0., qyN=0.;       // harmonic 2
-  float qx3S=0., qy3S=0.;                     // harmonic 3 (South)
 
-  /* 2. tower loop ----------------------------------------------------- */
+  /*  Q‑vector accumulators  ----------------------------------------- */
+  float qx1S=0., qy1S=0., qx1N=0., qy1N=0.;   // harmonic 1
+  float qx2S=0., qy2S=0., qx2N=0., qy2N=0.;   // harmonic 2
+  float qx3S=0., qy3S=0., qx3N=0., qy3N=0.;   // harmonic 3
+
+  /* 2. tower loop ---------------------------------------------------- */
   const auto nChan = m_sepd->size();
-  for (unsigned ch=0; ch<nChan; ++ch)
+  for (unsigned ch = 0; ch < nChan; ++ch)
   {
-    if (ch>=744) continue;                          // electronics limit
+    if (ch >= 744) continue;                           // electronics limit
     auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
-    const double w = ti->get_energy();            if (w<=0) continue;
+    const double w = ti->get_energy();               if (w <= 0) continue;
 
     const unsigned key = m_epdKey[ch];
-    if (key==std::numeric_limits<unsigned>::max()) continue;
+    if (key == std::numeric_limits<unsigned>::max()) continue;
 
-    const int    arm = TowerInfoDefs::get_epd_arm(key); // 0=S,1=N
+    const int    arm = TowerInfoDefs::get_epd_arm(key);  // 0 = S, 1 = N
     const double phi = m_epdgeom->get_phi(key);
     const double r   = m_epdgeom->get_r  (key);
 
-    /* hit‑maps ------------------------------------------------------- */
-    const std::string hp = (arm==0) ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_";
-    const double ph = (phi<0) ? phi+2*M_PI : phi;
-    for (const auto& t: trig)
-      static_cast<TH2F*>(qaHistogramsByTrigger[t][hp+t])->Fill(ph,r,w);
+    /* hit‑maps ------------------------------------------------------ */
+    const std::string hp = (arm == 0) ? "h_sEPD_Hitmap_South_" : "h_sEPD_Hitmap_North_";
+    const double phPlot = (phi < 0) ? phi + 2 * M_PI : phi;  // [0,2π) for plotting
+    for (const auto& t : trig)
+      static_cast<TH2F*>(qaHistogramsByTrigger[t][hp + t])->Fill(phPlot, r, w);
 
-    /* harmonic‑2 Q‑vectors ------------------------------------------ */
-    const double c2 = std::cos(2*phi), s2 = std::sin(2*phi);
-    if (arm==0) { qxS+=w*c2; qyS+=w*s2; ++nFiredS; }
-    else        { qxN+=w*c2; qyN+=w*s2; ++nFiredN; }
+    /* harmonic‑1 / 2 / 3 Q‑vectors --------------------------------- */
+    const double c1 = std::cos(      phi), s1 = std::sin(      phi);
+    const double c2 = std::cos(2.0 * phi), s2 = std::sin(2.0 * phi);
+    const double c3 = std::cos(3.0 * phi), s3 = std::sin(3.0 * phi);
 
-    /* harmonic‑3 (South only) --------------------------------------- */
-    if (arm==0)
+    if (arm == 0)          /* South (reference) */
     {
-      const double c3 = std::cos(3*phi), s3 = std::sin(3*phi);
-      qx3S += w*c3;  qy3S += w*s3;
+      qx1S += w * c1;  qy1S += w * s1;
+      qx2S += w * c2;  qy2S += w * s2;
+      qx3S += w * c3;  qy3S += w * s3;
+      ++nFiredS;
+    }
+    else                   /* North */
+    {
+      qx1N += w * c1;  qy1N += w * s1;
+      qx2N += w * c2;  qy2N += w * s2;
+      qx3N += w * c3;  qy3N += w * s3;
+      ++nFiredN;
     }
 
-    /* bookkeeping ---------------------------------------------------- */
+    /* bookkeeping --------------------------------------------------- */
     m_sepdQ          += w;
     m_sepdQ_arm[arm] += w;
   }
 
-  /* 3. ΣQ histo ------------------------------------------------------- */
-  for (const auto& t: trig)
+  /* 3. ΣQ spectrum --------------------------------------------------- */
+  for (const auto& t : trig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])->Fill(m_sepdQ);
 
-  /* 4. Ψ₂ from EventPlaneReco map if available ----------------------- */
-  bool usedMap=false;
+  /* 4. ψn (n=1,2,3) -------------------------------------------------- */
+  // --- try to fetch EventPlaneReco map for ψ2 (legacy support) -------
+  bool usedMap = false;
   if (m_epmap && !m_epmap->empty())
   {
     auto* epdS = m_epmap->get(EventplaneinfoMap::sEPDS);
@@ -1157,40 +1268,59 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     {
       const auto q2S = epdS->get_qvector(2);
       const auto q2N = epdN->get_qvector(2);
-      if ((q2S.first||q2S.second) && (q2N.first||q2N.second))
+      if ((q2S.first || q2S.second) && (q2N.first || q2N.second))
       {
         Eventplaneinfov1 h;
-        m_psi2_S = h.GetPsi(q2S.first,q2S.second,2);
-        m_psi2_N = h.GetPsi(q2N.first,q2N.second,2);
+        m_psi2_S = h.GetPsi(q2S.first, q2S.second, 2);
+        m_psi2_N = h.GetPsi(q2N.first, q2N.second, 2);
         usedMap  = true;
       }
     }
   }
-  if (!usedMap)            // fallback: tower Q‑vectors
+
+  /* tower‑based fallback (all harmonics) ----------------------------- */
+  if (!usedMap)
   {
-    m_psi2_S = 0.5*std::atan2(qyS,qxS);
-    m_psi2_N = 0.5*std::atan2(qyN,qxN);
+    m_psi2_S = 0.5 * std::atan2(qy2S, qx2S);
+    m_psi2_N = 0.5 * std::atan2(qy2N, qx2N);
   }
 
-  /* 5. Ψ₃ South (tower‑based only) ----------------------------------- */
-  m_psi3_S = (std::abs(qx3S)<1e-9 && std::abs(qy3S)<1e-9) ?
-               0. : (1./3.)*std::atan2(qy3S,qx3S);
+  m_psi1_S = (std::abs(qx1S) < 1e-9 && std::abs(qy1S) < 1e-9)
+             ? 0. : std::atan2(qy1S, qx1S);
+  m_psi1_N = (std::abs(qx1N) < 1e-9 && std::abs(qy1N) < 1e-9)
+             ? 0. : std::atan2(qy1N, qx1N);
 
-  /* 6. EP QA histograms ---------------------------------------------- */
-  const double cos2dPsi = std::cos(2*(m_psi2_N-m_psi2_S));
-  for (const auto& t: trig)
+  m_psi3_S = (std::abs(qx3S) < 1e-9 && std::abs(qy3S) < 1e-9)
+             ? 0. : (1. / 3.) * std::atan2(qy3S, qx3S);
+  m_psi3_N = (std::abs(qx3N) < 1e-9 && std::abs(qy3N) < 1e-9)
+             ? 0. : (1. / 3.) * std::atan2(qy3N, qx3N);
+
+  /* 5. fill EP QA histograms ---------------------------------------- */
+  const double cos1dPsi = std::cos(    m_psi1_N - m_psi1_S);
+  const double cos2dPsi = std::cos(2 * (m_psi2_N - m_psi2_S));
+  const double cos3dPsi = std::cos(3 * (m_psi3_N - m_psi3_S));
+
+  for (const auto& t : trig)
   {
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_Psi2_sEPD"])
-        ->Fill(m_psi2_S);
-    static_cast<TProfile*>(qaHistogramsByTrigger[t]["h_Psi2_res_vs_Qsum"])
-        ->Fill(m_sepdQ, cos2dPsi);
+    auto& H = qaHistogramsByTrigger[t];
+
+    static_cast<TH1F*>(H["h_Psi1_sEPD"])->Fill(m_psi1_S);
+    static_cast<TH1F*>(H["h_Psi2_sEPD"])->Fill(m_psi2_S);
+    static_cast<TH1F*>(H["h_Psi3_sEPD"])->Fill(m_psi3_S);
+
+    static_cast<TProfile*>(H["h_Psi1_res_vs_Qsum"])->Fill(m_sepdQ, cos1dPsi);
+    static_cast<TProfile*>(H["h_Psi2_res_vs_Qsum"])->Fill(m_sepdQ, cos2dPsi);
+    static_cast<TProfile*>(H["h_Psi3_res_vs_Qsum"])->Fill(m_sepdQ, cos3dPsi);
   }
 
-  LOG(3, CLR_GREEN, "    SEPD ΣQ="<<m_sepdQ
-                     <<"  Ψ2(S)="<<m_psi2_S
-                     <<"  Ψ3(S)="<<m_psi3_S
-                     <<"  hits(S,N)="<<nFiredS<<','<<nFiredN);
-  LOG(4, CLR_BLUE,  "[doSepdQA] ===============================================");
+  /* 6. verbose summary ---------------------------------------------- */
+  LOG(3, CLR_GREEN,
+      "    SEPD ΣQ=" << m_sepdQ
+      << "  Ψ1(S)=" << m_psi1_S
+      << "  Ψ2(S)=" << m_psi2_S
+      << "  Ψ3(S)=" << m_psi3_S
+      << "  hits(S,N)=" << nFiredS << ',' << nFiredN);
+  LOG(4, CLR_BLUE, "[doSepdQA] ===============================================");
 }
 
 
@@ -1637,22 +1767,34 @@ emcal_sepdCorrelator::getMaxJetEt(JetContainer* jets) const
 
 
 // ----------------------------------------------------------------------
-//  doJetQA – fill jet QA histograms (max‑E_T, 3‑D E_T‑area‑Nconst,
-//            and 2‑D leading‑vs‑sub) – COMPLETE REWRITE
+//  doJetQA – fill jet QA histograms
+//            (max‑E_T, shape, lead–sub  +  v_n^{jet})
 // ----------------------------------------------------------------------
-int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
-                                  const std::vector<std::string>& trig)
+int
+emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
+                              const std::vector<std::string>& trig)
 {
   LOG(4, CLR_BLUE, "  [doJetQA] – entering");
 
   /* ------------------------------------------------------------------ */
-  /* 1.  Scan every configured jet radius                               */
-  /*     – store                                                         *
-  *          • max‑E_T                                                   *
-  *          • ptrs to leading & sub‑leading jets                        */
+  /* 0. Centrality slice tag & reference planes                         */
   /* ------------------------------------------------------------------ */
-  std::unordered_map<std::string, float>                      maxJetEt;   // "r02"→E_T
-  std::unordered_map<std::string, std::array<const Jet*, 2>>  topTwoJets; // "r02"→{lead,sub}
+  int lo = 0, hi = 100;
+  if (m_centBin >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+      { lo = m_centEdges[i];  hi = m_centEdges[i + 1]; break; }
+
+  const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
+
+  /* reference angles from sEPD South (index = harmonic) */
+  const double psi[4] = {0., m_psi1_S, m_psi2_S, m_psi3_S};
+
+  /* ------------------------------------------------------------------ */
+  /* 1.  Scan every configured jet radius                               */
+  /* ------------------------------------------------------------------ */
+  std::unordered_map<std::string, float>                     maxJetEt;
+  std::unordered_map<std::string, std::array<const Jet*, 2>> topTwoJets;
 
   for (const auto& [radKey, nodeName] : kJetRadii)
   {
@@ -1668,90 +1810,105 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
     const Jet* lead = nullptr;
     const Jet* sub  = nullptr;
 
+    /* ---------- loop over *all* jets:                                *
+     *            – select lead/sub for QA shapes                       *
+     *            – apply |η|>3 gap and fill v_n profiles               */
     for (const Jet* j : *jets)
     {
       if (!j) continue;
+
+      /* keep track of two highest‑E_T jets (no η gap here) */
       if (!lead || j->get_et() > lead->get_et()) { sub = lead;  lead = j; }
       else if (!sub  || j->get_et() > sub ->get_et()) { sub = j; }
-    }
+
+      /* === jet flow ================================================ */
+      if (std::abs(j->get_eta()) < 3.0) continue;   // η‑gap vs. SEPD
+
+      const double phi = j->get_phi();
+      const double pt  = j->get_pt();
+      double vn[4] = {0.};
+      for (int n : {1, 2, 3})
+        vn[n] = std::cos(n * (phi - psi[n]));
+
+      /* fill one profile per active trigger ------------------------- */
+      for (const auto& t : trig)
+      {
+        auto& H = qaHistogramsByTrigger[t];
+
+        std::ostringstream k1, k2, k3;
+        k1 << "p_v1_JET_" << radKey << tag << '_' << t;
+        k2 << "p_v2_JET_" << radKey << tag << '_' << t;
+        k3 << "p_v3_JET_" << radKey << tag << '_' << t;
+
+        if (auto it = H.find(k1.str()); it != H.end())
+          static_cast<TProfile*>(it->second)->Fill(pt, vn[1]);
+        if (auto it = H.find(k2.str()); it != H.end())
+          static_cast<TProfile*>(it->second)->Fill(pt, vn[2]);
+        if (auto it = H.find(k3.str()); it != H.end())
+          static_cast<TProfile*>(it->second)->Fill(pt, vn[3]);
+      }
+    } // jet loop
 
     const float etMax = lead ? static_cast<float>(lead->get_et()) : 0.f;
-
     maxJetEt  [radKey] = etMax;
     topTwoJets[radKey] = {lead, sub};
 
     LOG(5, CLR_GREEN, "      max E_T = " << etMax << " GeV");
-  }
+  } // radii loop (jet scan)
 
   /* ------------------------------------------------------------------ */
-  /* 2.  Centrality slice tag                                           */
-  /* ------------------------------------------------------------------ */
-  int lo = 0, hi = 100;
-  if (m_centBin >= 0)
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i];  hi = m_centEdges[i + 1]; break; }
-
-  const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
-  LOG(5, CLR_CYAN, "    centrality slice = " << lo << "–" << hi << " % (tag '" << tag << "')");
-
-  /* ------------------------------------------------------------------ */
-  /* 3.  Fill all histograms trigger‑by‑trigger                         */
+  /* 2.  Fill shape / max‑E_T histograms (uses topTwoJets)              */
   /* ------------------------------------------------------------------ */
   for (const auto& [radKey, etMax] : maxJetEt)
   {
-    const std::string base1 = "h_maxJetEt_"            + radKey;
-    const std::string base2 = "h_leadEt_vs_subEt_"     + radKey;
-    const std::string base3 = "h_jetEt_area_nConst_"   + radKey;
+    const std::string base1 = "h_maxJetEt_"          + radKey;
+    const std::string base2 = "h_leadEt_vs_subEt_"   + radKey;
+    const std::string base3 = "h_jetEt_area_nConst_" + radKey;
 
     for (const auto& t : trig)
     {
       auto& H = qaHistogramsByTrigger[t];
 
-      /* ---- 3.1 1‑D max‑E_T ---------------------------------------- */
+      /* ---- 2.1 1‑D max‑E_T ---------------------------------------- */
       if (auto* hG = dynamic_cast<TH1F*>(H[base1 + "_" + t])) hG->Fill(etMax);
-
       if (auto it = H.find(base1 + tag + "_" + t); it != H.end())
         static_cast<TH1F*>(it->second)->Fill(etMax);
 
-      /* ---- 3.2 3‑D & 2‑D jet‑shape histograms --------------------- */
+      /* ---- 2.2 jet‑shape histograms ------------------------------- */
       const auto& jets = topTwoJets[radKey];
 
-      /* 3‑D: fill for lead & sub separately (if they exist) */
-      for (const Jet* j : jets)
+      for (const Jet* j : jets)                       // 3‑D shape
       {
         if (!j) continue;
-        const float et   = j->get_et();
-        const float area = j->get_property(Jet::PROPERTY::prop_area);
-        const int   nC   = static_cast<int>(j->size_comp());            // constituents
-
-        if (Verbosity() >= 6)
-            LOG(6, CLR_CYAN, "      jet Et=" << et
-                              << "  area=" << area
-                              << "  nConst=" << nC);
-        static_cast<TH3F*>(H[base3 + "_" + t])->Fill(et, area, nC);
+        static_cast<TH3F*>(H[base3 + "_" + t])
+            ->Fill(j->get_et(),
+                   j->get_property(Jet::PROPERTY::prop_area),
+                   static_cast<int>(j->size_comp()));
 
         if (auto it3 = H.find(base3 + tag + "_" + t); it3 != H.end())
-          static_cast<TH3F*>(it3->second)->Fill(et, area, nC);
+          static_cast<TH3F*>(it3->second)
+              ->Fill(j->get_et(),
+                     j->get_property(Jet::PROPERTY::prop_area),
+                     static_cast<int>(j->size_comp()));
       }
 
-      /* 2‑D leading vs sub: need both jets */
+      /* 2‑D lead‑vs‑sub: need both jets ----------------------------- */
       if (jets[0] && jets[1])
       {
-        const float etL = jets[0]->get_et();
-        const float etS = jets[1]->get_et();
-
-        static_cast<TH2F*>(H[base2 + "_" + t])->Fill(etL, etS);
+        static_cast<TH2F*>(H[base2 + "_" + t])
+            ->Fill(jets[0]->get_et(), jets[1]->get_et());
 
         if (auto it2 = H.find(base2 + tag + "_" + t); it2 != H.end())
-          static_cast<TH2F*>(it2->second)->Fill(etL, etS);
+          static_cast<TH2F*>(it2->second)
+              ->Fill(jets[0]->get_et(), jets[1]->get_et());
       }
     } // trigger loop
-  }   // radius loop
+  }   // radii loop (hist fill)
 
   LOG(4, CLR_GREEN, "  [doJetQA] – finished OK");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 void emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
 {
@@ -1803,9 +1960,12 @@ int emcal_sepdCorrelator::ResetEvent(PHCompositeNode*)
 
   m_sepdQ  = 0.;
   m_mbdQ   = 0.;
-  m_psi2_S = 0.;
-  m_psi3_S = 0.;
+  m_psi1_N = 0.;
+  m_psi1_S = 0.;
   m_psi2_N = 0.;
+  m_psi2_S = 0.;
+  m_psi3_N = 0.;
+  m_psi3_S = 0.;
   m_centBin = -1;
   for (auto& kv : m_calo) kv.second.sumE = 0.;
 

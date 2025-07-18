@@ -126,13 +126,13 @@ class emcal_sepdCorrelator : public SubsysReco
   std::size_t       event_count = 0;
 
   // --- trigger bookkeeping -----------------------------------------------
-    std::map<std::string, std::string> triggerNameMap {
+  std::map<std::string, std::string> triggerNameMap {
         {"MBD N&S >= 2", "MBD_NandS_geq_2"}};
   std::map<std::string, HistMap>     qaHistogramsByTrigger;
 
   // --- analysis cuts ------------------------------------------------------
-  const std::vector<float>               m_asymCuts {0.7f};
-  const std::vector<float>               m_chi2Cuts {4.f};
+  const std::vector<float>               m_asymCuts {0.5f, 0.7f};
+  const std::vector<float>               m_chi2Cuts {1.f, 4.f};
   const std::vector<float>               m_minClusE {2.f};
   const std::vector<std::pair<float,float>> m_ptBins {
         {2,4},{4,6},{6,8},{8,10},{10,12},{12,15},{15,20},{20,30} };
@@ -172,6 +172,9 @@ class emcal_sepdCorrelator : public SubsysReco
   double m_sepdQ  = 0.,  m_mbdQ  = 0.;     // integrated charges
   double m_psi2_N = 0.,  m_psi2_S = 0.;    // event‑plane angles (rad)
 
+  double m_psi1_N = 0.,  m_psi1_S = 0.;    // Ψ1 North / South
+  double m_psi3_N = 0.,  m_psi3_S = 0.;;   // Ψ3 North / South
+    
   // --- per‑arm caches (0 = South / η<0, 1 = North / η>0) ------------------
   double m_sepdQ_arm  [2] {0., 0.};
   double m_mbdQ_arm   [2] {0., 0.};
@@ -218,7 +221,7 @@ class emcal_sepdCorrelator : public SubsysReco
       void   reset() { sumW = 0.; std::fill_n(qx,4,0.); std::fill_n(qy,4,0.); }
   };
   std::map<std::string, std::vector<FlowAcc>>  m_flowAcc;  // "CEMC" → 8 pT bins
-  double m_psi3_S = 0.;                                    // Ψ3 from sEPD South
+
   void   bookFlowQA(const std::string& trig, HistMap& H);
   void   fillFlowHists(const std::vector<std::string>& trig);
 
