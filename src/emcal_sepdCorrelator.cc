@@ -59,7 +59,8 @@
 #define CLR_BLUE   "\033[1;34m"
 #define CLR_CYAN   "\033[1;36m"
 #define CLR_GREEN  "\033[1;32m"
-#define CLR_YELLOW "\033[1;33m"
+#define CLR_YELLOW "\033[1;33m"v
+#define CLR_MAGENTA "\033[1;35m"
 #define CLR_RESET  "\033[0m"
 
 #undef  LOG
@@ -373,6 +374,13 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
                                       "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
                                       nC, 0, cMax, nE, 0, eMax);
 
+  /* --- ΣQ(sEPD South) × ΣQ(sEPD North) ----------------------- */
+  H["h_SEPD_S_vs_SEPD_N"] =
+        book2(("h_SEPD_S_vs_SEPD_N_" + trig).c_str(),
+              "#SigmaQ_{sEPD South}  vs  #SigmaQ_{sEPD North};"
+              "#SigmaQ_{South} [ADC];#SigmaQ_{North} [ADC]",
+              nC, 0, cMax,   // X‑axis = South arm
+              nC, 0, cMax);  // Y‑axis = North arm
   /* --------------------------------------------------------------------
    * 2)  centrality‑binned clones – one per {lo,hi} range the user gave
    * ------------------------------------------------------------------ */
@@ -419,6 +427,9 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
     addClone("h_SEPD_N_vs_CEMC_North",lo,hi,
              "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
              nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_S_vs_SEPD_N", lo,hi,
+               "#SigmaQ_{sEPD South}  vs  #SigmaQ_{sEPD North}",
+               nC,0,cMax, nC,0,cMax);
   }
 }
 
@@ -592,31 +603,58 @@ emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
                  nbEt, 0, etMax, nbEt, 0, etMax);
 
     /* -------- centrality clones for the three objects -------------- */
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+    /* (a) mandatory 0‑100 % slice – always present ------------------ */
     {
-      const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
-      std::ostringstream n1, n2, n3;
-      n1 << base1 << '_' << lo << '_' << hi << '_' << trig;
-      n2 << base2 << '_' << lo << '_' << hi << '_' << trig;
-      n3 << base3 << '_' << lo << '_' << hi << '_' << trig;
+        std::ostringstream n1, n2, n3;
+        n1 << base1 << "_0_100_" << trig;
+        n2 << base2 << "_0_100_" << trig;
+        n3 << base3 << "_0_100_" << trig;
 
-      H[n1.str()] = new TH1F(n1.str().c_str(),
-                             ("max jet E_{T} (" + std::string(r.first) +
-                              ");E_{T} [GeV]").c_str(),
-                             nbEt, 0, etMax);
+        H[n1.str()] = new TH1F(n1.str().c_str(),
+                               ("max jet E_{T} (" + std::string(r.first) +
+                                ");E_{T} [GeV]").c_str(),
+                               nbEt, 0, etMax);
 
-      H[n2.str()] = new TH2F(n2.str().c_str(),
-                             ("Leading vs sub‑leading jet E_{T} (" +
-                              std::string(r.first) +
-                              ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
-                             nbEt, 0, etMax, nbEt, 0, etMax);
+        H[n2.str()] = new TH2F(n2.str().c_str(),
+                               ("Leading vs sub‑leading jet E_{T} (" +
+                                std::string(r.first) +
+                                ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
+                               nbEt, 0, etMax, nbEt, 0, etMax);
 
-      H[n3.str()] = new TH3F(n3.str().c_str(),
-                             ("Jet E_{T} vs area vs N_{const} (" +
-                              std::string(r.first) +
-                              ");E_{T} [GeV];Area;N_{const}").c_str(),
-                             nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
+        H[n3.str()] = new TH3F(n3.str().c_str(),
+                               ("Jet E_{T} vs area vs N_{const} (" +
+                                std::string(r.first) +
+                                ");E_{T} [GeV];Area;N_{const}").c_str(),
+                               nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
     }
+
+      /* (b) user‑defined centrality slices ---------------------------- */
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      {
+        const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
+        std::ostringstream n1, n2, n3;
+        n1 << base1 << '_' << lo << '_' << hi << '_' << trig;
+        n2 << base2 << '_' << lo << '_' << hi << '_' << trig;
+        n3 << base3 << '_' << lo << '_' << hi << '_' << trig;
+
+        H[n1.str()] = new TH1F(n1.str().c_str(),
+                               ("max jet E_{T} (" + std::string(r.first) +
+                                ");E_{T} [GeV]").c_str(),
+                               nbEt, 0, etMax);
+
+        H[n2.str()] = new TH2F(n2.str().c_str(),
+                               ("Leading vs sub‑leading jet E_{T} (" +
+                                std::string(r.first) +
+                                ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
+                               nbEt, 0, etMax, nbEt, 0, etMax);
+
+        H[n3.str()] = new TH3F(n3.str().c_str(),
+                               ("Jet E_{T} vs area vs N_{const} (" +
+                                std::string(r.first) +
+                                ");E_{T} [GeV];Area;N_{const}").c_str(),
+                               nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
+    }
+
 
     /* =================================================================
      * (C)  v_n^{jet}(p_T)  profiles   (n = 1,2,3)
@@ -715,7 +753,7 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
 
   if (!fetchNodes(topNode))
   {
-    LOG(4, CLR_YELLOW, "    mandatory node missing → ABORTEVENT");
+    LOG(4, CLR_YELLOW, "    mandatory node missing OR not auau minbias! → ABORTEVENT");
     return Fun4AllReturnCodes::ABORTEVENT;
   }
 
@@ -1067,127 +1105,139 @@ emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
   return h;
 }
 
-//==========================================================================
-//  doSepdQA – sEPD charge, hit‑maps (global + centrality) & event‑plane QA
-//            (Ψ1, Ψ2, Ψ3 – South planes used as reference)
-//==========================================================================
+// ==========================================================================
+//  doSepdQA – charge / hit‑maps (global & centrality) + Ψ1,Ψ2,Ψ3 QA
+//             VERBOSE & RUNTIME‑SAFE, 2025‑07‑18   [FIXED BUILD ERRORS]
+// ==========================================================================
 void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 {
-  LOG(2, CLR_BLUE, "[doSepdQA] ===============================================");
+  LOG(2, CLR_BLUE, "[doSepdQA] ──────────────────────────────────────────────");
 
   /* ------------------------------------------------------------------ */
-  /* 0. Sanity check on required nodes                                  */
+  /* 0. Sanity checks on mandatory nodes                                */
   /* ------------------------------------------------------------------ */
   if (!m_sepd || !m_epdgeom)
   {
-    LOG(1, CLR_YELLOW, "[doSepdQA] SEPD nodes missing – skip");
+    LOG(1, CLR_YELLOW,
+        "[doSepdQA] mandatory SEPD nodes missing "
+        "(m_sepd=" << m_sepd << ", m_epdgeom=" << m_epdgeom << ") – SKIP");
     return;
   }
 
   /* ------------------------------------------------------------------ */
-  /* 1. Event‑level initialisation                                      */
+  /* Helper utilities (local lambdas)                                   */
+  /* ------------------------------------------------------------------ */
+  /* warnOnce now captures `this`, so LOG() can safely call Verbosity() */
+  auto warnOnce = [this](const std::string& key)
+  {
+    static std::unordered_set<std::string> issued;
+    if (issued.insert(key).second)
+      LOG(1, CLR_YELLOW, "      [WARN] histogram key \"" << key
+                                 << "\" is missing – first occurrence");
+  };
+
+  auto safeFillH1 = [&](TObject* h, double x)
+  { if (!h) return false; static_cast<TH1*>(h)->Fill(x); return true; };
+
+  /*  Works for TH2* *or* TProfile*.  Falls back silently if unknown.   */
+  auto safeFillH2 = [&](TObject* h, double x, double y, double w = 1.)
+  {
+    if (!h) return false;
+    if (auto* p = dynamic_cast<TProfile*>(h)) { p->Fill(x, y, w); return true; }
+    if (auto* h2 = dynamic_cast<TH2*>(h))     { h2->Fill(x, y, w); return true; }
+    return false;
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Per‑event initialisation                                        */
   /* ------------------------------------------------------------------ */
   m_sepdQ = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
 
-  float qx1S = 0., qy1S = 0.,   qx1N = 0., qy1N = 0.;   // harmonic 1
-  float qx2S = 0., qy2S = 0.,   qx2N = 0., qy2N = 0.;   // harmonic 2
-  float qx3S = 0., qy3S = 0.,   qx3N = 0., qy3N = 0.;   // harmonic 3
+  float qxS[4] = {0}, qyS[4] = {0};
+  float qxN[4] = {0}, qyN[4] = {0};
 
   /* ------------------------------------------------------------------ */
-  /* 2. Work out the event’s centrality slice once                      */
+  /* 2. Determine centrality slice                                      */
   /* ------------------------------------------------------------------ */
-  int lo = 0, hi = 100;                                // default (min‑bias)
+  int lo = 0, hi = 100;                       // default = min‑bias
   if (m_centBin >= 0)
+  {
+    bool found = false;
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
       if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; found = true; break; }
+    if (!found)
+      LOG(1, CLR_YELLOW, "    centrality bin " << m_centBin
+                          << " not within configured edges – treating as MB");
+  }
+  const std::string sliceTag = '_' + std::to_string(lo) + '_' +
+                               std::to_string(hi);
 
   /* ------------------------------------------------------------------ */
-  /* 3. Loop over SEPD channels                                         */
+  /* 3. Channel loop                                                    */
   /* ------------------------------------------------------------------ */
-  const auto nChan = m_sepd->size();
-  for (unsigned ch = 0; ch < nChan; ++ch)
+  for (unsigned ch = 0, nChan = m_sepd->size(); ch < nChan; ++ch)
   {
-    /* hardware guard – last FED channel is 743                        */
-    if (ch >= 744) continue;
+    if (ch >= 744) continue;                         // hardware guard
 
-    auto* ti = m_sepd->get_tower_at_channel(ch);
-    if (!ti) continue;
-
-    const double w = ti->get_energy();        // calibrated ADC → charge
-    if (w <= 0.) continue;
+    auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
+    const double w = ti->get_energy();              if (w <= 0.) continue;
 
     const unsigned key = m_epdKey[ch];
     if (key == std::numeric_limits<unsigned>::max()) continue;
 
-    const int    arm = TowerInfoDefs::get_epd_arm(key);      // 0 = S, 1 = N
+    const int    arm = TowerInfoDefs::get_epd_arm(key); // 0=S,1=N
     const double phi = m_epdgeom->get_phi(key);
     const double r   = m_epdgeom->get_r  (key);
+    const double phiPlot = (phi < 0) ? phi + 2*M_PI : phi; // [0,2π)
 
-    /* ---- (a) fill hit‑maps (global + centrality) ------------------ */
-    const std::string baseKey = (arm == 0 ?
-                                   "h_sEPD_Hitmap_South_" :
-                                   "h_sEPD_Hitmap_North_");
-    const double phPlot = (phi < 0) ? phi + 2. * M_PI : phi;     // [0,2π)
-
-    for (const auto& t : trig)
+    /* ---- 3a. Hit‑maps (global + slice) ---------------------------- */
+    const std::string baseKey = arm==0 ? "h_sEPD_Hitmap_South_"
+                                       : "h_sEPD_Hitmap_North_";
+    for (const std::string& t : trig)
     {
-        /* global – count one hit per tile */
-        static_cast<TH2F*>(qaHistogramsByTrigger[t][baseKey + t])
-            ->Fill(phPlot, r, 1.0);
+      auto& H = qaHistogramsByTrigger[t];
 
-        /* centrality clone */
-        if (m_centBin >= 0)
-        {
-          std::ostringstream k;
-          k << baseKey.substr(0, baseKey.size() - 1)     // drop trailing ‘_’
-            << '_' << lo << '_' << hi << '_' << t;
+      if (!safeFillH2(H[baseKey + t], phiPlot, r))
+          warnOnce(baseKey + t);
 
-          auto it = qaHistogramsByTrigger[t].find(k.str());
-          if (it != qaHistogramsByTrigger[t].end())
-            static_cast<TH2F*>(it->second)->Fill(phPlot, r, 1.0);
-        }
+      const std::string keyC = baseKey.substr(0,baseKey.size()-1) +
+                               sliceTag + '_' + t;
+      auto itC = H.find(keyC);
+      if (itC!=H.end())
+        safeFillH2(itC->second, phiPlot, r);
     }
 
+    /* ---- 3b. Q‑vector sums (n = 1,2,3) ---------------------------- */
+    const double c1 = std::cos(phi),       s1 = std::sin(phi);
+    const double c2 = std::cos(2*phi),     s2 = std::sin(2*phi);
+    const double c3 = std::cos(3*phi),     s3 = std::sin(3*phi);
 
-    /* ---- (b) harmonic‑1/2/3 Q‑vectors ----------------------------- */
-    const double c1 = std::cos(      phi), s1 = std::sin(      phi);
-    const double c2 = std::cos(2.0 * phi), s2 = std::sin(2.0 * phi);
-    const double c3 = std::cos(3.0 * phi), s3 = std::sin(3.0 * phi);
+    float* qx = (arm==0) ? qxS : qxN;
+    float* qy = (arm==0) ? qyS : qyN;
 
-    if (arm == 0)                 // South  (reference)
-    {
-      qx1S += w * c1;  qy1S += w * s1;
-      qx2S += w * c2;  qy2S += w * s2;
-      qx3S += w * c3;  qy3S += w * s3;
-      ++nFiredS;
-    }
-    else                          // North
-    {
-      qx1N += w * c1;  qy1N += w * s1;
-      qx2N += w * c2;  qy2N += w * s2;
-      qx3N += w * c3;  qy3N += w * s3;
-      ++nFiredN;
-    }
+    qx[1]+=w*c1; qy[1]+=w*s1;
+    qx[2]+=w*c2; qy[2]+=w*s2;
+    qx[3]+=w*c3; qy[3]+=w*s3;
+    (arm==0 ? ++nFiredS : ++nFiredN);
 
-    /* ---- (c) running sums ----------------------------------------- */
-    m_sepdQ            += w;
-    m_sepdQ_arm[arm]   += w;
+    /* ---- 3c. ΣQ bookkeeping --------------------------------------- */
+    m_sepdQ              += w;
+    m_sepdQ_arm[arm]     += w;
   } // channel loop
 
   /* ------------------------------------------------------------------ */
   /* 4. ΣQ spectrum (per‑event)                                         */
   /* ------------------------------------------------------------------ */
-  for (const auto& t : trig)
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerQ_SEPD"])
-        ->Fill(m_sepdQ);
+  for (const std::string& t : trig)
+    if (!safeFillH1(qaHistogramsByTrigger[t]["h_towerQ_SEPD"], m_sepdQ))
+        warnOnce("h_towerQ_SEPD_"+t);
 
   /* ------------------------------------------------------------------ */
-  /* 5. Event‑plane reconstruction                                      */
+  /* 5. Event‑plane reconstruction (Ψ1,Ψ2,Ψ3)                           */
   /* ------------------------------------------------------------------ */
-  // ---  ψ₂ : prefer Eventplaneinfo map (legacy) ------------------------
-  bool usedMap = false;
+  bool usedMap=false;
   if (m_epmap && !m_epmap->empty())
   {
     auto* epdS = m_epmap->get(EventplaneinfoMap::sEPDS);
@@ -1196,65 +1246,62 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
     {
       const auto q2S = epdS->get_qvector(2);
       const auto q2N = epdN->get_qvector(2);
-      if ((q2S.first || q2S.second) && (q2N.first || q2N.second))
+      if ((q2S.first||q2S.second) && (q2N.first||q2N.second))
       {
         Eventplaneinfov1 h;
-        m_psi2_S = h.GetPsi(q2S.first, q2S.second, 2);
-        m_psi2_N = h.GetPsi(q2N.first, q2N.second, 2);
+        m_psi2_S = h.GetPsi(q2S.first,q2S.second,2);
+        m_psi2_N = h.GetPsi(q2N.first,q2N.second,2);
         usedMap  = true;
       }
     }
   }
 
-  /* ---  fallback: tower‑based Ψn (n = 1,2,3) ------------------------- */
-  if (!usedMap)
+  if (!usedMap)    // fallback: tower‑based
   {
-    m_psi2_S = 0.5 * std::atan2(qy2S, qx2S);
-    m_psi2_N = 0.5 * std::atan2(qy2N, qx2N);
+    m_psi2_S = 0.5 * std::atan2(qyS[2],qxS[2]);
+    m_psi2_N = 0.5 * std::atan2(qyN[2],qxN[2]);
   }
 
-  m_psi1_S = (std::abs(qx1S) < 1e-9 && std::abs(qy1S) < 1e-9)
-             ? 0. : std::atan2(qy1S, qx1S);
-  m_psi1_N = (std::abs(qx1N) < 1e-9 && std::abs(qy1N) < 1e-9)
-             ? 0. : std::atan2(qy1N, qx1N);
+  m_psi1_S = (std::hypot(qxS[1],qyS[1])<1e-9) ? 0. : std::atan2(qyS[1],qxS[1]);
+  m_psi1_N = (std::hypot(qxN[1],qyN[1])<1e-9) ? 0. : std::atan2(qyN[1],qxN[1]);
 
-  m_psi3_S = (std::abs(qx3S) < 1e-9 && std::abs(qy3S) < 1e-9)
-             ? 0. : (1./3.) * std::atan2(qy3S, qx3S);
-  m_psi3_N = (std::abs(qx3N) < 1e-9 && std::abs(qy3N) < 1e-9)
-             ? 0. : (1./3.) * std::atan2(qy3N, qx3N);
+  m_psi3_S = (std::hypot(qxS[3],qyS[3])<1e-9) ? 0.
+                                              : (1./3.)*std::atan2(qyS[3],qxS[3]);
+  m_psi3_N = (std::hypot(qxN[3],qyN[3])<1e-9) ? 0.
+                                              : (1./3.)*std::atan2(qyN[3],qxN[3]);
 
   /* ------------------------------------------------------------------ */
-  /* 6. EP QA histograms                                                */
+  /* 6. QA histograms (Ψn + sub‑event resolution proxies)               */
   /* ------------------------------------------------------------------ */
-  const double cos1dPsi = std::cos(     m_psi1_N - m_psi1_S);
-  const double cos2dPsi = std::cos(2. * (m_psi2_N - m_psi2_S));
-  const double cos3dPsi = std::cos(3. * (m_psi3_N - m_psi3_S));
+  const double cos1 = std::cos( m_psi1_N - m_psi1_S);
+  const double cos2 = std::cos(2*(m_psi2_N - m_psi2_S));
+  const double cos3 = std::cos(3*(m_psi3_N - m_psi3_S));
 
-  for (const auto& t : trig)
+  for (const std::string& t : trig)
   {
     auto& H = qaHistogramsByTrigger[t];
 
-    static_cast<TH1F*>(H["h_Psi1_sEPD"])->Fill(m_psi1_S);
-    static_cast<TH1F*>(H["h_Psi2_sEPD"])->Fill(m_psi2_S);
-    static_cast<TH1F*>(H["h_Psi3_sEPD"])->Fill(m_psi3_S);
+    safeFillH1(H["h_Psi1_sEPD"], m_psi1_S);
+    safeFillH1(H["h_Psi2_sEPD"], m_psi2_S);
+    safeFillH1(H["h_Psi3_sEPD"], m_psi3_S);
 
-    static_cast<TProfile*>(H["h_Psi1_res_vs_Qsum"])->Fill(m_sepdQ, cos1dPsi);
-    static_cast<TProfile*>(H["h_Psi2_res_vs_Qsum"])->Fill(m_sepdQ, cos2dPsi);
-    static_cast<TProfile*>(H["h_Psi3_res_vs_Qsum"])->Fill(m_sepdQ, cos3dPsi);
+    safeFillH2(H["h_Psi1_res_vs_Qsum"], m_sepdQ, cos1);
+    safeFillH2(H["h_Psi2_res_vs_Qsum"], m_sepdQ, cos2);
+    safeFillH2(H["h_Psi3_res_vs_Qsum"], m_sepdQ, cos3);
   }
 
   /* ------------------------------------------------------------------ */
-  /* 7. Verbose summary                                                 */
+  /* 7. Summary                                                         */
   /* ------------------------------------------------------------------ */
   LOG(3, CLR_GREEN,
-      "    SEPD ΣQ=" << m_sepdQ
-      << "  Ψ1(S)="  << m_psi1_S
-      << "  Ψ2(S)="  << m_psi2_S
-      << "  Ψ3(S)="  << m_psi3_S
-      << "  hits(S,N)=" << nFiredS << ',' << nFiredN);
+      "    ΣQ=" << m_sepdQ
+      << "  Ψ1S=" << m_psi1_S << "  Ψ2S=" << m_psi2_S
+      << "  Ψ3S=" << m_psi3_S << "  hits(S,N)=" << nFiredS << ',' << nFiredN
+      << (usedMap ? "  (Ψ2 from EventplaneinfoMap)" : "  (Ψ2 from towers)"));
 
-  LOG(4, CLR_BLUE, "[doSepdQA] ===============================================");
+  LOG(2, CLR_BLUE, "[doSepdQA] ──────────────────────────────────────────────");
 }
+
 
 
 //==========================================================================
@@ -1781,7 +1828,11 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
                               "h_SEPD_vs_OHCAL", t);
     binsFilled[t] += safeFill(H["h_SEPD_vs_MBD"  ], m_sepdQ, m_mbdQ,
                               "h_SEPD_vs_MBD", t);
-
+      
+      
+    binsFilled[t] += safeFill(H["h_SEPD_S_vs_SEPD_N"], m_sepdQ_arm[0],
+                                m_sepdQ_arm[1],
+                                "h_SEPD_S_vs_SEPD_N", t);
     binsFilled[t] += safeFill(H["h_MBD_vs_CEMC" ], m_mbdQ, cemc ,
                               "h_MBD_vs_CEMC", t);
     binsFilled[t] += safeFill(H["h_MBD_vs_IHCAL"], m_mbdQ, ihcal,
@@ -1813,6 +1864,9 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
                              m_cemcEt_arm[0]);
     binsFilled[t] += tryCent("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1],
                              m_cemcEt_arm[1]);
+      
+    binsFilled[t] += tryCent("h_SEPD_S_vs_SEPD_N",
+                               m_sepdQ_arm[0], m_sepdQ_arm[1]);
   } // trigger loop
 
   /* —— 4. Human‑readable one‑line summary ——————————————————— */
@@ -1883,179 +1937,264 @@ emcal_sepdCorrelator::getMaxJetEt(JetContainer* jets) const
 //  doJetQA – fill jet QA histograms
 //            (max‑E_T, shape, lead–sub  +  v_n^{jet})
 // ----------------------------------------------------------------------
-int
-emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
-                              const std::vector<std::string>& trig)
+int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
+                                  const std::vector<std::string>& trig)
 {
-  LOG(4, CLR_BLUE, "  [doJetQA] – entering");
+  LOG(3, CLR_BLUE, "  [doJetQA] – entering (centBin=" << m_centBin << ")");
 
   /* ------------------------------------------------------------------ */
-  /* 0. Centrality slice tag & reference planes                         */
+  /* 0.  centrality‑slice tag & SEPD South event‑plane angles           */
   /* ------------------------------------------------------------------ */
   int lo = 0, hi = 100;
   if (m_centBin >= 0)
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
       if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i];  hi = m_centEdges[i + 1]; break; }
+      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
 
   const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
+  const double      psi[4] = {0., m_psi1_S, m_psi2_S, m_psi3_S};
 
-  /* reference angles from sEPD South (index = harmonic) */
-  const double psi[4] = {0., m_psi1_S, m_psi2_S, m_psi3_S};
+  /* one‑time warning helper ------------------------------------------ */
+  auto warnOnce = [&](const std::string& key)
+  {
+    static std::unordered_set<std::string> issued;
+    if (issued.insert(key).second)
+      LOG(1, CLR_YELLOW, "      [WARN] missing or wrong‑type histogram \"" << key << '"');
+  };
+
+  /* tiny helper for TH1 ---------------------------------------------- */
+  auto safeFillH1 = [&](TObject* o, double x)
+  { if (auto* h = dynamic_cast<TH1*>(o)) h->Fill(x); else warnOnce(o ? o->GetName() : "null"); };
 
   /* ------------------------------------------------------------------ */
-  /* 1.  Scan every configured jet radius                               */
+  /* 1.  scan each configured jet radius                                */
   /* ------------------------------------------------------------------ */
-  std::unordered_map<std::string, float>                     maxJetEt;
-  std::unordered_map<std::string, std::array<const Jet*, 2>> topTwoJets;
+  struct TwoJets { const Jet* lead = nullptr; const Jet* sub = nullptr; };
+
+  std::unordered_map<std::string,float>   maxEt;
+  std::unordered_map<std::string,TwoJets> bestPair;   // keyed by radKey
 
   for (const auto& [radKey, nodeName] : kJetRadii)
   {
-    LOG(5, CLR_BLUE, "    checking jet node '" << nodeName << "' (" << radKey << ')');
-
     JetContainer* jets = findNode::getClass<JetContainer>(topNode, nodeName);
     if (!jets)
     {
-      LOG(4, CLR_YELLOW, "    missing JetContainer '" << nodeName << "' – ABORTRUN");
+      LOG(0, CLR_YELLOW, "      [FATAL] JetContainer \"" << nodeName
+                         << "\" missing – ABORTRUN");
       return Fun4AllReturnCodes::ABORTRUN;
     }
 
-    const Jet* lead = nullptr;
-    const Jet* sub  = nullptr;
-
-    /* ---------- loop over *all* jets:                                *
-     *            – select lead/sub for QA shapes                       *
-     *            – apply |η|>3 gap and fill v_n profiles               */
+    TwoJets pair;
     for (const Jet* j : *jets)
     {
       if (!j) continue;
 
-      /* keep track of two highest‑E_T jets (no η gap here) */
-      if (!lead || j->get_et() > lead->get_et()) { sub = lead;  lead = j; }
-      else if (!sub  || j->get_et() > sub ->get_et()) { sub = j; }
+      /* leading / sub‑leading --------------------------------------- */
+      if (!pair.lead || j->get_et() > pair.lead->get_et())
+      { pair.sub = pair.lead; pair.lead = j; }
+      else if (!pair.sub || j->get_et() > pair.sub->get_et())
+      { pair.sub = j; }
 
-      /* === jet flow ================================================ */
-      if (std::abs(j->get_eta()) < 3.0) continue;   // η‑gap vs. SEPD
+      /* vn^{jet}  (|η|>3 wrt SEPD) ---------------------------------- */
+      if (std::abs(j->get_eta()) < 3.0) continue;
 
       const double phi = j->get_phi();
       const double pt  = j->get_pt();
-      double vn[4] = {0.};
-      for (int n : {1, 2, 3})
-        vn[n] = std::cos(n * (phi - psi[n]));
-
-      /* fill one profile per active trigger ------------------------- */
-      for (const auto& t : trig)
+      for (int n : {1,2,3})
       {
-        auto& H = qaHistogramsByTrigger[t];
-
-        std::ostringstream k1, k2, k3;
-        k1 << "p_v1_JET_" << radKey << tag << '_' << t;
-        k2 << "p_v2_JET_" << radKey << tag << '_' << t;
-        k3 << "p_v3_JET_" << radKey << tag << '_' << t;
-
-        if (auto it = H.find(k1.str()); it != H.end())
-          static_cast<TProfile*>(it->second)->Fill(pt, vn[1]);
-        if (auto it = H.find(k2.str()); it != H.end())
-          static_cast<TProfile*>(it->second)->Fill(pt, vn[2]);
-        if (auto it = H.find(k3.str()); it != H.end())
-          static_cast<TProfile*>(it->second)->Fill(pt, vn[3]);
+        const double vn = std::cos(n * (phi - psi[n]));
+        for (const auto& t : trig)
+        {
+          std::ostringstream k; k << "p_v" << n << "_JET_"
+                                  << radKey << tag << '_' << t;
+          auto& H = qaHistogramsByTrigger[t];
+          if (auto it = H.find(k.str()); it != H.end())
+            static_cast<TProfile*>(it->second)->Fill(pt, vn);
+        }
       }
-    } // jet loop
+    }
 
-    const float etMax = lead ? static_cast<float>(lead->get_et()) : 0.f;
-    maxJetEt  [radKey] = etMax;
-    topTwoJets[radKey] = {lead, sub};
+    maxEt   [radKey] = pair.lead ? pair.lead->get_et() : 0.f;
+    bestPair[radKey] = pair;
 
-    LOG(5, CLR_GREEN, "      max E_T = " << etMax << " GeV");
-  } // radii loop (jet scan)
+    LOG(4, CLR_GREEN, "      radius " << radKey
+                        << "  jets=" << jets->size()
+                        << "  maxE_T=" << maxEt[radKey]);
+  }
 
   /* ------------------------------------------------------------------ */
-  /* 2.  Fill shape / max‑E_T histograms (uses topTwoJets)              */
+  /* 2.  histogram fills                                                */
   /* ------------------------------------------------------------------ */
-  for (const auto& [radKey, etMax] : maxJetEt)
+  for (const auto& [radKey, etMax] : maxEt)
   {
-    const std::string base1 = "h_maxJetEt_"          + radKey;
-    const std::string base2 = "h_leadEt_vs_subEt_"   + radKey;
-    const std::string base3 = "h_jetEt_area_nConst_" + radKey;
+    const std::string b1 = "h_maxJetEt_"          + radKey;
+    const std::string b2 = "h_leadEt_vs_subEt_"   + radKey;
+    const std::string b3 = "h_jetEt_area_nConst_" + radKey;
+    const TwoJets&    J  = bestPair.at(radKey);
 
-    for (const auto& t : trig)
+    /* string "r02" → 0.2 -------------------------------------------- */
+    const double Rguess = (radKey.size() > 1 && radKey[0]=='r')
+                            ? 0.1 * std::stod(radKey.substr(1)) : 0.4;
+    const double areaFallback = M_PI * Rguess * Rguess;          // π R²
+
+    for (const std::string& trg : trig)
     {
-      auto& H = qaHistogramsByTrigger[t];
+      auto& H = qaHistogramsByTrigger[trg];
 
-      /* ---- 2.1 1‑D max‑E_T ---------------------------------------- */
-      if (auto* hG = dynamic_cast<TH1F*>(H[base1 + "_" + t])) hG->Fill(etMax);
-      if (auto it = H.find(base1 + tag + "_" + t); it != H.end())
-        static_cast<TH1F*>(it->second)->Fill(etMax);
+      /* 2.1 max‑E_T -------------------------------------------------- */
+      safeFillH1(H[b1 + "_" + trg]       , etMax);
+      safeFillH1(H[b1 + tag + "_" + trg] , etMax);
 
-      /* ---- 2.2 jet‑shape histograms ------------------------------- */
-      const auto& jets = topTwoJets[radKey];
+      /* helpers for robust fills ------------------------------------ */
+      auto fill3 = [&](const std::string& key, double et,
+                       double area, double nC)
+      {
+        TObject* o = H.count(key) ? H[key] : nullptr;
+        if (auto* h = dynamic_cast<TH3F*>(o))
+        {
+          try { h->Fill(et, area, nC); }
+          catch (const std::exception& e)
+          { LOG(1, CLR_YELLOW, "        [ROOT‑ERR] TH3F::Fill('" << key
+                               << "') – " << e.what()); }
+        }
+        else warnOnce(key);
+      };
+      auto fill2 = [&](const std::string& key, double x, double y)
+      {
+        TObject* o = H.count(key) ? H[key] : nullptr;
+        if (auto* h = dynamic_cast<TH2F*>(o))
+        {
+          try { h->Fill(x, y); }
+          catch (const std::exception& e)
+          { LOG(1, CLR_YELLOW, "        [ROOT‑ERR] TH2F::Fill('" << key
+                               << "') – " << e.what()); }
+        }
+        else warnOnce(key);
+      };
 
-      for (const Jet* j : jets)                       // 3‑D shape
+      /* 2.2 jet‑shape histograms ------------------------------------ */
+      for (const Jet* j : {J.lead, J.sub})
       {
         if (!j) continue;
-        static_cast<TH3F*>(H[base3 + "_" + t])
-            ->Fill(j->get_et(),
-                   j->get_property(Jet::PROPERTY::prop_area),
-                   static_cast<int>(j->size_comp()));
 
-        if (auto it3 = H.find(base3 + tag + "_" + t); it3 != H.end())
-          static_cast<TH3F*>(it3->second)
-              ->Fill(j->get_et(),
-                     j->get_property(Jet::PROPERTY::prop_area),
-                     static_cast<int>(j->size_comp()));
+        const double et   = j->get_et();
+        const int    nC   = static_cast<int>(j->size_comp());
+        double       area = areaFallback;          // always ≥ 0
+
+        /* clamp to axis limits -------------------------------------- */
+        const double areaOK = std::clamp(area, 0.0, 2.0);
+        const double nCOK   = std::clamp<double>(nC, 0.0, 200);
+
+        if (Verbosity() >= 5)
+          std::cout << CLR_CYAN << "        jet et=" << et
+                    << "  area=" << areaOK
+                    << "  nConst=" << nCOK << CLR_RESET << '\n';
+
+        fill3(b3 + "_"      + trg, et, areaOK, nCOK);
+        fill3(b3 + tag + '_' + trg, et, areaOK, nCOK);
       }
 
-      /* 2‑D lead‑vs‑sub: need both jets ----------------------------- */
-      if (jets[0] && jets[1])
+      /* 2.3 lead‑vs‑sub correlation --------------------------------- */
+      if (J.lead && J.sub)
       {
-        static_cast<TH2F*>(H[base2 + "_" + t])
-            ->Fill(jets[0]->get_et(), jets[1]->get_et());
-
-        if (auto it2 = H.find(base2 + tag + "_" + t); it2 != H.end())
-          static_cast<TH2F*>(it2->second)
-              ->Fill(jets[0]->get_et(), jets[1]->get_et());
+        fill2(b2 + "_"      + trg, J.lead->get_et(), J.sub->get_et());
+        fill2(b2 + tag + '_' + trg, J.lead->get_et(), J.sub->get_et());
       }
     } // trigger loop
-  }   // radii loop (hist fill)
+  }   // radius loop
 
-  LOG(4, CLR_GREEN, "  [doJetQA] – finished OK");
+  LOG(3, CLR_GREEN, "  [doJetQA] – completed OK");
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
 
+
+//--------------------------------------------------------------------
+//  fillFlowHists – store detector‑level flow coefficients v₂,v₃
+//--------------------------------------------------------------------
 void emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
 {
-  /* centrality slice -------------------------------------------------- */
-  int lo=0, hi=100;
-  if (m_centBin>=0)
-    for (std::size_t i=0;i+1<m_centEdges.size();++i)
-      if (m_centBin>=m_centEdges[i] && m_centBin<m_centEdges[i+1])
-      { lo=m_centEdges[i]; hi=m_centEdges[i+1]; break; }
+  /* ------------------------------------------------------------------ */
+  /* (0)  determine the centrality slice label                          */
+  /* ------------------------------------------------------------------ */
+  int lo = 0, hi = 100;                                    // default 0–100 %
+  if (m_centBin >= 0)
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+      { lo = m_centEdges[i];  hi = m_centEdges[i + 1];  break; }
 
-  const double cPsi2 = std::cos(2*m_psi2_S), sPsi2 = std::sin(2*m_psi2_S);
-  const double cPsi3 = std::cos(3*m_psi3_S), sPsi3 = std::sin(3*m_psi3_S);
+  if (Verbosity() >= 4)
+    LOG(4, CLR_CYAN, "  [fillFlowHists] centBin=" << m_centBin
+                         << "  → slice " << lo << "‑" << hi << "%");
 
+  /* SEPD‑South event‑plane angles (pre‑computed in doSepdQA) ---------- */
+  const double cPsi2 = std::cos(2. * m_psi2_S),  sPsi2 = std::sin(2. * m_psi2_S);
+  const double cPsi3 = std::cos(3. * m_psi3_S),  sPsi3 = std::sin(3. * m_psi3_S);
+
+  /* helper – print a single warning per missing histogram key --------- */
+  auto warnOnce = [&](const std::string& key)
+  {
+    static std::unordered_set<std::string> issued;
+    if (issued.insert(key).second)
+      LOG(1, CLR_YELLOW, "      [WARN] histogram \"" << key
+                               << "\" missing or wrong type");
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* (1)  loop over detectors and pT‑/E‑bins                            */
+  /* ------------------------------------------------------------------ */
   for (const auto& [det, vec] : m_flowAcc)
   {
-    for (std::size_t ib=0; ib<vec.size(); ++ib)
+    if (Verbosity() >= 4)
+      LOG(4, CLR_BLUE, "    detector \"" << det << "\"  bins=" << vec.size());
+
+    for (std::size_t ib = 0; ib < vec.size(); ++ib)
     {
       const auto& a = vec[ib];
-      if (a.sumW<=0) continue;
+      if (a.sumW <= 0.)
+      {
+        if (Verbosity() >= 6)
+          LOG(6, CLR_MAGENTA, "      bin " << ib << " – sumW=0, skipped");
+        continue;
+      }
 
-      const double v2 = (a.qx[2]*cPsi2 + a.qy[2]*sPsi2)/a.sumW;
-      const double v3 = (a.qx[3]*cPsi3 + a.qy[3]*sPsi3)/a.sumW;
+      /* ---- compute v₂, v₃  (project Q‑vector onto SEPD plane) ------ */
+      const double v2 = (a.qx[2] * cPsi2 + a.qy[2] * sPsi2) / a.sumW;
+      const double v3 = (a.qx[3] * cPsi3 + a.qy[3] * sPsi3) / a.sumW;
 
-      for (const auto& t : trig)
+      /* sanity – clamp numeric noise outside physical range ---------- */
+      const double v2_clamped = std::clamp(v2, -1.0, 1.0);
+      const double v3_clamped = std::clamp(v3, -1.0, 1.0);
+
+      if (Verbosity() >= 5)
+        std::cout << CLR_CYAN << "      bin=" << ib
+                  << "  sumW=" << a.sumW
+                  << "  v2=" << v2_clamped
+                  << "  v3=" << v3_clamped << CLR_RESET << '\n';
+
+      /* ---- fill the TProfiles (one per trigger) -------------------- */
+      for (const std::string& t : trig)
       {
         auto& H = qaHistogramsByTrigger[t];
-        std::ostringstream k2,k3;
-        k2<<"p_v2_"<<det<<'_'<<lo<<'_'<<hi<<'_'<<t;
-        k3<<"p_v3_"<<det<<'_'<<lo<<'_'<<hi<<'_'<<t;
-        static_cast<TProfile*>(H[k2.str()])->Fill(int(ib)+0.5, v2);
-        static_cast<TProfile*>(H[k3.str()])->Fill(int(ib)+0.5, v3);
-      }
-    }
-  }
+
+        std::ostringstream k2, k3;
+        k2 << "p_v2_" << det << '_' << lo << '_' << hi << '_' << t;
+        k3 << "p_v3_" << det << '_' << lo << '_' << hi << '_' << t;
+
+        /* v₂ --------------------------------------------------------- */
+        if (auto* p = dynamic_cast<TProfile*>(H[k2.str()]); p)
+          p->Fill(static_cast<double>(ib) + 0.5, v2_clamped);
+        else
+          warnOnce(k2.str());
+
+        /* v₃ --------------------------------------------------------- */
+        if (auto* p = dynamic_cast<TProfile*>(H[k3.str()]); p)
+          p->Fill(static_cast<double>(ib) + 0.5, v3_clamped);
+        else
+          warnOnce(k3.str());
+      } // trigger loop
+    }   // bin loop
+  }     // detector loop
 }
 
 
