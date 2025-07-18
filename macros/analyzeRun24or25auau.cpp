@@ -20,6 +20,7 @@
 #include <TH2Poly.h>
 #include <TFileMerger.h>
 #include <filesystem>
+#include <TH3.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -58,7 +59,7 @@ std::set<string> kTriggersWanted{ "MBD_NandS_geq_2" };
  *  false  → spectra are drawn, but *no* TF1 fit is attempted and            *
  *           InvariantMassSummary.csv is left empty (except header).         *
  *  true   → run the Gaussian‑plus‑poly fit and fill CSV.                    */
-constexpr bool kDoPi0Fit = false;
+constexpr bool kDoPi0Fit = true;
 // ───────────────────────────────────────────────
 
 // ---------- helper: collect *.root files, sorted -------------------
@@ -223,7 +224,7 @@ void save2D(TH2* h,const fs::path& p,const char* opt="COLZ")
 
 
 // ╔══════════════════════════════════════════════╗
-// ║ 6.  NS MAP CACHE                            ║
+// ║ 6.  NS MAP CACHE                             ║
 // ╚══════════════════════════════════════════════╝
 template<class MPair> class NSCache{
 public:
@@ -239,7 +240,7 @@ struct MapPair{ TH2* n=nullptr,*s=nullptr; };
 
 
 // ╔══════════════════════════════════════════════╗
-// ║ 7.  QA  BASE CLASS                          ║
+// ║ 7.  QA  BASE CLASS                           ║
 // ╚══════════════════════════════════════════════╝
 class QA{
 public:
@@ -610,12 +611,24 @@ public:
       c.SetLeftMargin(0.10);
       c.SetBottomMargin(0.10);
       c.SetTopMargin(0.05);
-
       rot->Draw("COLZ");
 
-      /* thin grid – every 8 towers (IB segmentation) */
-      for (int x = 0; x <= nEta; x += 8) { TLine l(x, 0, x, nPhi); l.SetLineColor(kBlack); l.SetLineWidth(1); l.Draw(); }
-      for (int y = 0; y <= nPhi; y += 8) { TLine l(0, y, nEta, y); l.SetLineColor(kBlack); l.SetLineWidth(1); l.Draw(); }
+      // thin grid – sector / IB boundaries every 8 towers
+      for (int x = 0; x <= nEta; x += 8) {
+          auto *v = new TLine(x, 0, x, nPhi);
+          v->SetLineColor(kBlack);
+          v->SetLineWidth(2);
+          v->Draw("same");
+      }
+      for (int y = 0; y <= nPhi; y += 8) {
+          auto *h = new TLine(0, y, nEta, y);
+          h->SetLineColor(kBlack);
+          h->SetLineWidth(2);
+          h->Draw("same");
+      }
+      /* make sure the freshly‑drawn primitives are flushed to the file */
+      gPad->Modified();
+      gPad->Update();
 
       /* North / South separator (η = 48) */
       TLine ns(48, 0, 48, nPhi); ns.SetLineColor(kBlack); ns.SetLineWidth(3); ns.Draw();
@@ -818,28 +831,114 @@ struct sEPDTag{
 using MbdQA  = NSDetectorQA<MBDTag>;
 using SepdQA = NSDetectorQA<sEPDTag>;
 
-// --- Jet QA ----------------------------------------------------------------
+// ------------------------------------------------------------------
+//  Jet‑QA module  –  handles 1‑D, 2‑D and 3‑D jet histograms
+// ------------------------------------------------------------------
 class JetQA : public QA
 {
- public: using QA::QA;
+ public:
+  using QA::QA;
 
+  // == main entry ====================================================
   bool process(TObject* o) override
   {
-    if (!o->InheritsFrom(TH1::Class())) return false;
-    std::string n = o->GetName();
-    if (n.rfind("h_maxJetEt_", 0) != 0) return false;
+    // accept only the three jet‑QA families --------------------------
+    const std::string n = o->GetName();
+    const bool is1D = (n.rfind("h_maxJetEt_"          ,0) == 0);
+    const bool is2D = (n.rfind("h_leadEt_vs_subEt_"   ,0) == 0);
+    const bool is3D = (n.rfind("h_jetEt_area_nConst_",0) == 0);
+    if (!is1D && !is2D && !is3D) return false;
 
-    const std::string slice  = sliceKey(n);
-    std::smatch m; std::regex  re(R"(h_maxJetEt_(R[0-9]+)_)");
-    const std::string rLabel = std::regex_search(n, m, re) ? m[1].str() : "UnknownR";
+    const std::string slice = sliceKey(n);            // Inclusive / Cent_…
+    const std::string rLab  = radiusTag(n);           // r02 / r04 / …
 
-    fs::path sub  = fs::path("jetQA") / rLabel;        // <‑‑ changed “Jets” → “jetQA”
-    fs::path out  = cPath(root, slice, sub) / (n + ".png");
-    save1D(static_cast<TH1*>(o), out);
+    fs::path outBase = cPath(root, slice, fs::path("jetQA") / rLab);
+
+    if (is1D && o->InheritsFrom(TH1::Class()))
+    {
+      save1D(static_cast<TH1*>(o), outBase / (n + ".png"));
+      return true;
+    }
+    if (is2D && o->InheritsFrom(TH2::Class()))
+      return handle2D(static_cast<TH2*>(o), outBase, n);
+
+    if (is3D && o->InheritsFrom(TH3::Class()))
+      return handle3D(static_cast<TH3*>(o), outBase, n);
+
+    return false;                         // should never reach here
+  }
+
+ private:
+  // ---- helper: radius tag (“r02”, “r04”, …) ------------------------
+  static std::string radiusTag(const std::string& hname)
+  {
+    std::smatch m; std::regex r(R"(_(r[0-9]+|R[0-9]+)_)");
+    return std::regex_search(hname,m,r) ? m[1].str() : "UnknownR";
+  }
+
+  // =============== 2‑D ==================================================
+  bool handle2D(TH2* h, const fs::path& dir, const std::string& hname)
+  {
+    h->SetTitle(makeTitle(hname).c_str());
+    TCanvas c; h->SetStats(0);
+    h->Draw("COLZ");
+
+    // y = x guideline
+    const double xmax = h->GetXaxis()->GetXmax();
+    TLine diag(0,0, xmax, xmax);
+    diag.SetLineStyle(2); diag.SetLineWidth(2); diag.Draw();
+
+    ensure_dir(dir);
+    c.SaveAs((dir / (hname + ".png")).string().c_str());
     return true;
   }
+
+  // =============== 3‑D ==================================================
+  bool handle3D(TH3* h3, const fs::path& dir, const std::string& hname)
+  {
+    h3->SetTitle(makeTitle(hname).c_str());
+
+    // main 3‑D view
+    save3D(h3, dir / (hname + "_3D.png"));
+
+    // orthogonal projections
+    saveProjection(h3,"yx", dir / (hname + "_Et_vs_Area.png"));    // E_T vs A
+    saveProjection(h3,"xz", dir / (hname + "_Et_vs_Nconst.png"));  // E_T vs N
+    saveProjection(h3,"yz", dir / (hname + "_Area_vs_Nconst.png"));// A  vs N
+    return true;
+  }
+
+  // ===== local helpers (only visible inside JetQA) ==================
+  static void save3D(TH3* h, const fs::path& png)
+  {
+    log::trace("save3D → " + png.string());
+    TCanvas c("c3D","",1200,1000);
+    c.SetRightMargin(0.18);
+    h->SetStats(0); h->SetContour(99);
+    h->Draw("BOX2Z");                      // nice semi‑transparent boxes
+    ensure_dir(png.parent_path());
+    c.SaveAs(png.string().c_str());
+  }
+
+  static void saveProjection(TH3* h3, const char* axes,
+                             const fs::path& png)
+  {
+    std::unique_ptr<TH2> h2(h3->Project3D(axes));  // ROOT owns → copy
+    h2->SetDirectory(nullptr); h2->SetStats(0);
+    h2->SetTitle((std::string(h3->GetTitle())+"  –  "+axes).c_str());
+    save2D(h2.get(), png);
+  }
+
+  static std::string makeTitle(const std::string& hname)
+  {
+    // “h_jetEt_area_nConst_r02_MBD_NandS_geq_2”  →  “r02  (MBD_NandS_geq_2)”
+    std::smatch m; std::regex re(R"(_(r[0-9]+|R[0-9]+).+?_(MBD.+))");
+    return std::regex_search(hname,m,re) ? (m[1].str()+"  ("+m[2].str()+')')
+                                         : hname;
+  }
 };
-                                                                 
+
+
 // ╔══════════════════════════════════════════════╗
 // ║ 9.  MAIN DRIVER  – run‑by‑run + combined     ║
 // ╚══════════════════════════════════════════════╝
