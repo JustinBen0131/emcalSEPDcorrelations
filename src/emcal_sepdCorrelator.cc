@@ -265,8 +265,12 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
           const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
           std::ostringstream n;  n << base << '_' << lo << '_' << hi << '_' << trig;
           H[n.str()] = dynamic_cast<TH2F*>(src->Clone(n.str().c_str()));
-          H[n.str()]->Reset();                       // start empty
-          H[n.str()]->SetDirectory(nullptr);         // detach from file
+          TH2F* hclone = dynamic_cast<TH2F*>(src->Clone(n.str().c_str()));
+          if (hclone) {
+                hclone->Reset();               // start empty
+                hclone->SetDirectory(nullptr); // detach from any directory
+          }
+          H[n.str()] = hclone;               // store the clone in the map
         }
     };
 
