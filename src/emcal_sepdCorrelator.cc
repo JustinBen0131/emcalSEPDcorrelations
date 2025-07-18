@@ -1127,28 +1127,29 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 
     /* ---- (a) fill hit‑maps (global + centrality) ------------------ */
     const std::string baseKey = (arm == 0 ?
-                                 "h_sEPD_Hitmap_South_" :
-                                 "h_sEPD_Hitmap_North_");
+                                   "h_sEPD_Hitmap_South_" :
+                                   "h_sEPD_Hitmap_North_");
     const double phPlot = (phi < 0) ? phi + 2. * M_PI : phi;     // [0,2π)
 
     for (const auto& t : trig)
     {
-      /* global */
-      static_cast<TH2F*>(qaHistogramsByTrigger[t][baseKey + t])
-          ->Fill(phPlot, r, w);
+        /* global – count one hit per tile */
+        static_cast<TH2F*>(qaHistogramsByTrigger[t][baseKey + t])
+            ->Fill(phPlot, r, 1.0);
 
-      /* centrality clone */
-      if (m_centBin >= 0)
-      {
-        std::ostringstream k;
-        k << baseKey.substr(0, baseKey.size() - 1)     // drop trailing ‘_’
-          << '_' << lo << '_' << hi << '_' << t;
+        /* centrality clone */
+        if (m_centBin >= 0)
+        {
+          std::ostringstream k;
+          k << baseKey.substr(0, baseKey.size() - 1)     // drop trailing ‘_’
+            << '_' << lo << '_' << hi << '_' << t;
 
-        auto it = qaHistogramsByTrigger[t].find(k.str());
-        if (it != qaHistogramsByTrigger[t].end())
-          static_cast<TH2F*>(it->second)->Fill(phPlot, r, w);
-      }
+          auto it = qaHistogramsByTrigger[t].find(k.str());
+          if (it != qaHistogramsByTrigger[t].end())
+            static_cast<TH2F*>(it->second)->Fill(phPlot, r, 1.0);
+        }
     }
+
 
     /* ---- (b) harmonic‑1/2/3 Q‑vectors ----------------------------- */
     const double c1 = std::cos(      phi), s1 = std::sin(      phi);
@@ -1355,6 +1356,139 @@ void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig
     static_cast<TH2F*>(qaHistogramsByTrigger[t]["h_Qsum_MBD_vs_sEPD"])->Fill(m_mbdQ, m_sepdQ);
   }
 }
+
+//==========================================================================
+//  doCaloQA – tower and cluster spectra   +   vn (n = 2,3) accumulators
+//==========================================================================
+void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
+{
+  LOG(3, CLR_BLUE, "  [doCaloQA] processing calorimeter towers");
+
+  /* ------------------------------------------------------------------ */
+  /* 0.  clear per‑event FlowAcc containers                             */
+  /* ------------------------------------------------------------------ */
+  for (auto& kv : m_flowAcc)
+    for (auto& acc : kv.second) acc.reset();
+
+  /* ------------------------------------------------------------------ */
+  /* 1.  loop over calorimeter subsystems                               */
+  /* ------------------------------------------------------------------ */
+  for (auto& ck : m_calo)
+  {
+    const std::string&  lbl   = ck.first;          // "CEMC", "IHCAL", …
+    TowerInfoContainer* twC   = ck.second.tw;
+    double&             sumE  = ck.second.sumE;
+    std::size_t         nHit  = 0;
+
+    for (unsigned ch = 0; ch < twC->size(); ++ch)
+    {
+      auto* tw = twC->get_tower_at_channel(ch); if (!tw) continue;
+      const double e = tw->get_energy();        if (e <= 0) continue;
+
+      /* ---------- bookkeeping & 1‑D spectra ------------------------- */
+      sumE += e; ++nHit;
+      for (const auto& t : trig)
+        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + lbl])->Fill(e);
+
+      /* ---------- geometry look‑up --------------------------------- */
+      const unsigned key  = twC->encode_key(ch);
+      const unsigned iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
+      const unsigned ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
+
+      RawTowerGeom* tg  = ck.second.g->get_tower_geometry(key);
+      const double  eta = tg ? tg->get_eta() : 0.;
+      const double  et  = e / std::cosh(eta);
+
+      /* ---------- arm‑separated ΣE​T -------------------------------- */
+      if (lbl == "CEMC")       (eta < 0 ? m_cemcEt_arm[0] : m_cemcEt_arm[1]) += et;
+      else if (lbl == "IHCAL") (eta < 0 ? m_ihcalEt_arm[0] : m_ihcalEt_arm[1]) += et;
+      else if (lbl == "OHCAL") (eta < 0 ? m_ohcalEt_arm[0] : m_ohcalEt_arm[1]) += et;
+
+      /* ---------- η–φ hit‑maps (global + centrality) ---------------- */
+      std::string Hmap;
+      if      (lbl == "CEMC")  Hmap = "h_EMC_EtaPhiMap_";
+      else if (lbl == "IHCAL") Hmap = "h_IHCAL_EtaPhiMap_";
+      else if (lbl == "OHCAL") Hmap = "h_OHCAL_EtaPhiMap_";
+      else                     Hmap.clear();                // safety
+
+      if (!Hmap.empty())
+      {
+        for (const auto& t : trig)
+        {
+          /* global map */
+          static_cast<TH2F*>(qaHistogramsByTrigger[t][Hmap + t])
+              ->Fill(iphi, ieta, e);
+
+          /* centrality‑tagged clone */
+          if (m_centBin >= 0)
+          {
+            int lo = 0, hi = 100;
+            for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+              if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+              { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
+            std::ostringstream k;
+            k << Hmap.substr(0, Hmap.size() - 1)     // drop trailing ‘_’
+              << '_' << lo << '_' << hi << '_' << t;
+
+            auto it = qaHistogramsByTrigger[t].find(k.str());
+            if (it != qaHistogramsByTrigger[t].end())
+              static_cast<TH2F*>(it->second)->Fill(iphi, ieta, e);
+          }
+        }
+      }
+
+      /* ----------------------------------------------------------------
+       *  v​n accumulators  (harmonics n = 1, 2, 3) – one entry / pT bin
+       * -------------------------------------------------------------- */
+      int ptBin = -1;
+      for (std::size_t b = 0; b < m_ptBins.size(); ++b)
+        if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
+        { ptBin = static_cast<int>(b); break; }
+
+      if (ptBin >= 0)
+      {
+        const double phi = tg ? tg->get_phi() : 0.;
+
+        const double c1 = std::cos(phi),  s1 = std::sin(phi);
+        const double c2 = c1 * c1 - s1 * s1;          // cos 2φ
+        const double s2 = 2.0 * c1 * s1;              // sin 2φ
+        const double c3 = c1 * c2 - s1 * s2;          // cos 3φ
+        const double s3 = s1 * c2 + c1 * s2;          // sin 3φ
+
+        auto accumulate = [&](const std::string& det)
+        {
+          auto& a = m_flowAcc[det][ptBin];
+          a.sumW  += et;
+          a.qx[1] += et * c1;  a.qy[1] += et * s1;
+          a.qx[2] += et * c2;  a.qy[2] += et * s2;
+          a.qx[3] += et * c3;  a.qy[3] += et * s3;
+        };
+
+        accumulate(lbl);                         // native subsystem
+        if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL");
+        accumulate("ALL");
+      }
+    } /* tower loop */
+
+    LOG(3, CLR_GREEN, "    " << lbl << " : "
+                             << nHit << " fired, ΣE = " << sumE);
+  }   /* detector loop */
+
+  /* ------------------------------------------------------------------ */
+  /* 2.  EMC clusters – simple E spectrum                               */
+  /* ------------------------------------------------------------------ */
+  if (!m_clus) return;
+
+  RawClusterContainer::ConstRange cr = m_clus->getClusters();
+  LOG(3, CLR_GREEN, "    EMC clusters : " << std::distance(cr.first, cr.second));
+
+  for (auto it = cr.first; it != cr.second; ++it)
+    for (const auto& t : trig)
+      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_clusterE_EMC"])
+          ->Fill(it->second->get_energy());
+}
+
 
 /* ----------------------------------------------------------------------
  * doPi0QA – γγ invariant‑mass spectra (global + centrality‑tagged)
