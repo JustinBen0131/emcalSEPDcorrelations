@@ -1767,12 +1767,13 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
       {
         if (!j) continue;
         const float et   = j->get_et();
-        float area = 0.0f;
-        if (j->has_property(Jet::PROPERTY::prop_area))
-              area = j->get_property(Jet::PROPERTY::prop_area);
+        const float area = j->get_property(Jet::PROPERTY::prop_area);
+        const int   nC   = static_cast<int>(j->size_comp());            // constituents
 
-        const int nC = static_cast<int>(j->size_comp());
-
+        if (Verbosity() >= 6)
+            LOG(6, CLR_CYAN, "      jet Et=" << et
+                              << "  area=" << area
+                              << "  nConst=" << nC);
         static_cast<TH3F*>(H[base3 + "_" + t])->Fill(et, area, nC);
 
         if (auto it3 = H.find(base3 + tag + "_" + t); it3 != H.end())
