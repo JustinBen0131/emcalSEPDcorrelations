@@ -9,6 +9,7 @@
 #include <phool/getClass.h>
 #include <phool/recoConsts.h>
 #include <jetbase/JetContainer.h>
+#include <array>
 //––– ROOT & CLHEP ----------------------------------------------------------
 #include <TProfile.h>
 #include <TDirectory.h>
@@ -451,38 +452,71 @@ void emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig, H
 }
 
 // ----------------------------------------------------------------------
-// Book max‑jet‑E_T spectra (global + centrality‑tagged clones)
+// Book jet QA spectra:
+//   (A) 1‑D   max‑E_T
+//   (B) 3‑D   E_T • area • Nconst  (and optional 2‑D lead‑vs‑sub)
 // ----------------------------------------------------------------------
 void
-emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)       // <<< NEW
+emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
 {
-  const int nbEt = 200;            // 1 GeV per bin
-  const double etMax = 200.;
+  const int nbEt = 200;  const double etMax = 200.;   // 1 GeV/bin
+  const int nbA  =  80;  const double aMax  = 0.80;   // ΔA = 0.01
+  const int nbN  = 200;  const double nMax  = 200.;   // 1 constituent/bin
 
-  for (const auto& r : kJetRadii)
+  for (const auto& r : kJetRadii)              // r.first = "r02", "r04", …
   {
-    const std::string base = std::string("h_maxJetEt_") + r.first;
-
-    /* global histogram */
-    H[base + "_" + trig] =
-        new TH1F((base + "_" + trig).c_str(),
+    /* -------- (A) max‑jet‑E_T (global) ----------------------------- */
+    const std::string base1 = "h_maxJetEt_" + r.first;
+    H[base1 + "_" + trig] =
+        new TH1F((base1 + "_" + trig).c_str(),
                  ("max jet E_{T} ("+std::string(r.first)+");E_{T} [GeV]").c_str(),
                  nbEt, 0, etMax);
 
-    /* centrality‑tagged clones */
+    /* -------- (B) E_T–area–Nconst (global) ------------------------- */
+    const std::string base3 = "h_jetEt_area_nConst_" + r.first;
+    H[base3 + "_" + trig] =
+        new TH3F((base3 + "_" + trig).c_str(),
+                 ("Jet E_{T} vs area vs N_{const} ("+std::string(r.first)+
+                  ");E_{T} [GeV];Area;N_{const}").c_str(),
+                 nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
+
+    /* -------- OPTIONAL 2‑D lead‑vs‑sub plot (global) --------------- */
+    const std::string base2 = "h_leadEt_vs_subEt_" + r.first;
+    H[base2 + "_" + trig] =
+        new TH2F((base2 + "_" + trig).c_str(),
+                 ("Leading vs sub‑leading jet E_{T} ("+std::string(r.first)+
+                  ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
+                 nbEt, 0, etMax, nbEt, 0, etMax);
+
+    /* -------- centrality clones for all three objects -------------- */
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
     {
-      int lo = m_centEdges[i];
-      int hi = m_centEdges[i + 1];
-      std::ostringstream n;
-      n << base << '_' << lo << '_' << hi << '_' << trig;
-      H[n.str()] =
-          new TH1F(n.str().c_str(),
-                   ("max jet E_{T} ("+std::string(r.first)+");E_{T} [GeV]").c_str(),
-                   nbEt, 0, etMax);
+      const int lo = m_centEdges[i], hi = m_centEdges[i + 1];
+      std::ostringstream n1, n2, n3;
+      n1 << base1 << '_' << lo << '_' << hi << '_' << trig;
+      n2 << base2 << '_' << lo << '_' << hi << '_' << trig;
+      n3 << base3 << '_' << lo << '_' << hi << '_' << trig;
+
+      H[n1.str()] = new TH1F(n1.str().c_str(),
+                             ("max jet E_{T} ("+std::string(r.first)+
+                              ");E_{T} [GeV]").c_str(),
+                             nbEt, 0, etMax);
+
+      H[n2.str()] = new TH2F(n2.str().c_str(),
+                             ("Leading vs sub‑leading jet E_{T} ("+
+                              std::string(r.first)+");E_{T}^{lead} [GeV];"
+                              "E_{T}^{sub} [GeV]").c_str(),
+                             nbEt, 0, etMax, nbEt, 0, etMax);
+
+      H[n3.str()] = new TH3F(n3.str().c_str(),
+                             ("Jet E_{T} vs area vs N_{const} ("+
+                              std::string(r.first)+");E_{T} [GeV];Area;"
+                              "N_{const}").c_str(),
+                             nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
     }
   }
 }
+
 
 
 //==========================================================================
@@ -1648,17 +1682,22 @@ emcal_sepdCorrelator::getMaxJetEt(JetContainer* jets) const
 
 
 // ----------------------------------------------------------------------
-//  doJetQA – fill jet QA histograms with exhaustive diagnostics
+//  doJetQA – fill jet QA histograms (max‑E_T, 3‑D E_T‑area‑Nconst,
+//            and 2‑D leading‑vs‑sub) – COMPLETE REWRITE
 // ----------------------------------------------------------------------
-int emcal_sepdCorrelator::doJetQA(PHCompositeNode*              topNode,
+int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
                                   const std::vector<std::string>& trig)
 {
   LOG(4, CLR_BLUE, "  [doJetQA] – entering");
 
   /* ------------------------------------------------------------------ */
-  /* 1.  Gather max-E_T for every configured jet radius                 */
+  /* 1.  Scan every configured jet radius                               */
+  /*     – store                                                         *
+  *          • max‑E_T                                                   *
+  *          • ptrs to leading & sub‑leading jets                        */
   /* ------------------------------------------------------------------ */
-  std::unordered_map<std::string,float> maxJetEt;   // key = "R02", "R04", …
+  std::unordered_map<std::string, float>                      maxJetEt;   // "r02"→E_T
+  std::unordered_map<std::string, std::array<const Jet*, 2>>  topTwoJets; // "r02"→{lead,sub}
 
   for (const auto& [radKey, nodeName] : kJetRadii)
   {
@@ -1667,62 +1706,94 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*              topNode,
     JetContainer* jets = findNode::getClass<JetContainer>(topNode, nodeName);
     if (!jets)
     {
-      LOG(4, CLR_YELLOW,
-          "    missing JetContainer '" << nodeName << "' – ABORTRUN");
+      LOG(4, CLR_YELLOW, "    missing JetContainer '" << nodeName << "' – ABORTRUN");
       return Fun4AllReturnCodes::ABORTRUN;
     }
 
-    const float etMax = getMaxJetEt(jets);
-    maxJetEt[radKey]  = etMax;
+    const Jet* lead = nullptr;
+    const Jet* sub  = nullptr;
+
+    for (const Jet* j : *jets)
+    {
+      if (!j) continue;
+      if (!lead || j->get_et() > lead->get_et()) { sub = lead;  lead = j; }
+      else if (!sub  || j->get_et() > sub ->get_et()) { sub = j; }
+    }
+
+    const float etMax = lead ? static_cast<float>(lead->get_et()) : 0.f;
+
+    maxJetEt  [radKey] = etMax;
+    topTwoJets[radKey] = {lead, sub};
 
     LOG(5, CLR_GREEN, "      max E_T = " << etMax << " GeV");
   }
 
   /* ------------------------------------------------------------------ */
-  /* 2.  Determine centrality slice tag                                 */
+  /* 2.  Centrality slice tag                                           */
   /* ------------------------------------------------------------------ */
   int lo = 0, hi = 100;
   if (m_centBin >= 0)
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
       if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+      { lo = m_centEdges[i];  hi = m_centEdges[i + 1]; break; }
 
   const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
-
-  LOG(5, CLR_CYAN, "    centrality slice = " << lo << "–" << hi << " %  (tag '" << tag << "')");
+  LOG(5, CLR_CYAN, "    centrality slice = " << lo << "–" << hi << " % (tag '" << tag << "')");
 
   /* ------------------------------------------------------------------ */
-  /* 3.  Fill histograms                                                */
+  /* 3.  Fill all histograms trigger‑by‑trigger                         */
   /* ------------------------------------------------------------------ */
   for (const auto& [radKey, etMax] : maxJetEt)
   {
-    const std::string base = "h_maxJetEt_" + radKey;
+    const std::string base1 = "h_maxJetEt_"            + radKey;
+    const std::string base2 = "h_leadEt_vs_subEt_"     + radKey;
+    const std::string base3 = "h_jetEt_area_nConst_"   + radKey;
 
     for (const auto& t : trig)
     {
       auto& H = qaHistogramsByTrigger[t];
 
-      /* global histogram – must exist */
-      auto* hGlobal = dynamic_cast<TH1F*>(H[base + "_" + t]);
-      if (hGlobal) hGlobal->Fill(etMax);
-      else LOG(4, CLR_YELLOW, "      [WARN] missing hist '" << base << '_' << t << '\'');
+      /* ---- 3.1 1‑D max‑E_T ---------------------------------------- */
+      if (auto* hG = dynamic_cast<TH1F*>(H[base1 + "_" + t])) hG->Fill(etMax);
 
-      /* centrality-tagged clone – may or may not exist                   */
-      const std::string cKey = base + tag + "_" + t;
-      auto it = H.find(cKey);
-      if (it != H.end())
+      if (auto it = H.find(base1 + tag + "_" + t); it != H.end())
+        static_cast<TH1F*>(it->second)->Fill(etMax);
+
+      /* ---- 3.2 3‑D & 2‑D jet‑shape histograms --------------------- */
+      const auto& jets = topTwoJets[radKey];
+
+      /* 3‑D: fill for lead & sub separately (if they exist) */
+      for (const Jet* j : jets)
       {
-        dynamic_cast<TH1F*>(it->second)->Fill(etMax);
-        LOG(6, CLR_GREEN, "        • wrote " << radKey << " to '" << cKey << '\'');
+        if (!j) continue;
+        const float et   = j->get_et();
+        const float area = j->get_area();
+        const int   nC   = static_cast<int>(j->size());
+
+        static_cast<TH3F*>(H[base3 + "_" + t])->Fill(et, area, nC);
+
+        if (auto it3 = H.find(base3 + tag + "_" + t); it3 != H.end())
+          static_cast<TH3F*>(it3->second)->Fill(et, area, nC);
       }
-      else if (Verbosity() >= 6)
-        LOG(6, CLR_BLUE,  "        • no cent-clone '" << cKey << '\'');
-    }
-  }
+
+      /* 2‑D leading vs sub: need both jets */
+      if (jets[0] && jets[1])
+      {
+        const float etL = jets[0]->get_et();
+        const float etS = jets[1]->get_et();
+
+        static_cast<TH2F*>(H[base2 + "_" + t])->Fill(etL, etS);
+
+        if (auto it2 = H.find(base2 + tag + "_" + t); it2 != H.end())
+          static_cast<TH2F*>(it2->second)->Fill(etL, etS);
+      }
+    } // trigger loop
+  }   // radius loop
 
   LOG(4, CLR_GREEN, "  [doJetQA] – finished OK");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 //==========================================================================
 //  ResetEvent / Reset / End – unchanged logic, single definition
