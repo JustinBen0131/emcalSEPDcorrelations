@@ -323,7 +323,7 @@ class Pi0QA : public QA
     // 1.  Robust peak‑search  → initial μ, A
     //----------------------------------------------------------------
     TH1* h = static_cast<TH1*>(o);
-    const double fitLo = 0.10, fitHi = 0.35;                  // safe window
+    const double fitLo = 0.05, fitHi = 0.35;                  // safe window
     const int    iLo   = binAt(h,fitLo),  iHi = binAt(h,fitHi);
 
     int iMax = iLo;
@@ -637,7 +637,7 @@ public:
 
         rot->SetDirectory(nullptr);
         rot->SetMinimum(1.);                         // under‑flow = white
-        rot->SetTitleOffset(0.9,"X"); rot->SetTitleOffset(0.9,"Y");
+        rot->SetTitleOffset(0.9,"X"); rot->SetTitleOffset(1.4,"Y");
         rot->GetXaxis()->SetTitle("Tower #eta");
         rot->GetYaxis()->SetTitle("Tower #phi");
         rot->GetXaxis()->SetNdivisions(12,kFALSE);   // every 8 η
@@ -654,7 +654,7 @@ public:
         c.SetRightMargin(0.17);
         /* allow free stretching */
         c.SetFixedAspectRatio(false);
-        c.SetLeftMargin (0.08);
+        c.SetLeftMargin (0.14);
         c.SetBottomMargin(0.08);
         c.SetTopMargin  (0.04);
         c.SetFixedAspectRatio();                     // 1 bin ⇔ 1 pixel
@@ -755,6 +755,17 @@ class HcalQA : public QA
       rot->SetMinimum(1.);
       rot->GetXaxis()->SetTitle("#eta index");
       rot->GetYaxis()->SetTitle("#phi index");
+
+      /* --- make tick‑label fonts smaller & tidy titles ---------------- */
+      const double kLabSize = 0.025;   // tick‑label font (default ≈ 0.04)
+      const double kTitSize = 0.030;   // axis‑title font  (default ≈ 0.04)
+      rot->GetXaxis()->SetLabelSize(kLabSize);
+      rot->GetYaxis()->SetLabelSize(kLabSize);
+      rot->GetZaxis()->SetLabelSize(kLabSize);   // palette scale
+      rot->GetXaxis()->SetTitleSize(kTitSize);
+      rot->GetYaxis()->SetTitleSize(kTitSize);
+      rot->GetZaxis()->SetTitleSize(kTitSize);
+
       rot->GetXaxis()->SetNdivisions(nEta, kFALSE);
       rot->GetYaxis()->SetNdivisions(nPhi, kFALSE);
 
