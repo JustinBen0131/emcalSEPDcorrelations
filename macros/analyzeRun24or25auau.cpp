@@ -261,52 +261,220 @@ protected:
 // ╔══════════════════════════════════════════════╗
 // ║ 8.  QA MODULES                              ║
 // ╚══════════════════════════════════════════════╝
-
-// ——— π0 QA —————————————————————————————————————————
-class Pi0QA : public QA{
+class Pi0QA : public QA
+{
 public:
-  Pi0QA(string t,fs::path b,const CentList& s,std::ofstream& csv):
-        QA(t,b,s),csv(csv){}
+  /* pT bins that appear in the file names – must match CutKey values   */
+  const std::vector<std::pair<float,float>> m_ptBins {
+      {2,4},{4,6},{6,8},{8,10},{10,12},{12,15},{15,20},{20,30} };
+
+  struct FitInfo {
+    std::string slice;  double pLo, pHi;         // bin identifiers
+    double mean, sigma;                          // Gaussian parameters
+    double chi2; int ndf;                        // fit quality
+  };
+
+  Pi0QA(std::string t, fs::path b, const CentList& s, std::ofstream& csv)
+      : QA(std::move(t), std::move(b), s), csv(csv) {}
+
+  // --------------------------------------------------------------------
+  // D E S T R U C T O R   – creates the multi‑panel summary canvases
+  // --------------------------------------------------------------------
+  ~Pi0QA() override
+  {
+    // -------- 2×3 canvas: one pad per centrality (pT‑integrated) ------
+    if (!_centralHists.empty()) {
+      TCanvas cCent("c_pi0Cent", "Pi0 mass – all centralities", 1800, 1000);
+      cCent.Divide(3, 2, 0.01, 0.01);
+
+      int pad = 1;
+      for (const auto& sl : slices) {
+        auto it = _centralHists.find(sl);
+        if (it == _centralHists.end()) continue;
+
+        cCent.cd(pad++);
+        it->second->SetStats(0);
+        it->second->Draw();
+
+        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
+        std::string centTxt = (sl == "Inclusive")
+                                  ? "Inclusive"
+                                  : ("Centrality: " +
+                                     sl.substr(0, sl.find('_')) + " to " +
+                                     sl.substr(sl.find('_') + 1) + " %");
+        tl.DrawLatex(0.10, 0.85, centTxt.c_str());
+      }
+      fs::path out = root / "EMCal/pi0QA" / "Pi0Mass_AllCentrality.png";
+      ensure_dir(out.parent_path());
+      cCent.SaveAs(out.string().c_str());
+    }
+
+    // -------- 2×3 canvas per centrality: one pad per pT bin ----------
+    for (const auto& [slice, vec] : _ptHists) {
+      const int padsPerPage = 6;
+      int page = 0, padInPage = 0;
+      std::unique_ptr<TCanvas> cPT;
+
+      auto newCanvas = [&](int pg){
+        std::string cname = "c_pi0PT_" + slice + "_p" + std::to_string(pg);
+        cPT.reset(new TCanvas(cname.c_str(), cname.c_str(), 1800, 1000));
+        cPT->Divide(3, 2, 0.01, 0.01);
+        padInPage = 0;
+      };
+
+      newCanvas(page);
+
+      for (size_t i = 0; i < vec.size(); ++i) {
+        if (!vec[i]) continue;                    // pT bin absent
+
+        if (padInPage == padsPerPage) {          // new page
+          fs::path out = root / "EMCal/pi0QA" /
+                         ("Pi0Mass_pT_" + slice +
+                          "_page" + std::to_string(page) + ".png");
+          ensure_dir(out.parent_path());
+          cPT->SaveAs(out.string().c_str());
+          ++page;
+          newCanvas(page);
+        }
+
+        cPT->cd(++padInPage);
+        vec[i]->SetStats(0);
+        vec[i]->Draw();
+
+        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
+        const auto& bin = m_ptBins[i];
+        tl.DrawLatex(0.10, 0.85,
+                       Form("%.0f #leq p_{T}^{M#gamma#gamma} < %.0f GeV",
+                            bin.first, bin.second));
+      }
+
+      /* write last (or single) canvas */
+      if (padInPage) {
+        fs::path out = root / "EMCal/pi0QA" /
+                       ("Pi0Mass_pT_" + slice +
+                        "_page" + std::to_string(page) + ".png");
+        ensure_dir(out.parent_path());
+        cPT->SaveAs(out.string().c_str());
+      }
+    }
+  }
+
+  const auto& fitSummary() const { return _fitSummary; }
+
+  // --------------------------------------------------------------------
+  // P R O C E S S   – called for every TObject in the ROOT file
+  // --------------------------------------------------------------------
   bool process(TObject* o) override
   {
-    if(!o->InheritsFrom(TH1::Class())) return false;
-    string n=o->GetName(); if(n.rfind("mInv_",0)!=0) return false;
+    if (!o->InheritsFrom(TH1::Class())) return false;
+    std::string n = o->GetName();
+    if (n.rfind("mInv_", 0) != 0) return false;          // not π0 spectrum
 
-    CutKey ck; if(!decodeInvName(n,ck)) return false;
-    string sl=sliceKey(n);
+    CutKey ck;
+    if (!decodeInvName(n, ck)) return false;
 
+    const std::string slice = sliceKey(n);
+    const bool isPtInt      = (ck.pLo < 0 || ck.pHi < 0);
+
+    // ----- build output sub‑directory path identical to before --------
     fs::path sub = "EMCal/pi0QA";
-    sub/=("E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy));
-    if(ck.pLo>=0&&ck.pHi>=0) sub/=("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
+    sub /= ("E"    + sf3(ck.E)   +
+            "_Chi" + sf3(ck.chi) +
+            "_Asym" + sf3(ck.asy));
+    if (!isPtInt)
+      sub /= ("pT_" + sf3(ck.pLo) + "_to_" + sf3(ck.pHi));
 
-    auto save=[&](const string& slice)
-    {
-      fs::path out=cPath(root,slice,sub)/(n+".png");
-      ensure_dir(out.parent_path());
-      TH1* h=static_cast<TH1*>(o);
+    fs::path outPng = cPath(root, slice, sub) / (n + ".png");
+    ensure_dir(outPng.parent_path());
 
-      bool ok=false;
-      std::array<double,8> p{};
-      if(kDoPi0Fit){ p = fitPi0(h, ok); }
+    // -------------------- perform the single‑Gaussian fit -------------
+    TH1* h = static_cast<TH1*>(o);
+    const double lo = 0.08, hi = 0.20;                // fixed fit region
 
-      TCanvas c; h->SetStats(0); h->Draw();
-      if(kDoPi0Fit && ok){ h->GetFunction("f")->SetLineColor(kRed); }
-      c.SaveAs(out.string().c_str());
+    TF1 fitFun("fPi0", "[0]+[1]*x+[2]*x*x+[3]*exp(-0.5*((x-[4])/[5])**2)",
+               lo, hi);
+    fitFun.SetParameters(1, 0, 0, h->GetMaximum(), 0.135, 0.01);
+    fitFun.SetParLimits(4, 0.12, 0.14);               // μ window
+    fitFun.SetParLimits(5, 0.005, 0.03);              // σ upper bound
 
-      if(kDoPi0Fit && ok){
-        csv<<trig<<","<<ck.E<<","<<ck.chi<<","<<ck.asy<<","
-           <<ck.pLo<<","<<ck.pHi<<","<<p[0]<<","<<p[1]<<","
-           <<p[2]<<","<<p[3]<<","<<p[4]<<","<<p[5]<<","
-           <<p[6]<<","<<p[7]<<"\n";
+    bool fitOK = (h->Fit(&fitFun, "QNRS") == 0);
+
+    TF1 polyBg("polyBg", "[0]+[1]*x+[2]*x*x", lo, hi);
+    polyBg.SetParameters(fitFun.GetParameter(0),
+                         fitFun.GetParameter(1),
+                         fitFun.GetParameter(2));
+    polyBg.SetLineColor(kBlue+1); polyBg.SetLineWidth(2);
+
+    TF1 gausSig("gausSig", "[0]*exp(-0.5*((x-[1])/[2])**2)", lo, hi);
+    gausSig.SetParameters(fitFun.GetParameter(3),
+                            fitFun.GetParameter(4),
+                            fitFun.GetParameter(5));
+    gausSig.SetLineColor(kRed);   gausSig.SetLineWidth(2);
+
+    // ----------------------------- draw & save ------------------------
+    TCanvas c1;
+    h->SetStats(0);
+    h->Draw();
+    polyBg.Draw("SAME"); gausSig.Draw("SAME");
+
+    TLegend leg(0.55, 0.70, 0.88, 0.88); leg.SetBorderSize(0);
+    leg.AddEntry(&gausSig, "Gaussian signal",      "l");   // red
+    leg.AddEntry(&polyBg,  "Polynomial background","l");   // blue
+    leg.Draw();
+
+    TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
+    tl.DrawLatex(0.55, 0.63,
+                   Form("Gaussian: %.4f #pm %.4f GeV",
+                        gausSig.GetParameter(1),
+                        gausSig.GetParameter(2)));
+    c1.SaveAs(outPng.string().c_str());
+
+    // ----------------------------- CSV + map --------------------------
+    if (fitOK) {
+      csv << trig  << ',' << ck.E   << ',' << ck.chi << ',' << ck.asy << ','
+          << ck.pLo << ',' << ck.pHi << ','
+          << gausSig.GetParameter(1) << ','         // mean
+          << gausSig.GetParameter(2) << ','         // sigma
+          << fitFun.GetChisquare()   << ','         // χ²
+          << fitFun.GetNDF()         << '\n';       // ndf
+
+      _fitSummary.emplace(n, FitInfo{slice, ck.pLo, ck.pHi,
+                                     gausSig.GetParameter(1),
+                                     gausSig.GetParameter(2),
+                                     fitFun.GetChisquare(),
+                                     fitFun.GetNDF()});
+    }
+
+    // ------ cache histograms for overview canvases --------------------
+    if (isPtInt) {
+      auto* cl = static_cast<TH1*>(h->Clone(("__cl_" + n).c_str()));
+      cl->SetDirectory(nullptr);
+      _centralHists.emplace(slice, cl);
+    } else {
+      // find the matching pT bin index
+      auto it = std::find_if(m_ptBins.begin(), m_ptBins.end(),
+                             [&](auto& p){ return fabs(p.first-ck.pLo)<1e-3
+                                                && fabs(p.second-ck.pHi)<1e-3; });
+      if (it != m_ptBins.end()) {
+        size_t idx = std::distance(m_ptBins.begin(), it);
+        auto& vec  = _ptHists[slice];
+        if (vec.size() < m_ptBins.size()) vec.resize(m_ptBins.size(), nullptr);
+        auto* cl = static_cast<TH1*>(h->Clone(("__cl_" + n).c_str()));
+        cl->SetDirectory(nullptr);
+        vec[idx] = cl;
       }
-    };
-
-    save(sl);
+    }
     return true;
   }
+
 private:
-  std::ofstream& csv;
+  std::ofstream&                                   csv;
+  std::unordered_map<std::string, TH1*>            _centralHists;  // pT‑int
+  std::unordered_map<std::string,
+                     std::vector<TH1*>>            _ptHists;       // by pT
+  std::unordered_map<std::string, FitInfo>         _fitSummary;    // all fits
 };
+
 
 // ——— Detector–detector correlations ————————————
 class CorrQA : public QA{
@@ -318,13 +486,42 @@ public: using QA::QA;
     string sl=sliceKey(n);
 
     auto save=[&](const string& slice){
-      fs::path out=cPath(root,slice,"Correlations")/(n+".png");
-      save2D(static_cast<TH2*>(o),out);
+        fs::path out = cPath(root, slice, "Correlations") / (n + ".png");
+
+        // make a local, non‑owned pointer for clarity
+        TH2* h2 = static_cast<TH2*>(o);
+        h2->SetStats(0);
+
+        // ── tighten   X‑range ───────────────────────────────────
+        int firstX = 1, lastX = h2->GetNbinsX();
+        while (firstX <= lastX &&
+               h2->Integral(firstX, firstX, 1, h2->GetNbinsY()) == 0) ++firstX;
+        while (lastX  >= firstX &&
+               h2->Integral(lastX,  lastX,  1, h2->GetNbinsY()) == 0) --lastX;
+        if (firstX < lastX) h2->GetXaxis()->SetRange(firstX, lastX);
+
+        // ── tighten   Y‑range ───────────────────────────────────
+        int firstY = 1, lastY = h2->GetNbinsY();
+        while (firstY <= lastY &&
+               h2->Integral(1, h2->GetNbinsX(), firstY, firstY) == 0) ++firstY;
+        while (lastY  >= firstY &&
+               h2->Integral(1, h2->GetNbinsX(), lastY,  lastY ) == 0) --lastY;
+        if (firstY < lastY) h2->GetYaxis()->SetRange(firstY, lastY);
+
+        // ── draw with log‑Z scale ───────────────────────────────
+        TCanvas c("c", "", 1100, 800);
+        c.SetLogz();
+        h2->Draw("COLZ");
+
+        ensure_dir(out.parent_path());
+        c.SaveAs(out.string().c_str());
     };
+
     save(sl);
     return true;
   }
 };
+
 
 // ——— EMCal QA ————————————————————————————————
 class EmcalQA : public QA{
@@ -347,10 +544,66 @@ public: using QA::QA;
           for(int ieta=0;ieta<96;++ieta)
             if(isBadBoard(sector_from_idx(ieta,iphi),ib_from_idx(ieta,iphi)))
               h2->SetBinContent(h2->FindBin(iphi,ieta),-9999.);
-        TCanvas c("c","",1600,1200); c.SetRightMargin(0.15);
-        h2->Draw("COLZ");
-        TLine l(0,48,256,48); l.SetLineColor(kWhite); l.SetLineWidth(2); l.Draw();
-        ensure_dir(out.parent_path()); c.SaveAs(out.string().c_str());
+          /*  draw EMCal hit‑map with   η  on the X‑axis   and   φ  on the Y‑axis,
+           *  a 90°‑rotated view w.r.t. the raw histogram; add sector/IB grids and
+           *  labels, masking already‑blanked bad boards with white.               */
+          TCanvas c("c", "EMCal η–φ map", 1600, 1200);
+          c.SetRightMargin(0.15);
+          c.SetBottomMargin(0.10);
+          c.SetLeftMargin(0.10);
+
+          /* ── build a transposed copy so that  η  (0‥96) runs horizontally
+           *                                         φ  (0‥256) runs vertically  */
+          const int nEta = 96, nPhi = 256;
+          std::unique_ptr<TH2F> hT(new TH2F("hT", h2->GetTitle(),
+                                            nEta, 0, nEta,       //  X: η
+                                            nPhi, 0, nPhi));     //  Y: φ
+          for (int iphi = 1; iphi <= nPhi; ++iphi)
+            for (int ieta = 1; ieta <= nEta; ++ieta)
+              hT->SetBinContent(ieta, iphi, h2->GetBinContent(iphi, ieta));
+
+          hT->SetDirectory(nullptr);
+          hT->SetStats(0);
+          hT->SetContour(99);
+          hT->SetMinimum(1.0);
+          hT->GetXaxis()->SetTitle("Tower #eta");
+          hT->GetYaxis()->SetTitle("Tower #phi");
+          hT->Draw("COLZ");
+
+          /* ── grid every 8 towers (one IB board or φ‑slice) ─────────────────── */
+          for (int ex = 0; ex <= nEta;  ex += 8) {
+            TLine *lx = new TLine(ex, 0, ex, nPhi);
+            lx->SetLineColor(kBlack); lx->Draw();
+          }
+          for (int py = 0; py <= nPhi; py += 8) {
+            TLine *ly = new TLine(0, py, nEta, py);
+            ly->SetLineColor(kBlack); ly->Draw();
+          }
+
+          /* ── white separator between North/South halves (η = 48) ───────────── */
+          TLine *sep = new TLine(48, 0, 48, nPhi);
+          sep->SetLineColor(kWhite); sep->SetLineWidth(2); sep->Draw();
+
+          /* ── sector (S##) and IB (0–5) labels ──────────────────────────────── */
+          TLatex tSec; tSec.SetTextSize(0.018); tSec.SetTextAlign(22); tSec.SetTextColor(kRed);
+          TLatex tIB;  tIB.SetTextSize(0.025); tIB.SetTextAlign(22);  tIB.SetTextColor(kRed);
+
+          for (int s = 0; s < 64; ++s) {
+            int basePhi = (s % 32) * 8;          // centre of the 8‑tower φ slice
+            double yC   = basePhi + 4.0;         // φ position (vertical axis)
+            double xC   = (s < 32) ? 72.0 : 24.0;/* top 32 sectors → η≈72, bottom → η≈24 */
+
+            tSec.DrawLatex(xC, yC, Form("S%d", s));
+
+            for (int ib = 0; ib < 6; ++ib) {
+              double xIB = (s < 32) ? (48 + ib * 8 + 4)      // top half
+                                     : ((5 - ib) * 8 + 4);   // bottom half
+              tIB.DrawLatex(xIB, yC, Form("%d", ib));
+            }
+          }
+
+          ensure_dir(out.parent_path());
+          c.SaveAs(out.string().c_str());
       }
       else if(o->InheritsFrom(TH2::Class())) save2D(static_cast<TH2*>(o),out);
       else                                   save1D(static_cast<TH1*>(o),out);
