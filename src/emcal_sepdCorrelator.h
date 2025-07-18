@@ -208,34 +208,20 @@ class emcal_sepdCorrelator : public SubsysReco
   int   doJetQA   (PHCompositeNode* topNode, const std::vector<std::string>& trig);
   float getMaxJetEt(JetContainer* jets) const;
     
-  // ======================================================================
-  // 4) Static mapping helpers
-  // ======================================================================
-  /** Map EMCal tower indices (ieta,iphi) → sector 0–63 */
-  static inline int sector_from_idx(unsigned int ieta, unsigned int iphi)
+  // --- vn flow helpers ------------------------------------------------------
+  static constexpr int kMaxHarm = 3;                       // we need n=2,3
+  struct FlowAcc
   {
-    if (iphi >= 256) return -1;
-    const int base = iphi / 8;                 // 8 φ bins / sector slice
-    return (ieta < 48) ? 32 + base : base;     // bottom vs. top half
-  }
+      double sumW  = 0.;                                     // Σ w
+      double qx[kMaxHarm+1] = {0.};                          // Σ w cos nφ   (n=1…3)
+      double qy[kMaxHarm+1] = {0.};                          // Σ w sin nφ
+      void   reset() { sumW = 0.; std::fill_n(qx,4,0.); std::fill_n(qy,4,0.); }
+  };
+  std::map<std::string, std::vector<FlowAcc>>  m_flowAcc;  // "CEMC" → 8 pT bins
+  double m_psi3_S = 0.;                                    // Ψ3 from sEPD South
+  void   bookFlowQA(const std::string& trig, HistMap& H);
+  void   fillFlowHists(const std::vector<std::string>& trig);
 
-  /** Map tower indices (ieta,iphi) → inner‑barrel number 0–5 */
-  static inline int ib_from_idx(unsigned int ieta, unsigned int /*iphi*/)
-  {
-    if      (ieta <  8) return 5;
-    else if (ieta < 16) return 4;
-    else if (ieta < 24) return 3;
-    else if (ieta < 32) return 2;
-    else if (ieta < 40) return 1;
-    else if (ieta < 48) return 0;
-    else if (ieta < 56) return 0;
-    else if (ieta < 64) return 1;
-    else if (ieta < 72) return 2;
-    else if (ieta < 80) return 3;
-    else if (ieta < 88) return 4;
-    else if (ieta < 96) return 5;
-    return -1;
-  }
 };
 
 // --------------------------------------------------------------------------
