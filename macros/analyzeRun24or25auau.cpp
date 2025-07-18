@@ -1059,6 +1059,202 @@ class JetQA : public QA
   }
 };
 
+class VnPlotQA : public QA
+{
+ public:
+  /* ------------------------------------------------------------------ *
+   *  ctor – needs an output base directory (created if missing)        *
+   * ------------------------------------------------------------------ */
+  explicit VnPlotQA(std::filesystem::path out)
+  : QA()
+  , _outDir(std::move(out))
+  {
+    if (!std::filesystem::exists(_outDir))
+      std::filesystem::create_directories(_outDir);
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  called once for *every* TObject in the input ROOT file            *
+   * ------------------------------------------------------------------ */
+  bool process(TObject* o) override
+  {
+    if (!o->InheritsFrom(TProfile::Class())) return false;
+
+    const std::string hname = o->GetName();
+    /*  pattern:  p_v< n >_< DET >_< lo >_< hi >_< trigger >            */
+    std::smatch m;
+    static const std::regex re(
+        R"(p_v([123])_([A-Za-z0-9_]+)_([0-9]+)_([0-9]+)_(.+))");
+
+    if (!std::regex_match(hname, m, re)) return false;
+
+    const int    nHarm = std::stoi(m[1]);               // 1,2,3
+    const string det   = m[2];
+    const string cent  = m[3].str() + '_' + m[4].str(); // "20_40"
+    const string trig  = m[5];
+
+    /* trigger → detector → harmonic → centrality → list<TProfile*> */
+    _cache[trig][det][nHarm][cent]
+        .push_back(static_cast<TProfile*>(o));
+    return true;
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  destructor = single final plotting pass                           *
+   * ------------------------------------------------------------------ */
+  ~VnPlotQA() override { writeCanvases(); }
+
+ private:
+  using ProfileVec = std::vector<TProfile*>;
+
+  /* ---- helper: convert one TProfile → TGraphErrors ----------------- */
+  static std::unique_ptr<TGraphErrors> makeGraph(const TProfile* p)
+  {
+    const int nb = p->GetNbinsX();
+    auto g = std::make_unique<TGraphErrors>(nb);
+
+    for (int i = 1; i <= nb; ++i)
+    {
+      const double xLo = p->GetXaxis()->GetBinLowEdge(i);
+      const double xHi = p->GetXaxis()->GetBinUpEdge (i);
+      const double x   = 0.5 * (xLo + xHi);
+      const double ex  = 0.5 * (xHi - xLo);
+
+      const double y   = p->GetBinContent(i);
+      const double ey  = p->GetBinError  (i);
+
+      g->SetPoint     (i - 1, x,  y);
+      g->SetPointError(i - 1, ex, ey);
+    }
+    g->SetLineWidth(2);
+    g->SetMarkerStyle(kFullCircle);
+    return g;
+  }
+
+  /* ---- heavy part: generate canvases and write PNGs ---------------- */
+  void writeCanvases()
+  {
+    for (const auto& [trig, detMap] : _cache)
+      for (const auto& [det, harmMap] : detMap)
+        for (const auto& [n, centMap] : harmMap)          // n = 1,2,3
+        {
+          //----------------------------------------------------------------
+          // (A) one canvas: *all* centralities, fixed {detector,n,trigger}
+          //----------------------------------------------------------------
+          {
+            const std::string ttl = Form("v_{%d} vs p_{T} – %s (%s trigger)",
+                                         n, det.c_str(), trig.c_str());
+
+            TCanvas c(Form("c_v%d_%s_%s", n, det.c_str(), trig.c_str()),
+                      "", 1200, 900);
+            c.SetGrid();
+
+            TLegend leg(0.15, 0.70, 0.45, 0.88); leg.SetBorderSize(0);
+
+            int    col  = 1;
+            double yMax = 0.;
+
+            for (const auto& [cent, profList] : centMap)
+            {
+              if (profList.empty()) continue;
+              auto g = makeGraph(profList.front());
+              g->SetLineColor(col);
+              g->SetMarkerColor(col);
+              g->SetTitle(ttl.c_str());
+
+              g->Draw(col == 1 ? "APL" : "PL SAME");
+              leg.AddEntry(g.get(), Form("Cent %s %%", cent.c_str()), "pl");
+
+              const int    npts = g->GetN();
+              const double localMax =
+                  TMath::MaxElement(npts, g->GetY());
+              yMax = std::max(yMax, localMax);
+
+              _ownedGraphs.push_back(std::move(g));
+              ++col;
+            }
+            if (yMax > 0.) gPad->SetMaximum(1.15 * yMax);
+
+            leg.Draw();
+            saveCanvas(c, det, Form("v%d_%s_allCent_%s.png",
+                                    n, det.c_str(), trig.c_str()));
+          }
+
+          //----------------------------------------------------------------
+          // (B) one canvas *per* centrality: compare detectors
+          //----------------------------------------------------------------
+          for (const auto& [centWanted, _junk] : centMap)
+          {
+            const std::string ttl =
+                Form("v_{%d} vs p_{T} – Cent %s %% (%s trigger)",
+                     n, centWanted.c_str(), trig.c_str());
+
+            TCanvas c(Form("c_v%d_cent%s_%s", n,
+                           centWanted.c_str(), trig.c_str()),
+                      "", 1200, 900);
+            c.SetGrid();
+
+            TLegend leg(0.15, 0.70, 0.45, 0.88); leg.SetBorderSize(0);
+
+            int col = 1;
+            for (const auto& [det2, harmMap2] : detMap)
+            {
+              auto itH = harmMap2.find(n);
+              if (itH == harmMap2.end()) continue;
+
+              auto itC = itH->second.find(centWanted);
+              if (itC == itH->second.end() || itC->second.empty()) continue;
+
+              auto g = makeGraph(itC->second.front());
+              g->SetLineColor(col);
+              g->SetMarkerColor(col);
+              g->SetTitle(ttl.c_str());
+
+              g->Draw(col == 1 ? "APL" : "PL SAME");
+              leg.AddEntry(g.get(), det2.c_str(), "pl");
+
+              _ownedGraphs.push_back(std::move(g));
+              ++col;
+            }
+            leg.Draw();
+            saveCanvas(c, "centrality",
+                       Form("v%d_cent%s_%s.png",
+                            n, centWanted.c_str(), trig.c_str()));
+          }
+        } // … harmonic loop
+  }
+
+  /* ---- helper: save a canvas & create directory if needed ---------- */
+  void saveCanvas(TCanvas& c,
+                  const std::string& subDir,
+                  const std::string& fileName) const
+  {
+    const std::filesystem::path dir = _outDir / "FlowQA" / subDir;
+    if (!std::filesystem::exists(dir))
+      std::filesystem::create_directories(dir);
+
+    const std::string full = (dir / fileName).string();
+    c.SaveAs(full.c_str());
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  data members                                                      */
+  /* ------------------------------------------------------------------ */
+  std::filesystem::path _outDir;
+
+  /*  trigger → detector → n(=1,2,3) → centrality → list<TProfile*>  */
+  std::unordered_map<
+      std::string,
+      std::unordered_map<
+          std::string,
+          std::map<
+              int,
+              std::map<std::string, ProfileVec>>>> _cache;
+
+  /* keep graphs alive until end‑of‑job */
+  std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs;
+};
+
 
 // ╔══════════════════════════════════════════════╗
 // ║ 9.  MAIN DRIVER  – run‑by‑run + combined     ║
