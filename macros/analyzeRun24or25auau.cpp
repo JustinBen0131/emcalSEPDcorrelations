@@ -296,13 +296,13 @@ public:
         it->second->SetStats(0);
         it->second->Draw();
 
-        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
+        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.035);
         std::string centTxt = (sl == "Inclusive")
                                   ? "Inclusive"
                                   : ("Centrality: " +
                                      sl.substr(0, sl.find('_')) + " to " +
                                      sl.substr(sl.find('_') + 1) + " %");
-        tl.DrawLatex(0.10, 0.85, centTxt.c_str());
+        tl.DrawLatex(0.12, 0.85, centTxt.c_str());
       }
       fs::path out = root / "EMCal/pi0QA" / "Pi0Mass_AllCentrality.png";
       ensure_dir(out.parent_path());
@@ -522,96 +522,148 @@ public: using QA::QA;
   }
 };
 
+// ─── EMCal QA – η‑φ maps with bad‑board masking + 2×3 overview ───────
+class EmcalQA : public QA
+{
+public:
+  using QA::QA;
 
-// ——— EMCal QA ————————————————————————————————
-class EmcalQA : public QA{
-public: using QA::QA;
+  /* summary panel shown at the end of the job */
+  ~EmcalQA() override
+  {
+    if (_centralMaps.empty()) return;
+
+    TCanvas c("c_emcalCent", "EMCal hit‑maps – all centralities", 2100, 1200);
+    c.Divide(3, 2, 0.01, 0.01);
+
+    int pad = 1;
+    for (const auto& sl : slices) {
+      auto it = _centralMaps.find(sl);
+      if (it == _centralMaps.end()) continue;
+
+      c.cd(pad++);
+      it->second->Draw("COLZ");
+
+      TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
+      tl.DrawLatex(0.15, 0.85,
+                   (sl == "Inclusive" ? "Inclusive"
+                                      : ("Cent " + sl)).c_str());
+    }
+
+    fs::path out = root / "EMCal" / "EMCalHitMap_AllCentrality.png";
+    ensure_dir(out.parent_path());
+    c.SaveAs(out.string().c_str());
+  }
+
+  // ------------------------------------------------------------------
+  //  P R O C E S S   – called for every histogram in the EMCal folder
+  // ------------------------------------------------------------------
   bool process(TObject* o) override
   {
-    if(!o->InheritsFrom(TH1::Class())) return false;
-    string n=o->GetName(); if(n.rfind("h_EMC_",0)!=0) return false;
-    string sl=sliceKey(n);
-    bool etaPhi=n.find("_EtaPhiMap_")!=string::npos;
+    if (!o->InheritsFrom(TH1::Class())) return false;
+    const std::string n = o->GetName();
+    if (n.rfind("h_EMC_", 0) != 0)      return false;
 
-    auto save=[&](const string& slice){
-      fs::path out=cPath(root,slice,"EMCal")/(n+".png");
-      if(etaPhi && o->InheritsFrom(TH2::Class()))
-      {
-        auto* h=static_cast<TH2*>(o);
-        std::unique_ptr<TH2> h2(static_cast<TH2*>(h->Clone()));
-        h2->SetDirectory(nullptr); h2->SetStats(0); h2->SetContour(99);
-        for(int iphi=0;iphi<256;++iphi)
-          for(int ieta=0;ieta<96;++ieta)
-            if(isBadBoard(sector_from_idx(ieta,iphi),ib_from_idx(ieta,iphi)))
-              h2->SetBinContent(h2->FindBin(iphi,ieta),-9999.);
-          /*  draw EMCal hit‑map with   η  on the X‑axis   and   φ  on the Y‑axis,
-           *  a 90°‑rotated view w.r.t. the raw histogram; add sector/IB grids and
-           *  labels, masking already‑blanked bad boards with white.               */
-          TCanvas c("c", "EMCal η–φ map", 1600, 1200);
-          c.SetRightMargin(0.15);
-          c.SetBottomMargin(0.10);
-          c.SetLeftMargin(0.10);
+    const std::string slice   = sliceKey(n);
+    const bool        isMap   = (n.find("_EtaPhiMap_") != std::string::npos);
 
-          /* ── build a transposed copy so that  η  (0‥96) runs horizontally
-           *                                         φ  (0‥256) runs vertically  */
-          const int nEta = 96, nPhi = 256;
-          std::unique_ptr<TH2F> hT(new TH2F("hT", h2->GetTitle(),
-                                            nEta, 0, nEta,       //  X: η
-                                            nPhi, 0, nPhi));     //  Y: φ
-          for (int iphi = 1; iphi <= nPhi; ++iphi)
-            for (int ieta = 1; ieta <= nEta; ++ieta)
-              hT->SetBinContent(ieta, iphi, h2->GetBinContent(iphi, ieta));
+    // ----------------------------------------------------------------
+    // helper – build a rotated map with grid/labels identical to the
+    //          on‑line monitor (8 φ × 8 η IB segmentation, sector id …)
+    // ----------------------------------------------------------------
+    auto makePanel = [&](TH2* src) -> std::unique_ptr<TH2F>
+    {
+      /* clone and mask known bad boards */
+      const int nPhi = 256, nEta = 96;
+      std::unique_ptr<TH2> h(static_cast<TH2*>(src->Clone()));
+      h->SetDirectory(nullptr); h->SetStats(0); h->SetContour(99);
 
-          hT->SetDirectory(nullptr);
-          hT->SetStats(0);
-          hT->SetContour(99);
-          hT->SetMinimum(1.0);
-          hT->GetXaxis()->SetTitle("Tower #eta");
-          hT->GetYaxis()->SetTitle("Tower #phi");
-          hT->Draw("COLZ");
+      for (int ip = 0; ip < nPhi; ++ip)
+        for (int ie = 0; ie < nEta; ++ie)
+          if (isBadBoard(sector_from_idx(ie, ip),
+                         ib_from_idx(ie, ip)))
+            h->SetBinContent(h->FindBin(ip, ie), -9999.);
 
-          /* ── grid every 8 towers (one IB board or φ‑slice) ─────────────────── */
-          for (int ex = 0; ex <= nEta;  ex += 8) {
-            TLine *lx = new TLine(ex, 0, ex, nPhi);
-            lx->SetLineColor(kBlack); lx->Draw();
-          }
-          for (int py = 0; py <= nPhi; py += 8) {
-            TLine *ly = new TLine(0, py, nEta, py);
-            ly->SetLineColor(kBlack); ly->Draw();
-          }
+      /* rotate: η → X,  φ → Y */
+      std::unique_ptr<TH2F> rot(new TH2F(("hRot_"+std::string(src->GetName())).c_str(),
+                                         h->GetTitle(),
+                                         nEta, 0, nEta,     // X
+                                         nPhi, 0, nPhi));   // Y
+      for (int ip = 1; ip <= nPhi; ++ip)
+        for (int ie = 1; ie <= nEta; ++ie)
+          rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
 
-          /* ── white separator between North/South halves (η = 48) ───────────── */
-          TLine *sep = new TLine(48, 0, 48, nPhi);
-          sep->SetLineColor(kWhite); sep->SetLineWidth(2); sep->Draw();
+      rot->SetDirectory(nullptr);
+      rot->SetStats(0);  rot->SetContour(99);  rot->SetMinimum(1.);
+      rot->GetXaxis()->SetTitle("Tower #eta");
+      rot->GetYaxis()->SetTitle("Tower #phi");
+      rot->GetXaxis()->SetNdivisions(12, kFALSE);   // label every 8 η
+      rot->GetYaxis()->SetNdivisions(32, kFALSE);   // label every 8 φ
 
-          /* ── sector (S##) and IB (0–5) labels ──────────────────────────────── */
-          TLatex tSec; tSec.SetTextSize(0.018); tSec.SetTextAlign(22); tSec.SetTextColor(kRed);
-          TLatex tIB;  tIB.SetTextSize(0.025); tIB.SetTextAlign(22);  tIB.SetTextColor(kRed);
+      /* aspect‑ratio‑aware canvas: height ~ 256/96 ≃ 2.67 × width */
+      const int cw = 1200;
+      const int ch = static_cast<int>(cw * double(nPhi) / double(nEta) + 0.5);
 
-          for (int s = 0; s < 64; ++s) {
-            int basePhi = (s % 32) * 8;          // centre of the 8‑tower φ slice
-            double yC   = basePhi + 4.0;         // φ position (vertical axis)
-            double xC   = (s < 32) ? 72.0 : 24.0;/* top 32 sectors → η≈72, bottom → η≈24 */
+      fs::path outPng = cPath(root, slice, "EMCal") / (n + ".png");
+      TCanvas c("c_emcal", "", cw, ch);
+      c.SetRightMargin(0.18);
+      c.SetLeftMargin(0.10);
+      c.SetBottomMargin(0.10);
+      c.SetTopMargin(0.05);
 
-            tSec.DrawLatex(xC, yC, Form("S%d", s));
+      rot->Draw("COLZ");
 
-            for (int ib = 0; ib < 6; ++ib) {
-              double xIB = (s < 32) ? (48 + ib * 8 + 4)      // top half
-                                     : ((5 - ib) * 8 + 4);   // bottom half
-              tIB.DrawLatex(xIB, yC, Form("%d", ib));
-            }
-          }
+      /* thin grid – every 8 towers (IB segmentation) */
+      for (int x = 0; x <= nEta; x += 8) { TLine l(x, 0, x, nPhi); l.SetLineColor(kBlack); l.SetLineWidth(1); l.Draw(); }
+      for (int y = 0; y <= nPhi; y += 8) { TLine l(0, y, nEta, y); l.SetLineColor(kBlack); l.SetLineWidth(1); l.Draw(); }
 
-          ensure_dir(out.parent_path());
-          c.SaveAs(out.string().c_str());
+      /* North / South separator (η = 48) */
+      TLine ns(48, 0, 48, nPhi); ns.SetLineColor(kBlack); ns.SetLineWidth(3); ns.Draw();
+
+      /* labels */
+      TLatex tSec; tSec.SetTextSize(0.020); tSec.SetTextAlign(22); tSec.SetTextColor(kRed);
+      TLatex tIB;  tIB.SetTextSize(0.025); tIB.SetTextAlign(22);  tIB.SetTextColor(kRed);
+
+      for (int s = 0; s < 64; ++s) {
+        int basePhi = (s % 32) * 8;
+        double yMid = basePhi + 4.0;
+        double xSec = (s < 32) ?  72.0 : 24.0;
+        tSec.DrawLatex(xSec, yMid, Form("S%d", s));
+
+        for (int ib = 0; ib < 6; ++ib) {
+          double xIB = (s < 32) ? (48 + ib * 8 + 4)
+                                : ((5 - ib) * 8 + 4);
+          tIB.DrawLatex(xIB, yMid, Form("%d", ib));
+        }
       }
-      else if(o->InheritsFrom(TH2::Class())) save2D(static_cast<TH2*>(o),out);
-      else                                   save1D(static_cast<TH1*>(o),out);
+
+      ensure_dir(outPng.parent_path());
+      c.SaveAs(outPng.string().c_str());
+      return rot;
     };
-    save(sl);
+    // ----------------------------------------------------------------
+
+    if (isMap && o->InheritsFrom(TH2::Class())) {
+      auto p = makePanel(static_cast<TH2*>(o));
+      if (_centralMaps.find(slice) == _centralMaps.end())
+        _centralMaps.emplace(slice, std::move(p));
+
+    } else if (o->InheritsFrom(TH2::Class())) {
+      fs::path out = cPath(root, slice, "EMCal") / (n + ".png");
+      save2D(static_cast<TH2*>(o), out);
+
+    } else {                                            // plain 1‑D
+      fs::path out = cPath(root, slice, "EMCal") / (n + ".png");
+      save1D(static_cast<TH1*>(o), out);
+    }
     return true;
   }
+
+private:
+  std::unordered_map<std::string,
+                     std::unique_ptr<TH2F>> _centralMaps;
 };
+
 
 // ——— HCal QA ————————————————————————————————————
 class HcalQA : public QA{
@@ -637,8 +689,41 @@ public: using QA::QA;
             if(isBadHcalPlate(hcal_sector_from_idx(ieta,iphi),
                               hcal_plate_from_idx(ieta,iphi)))
               h2->SetBinContent(h2->FindBin(iphi,ieta),-9999.);
-        TCanvas c("c","",1300,800); c.SetRightMargin(0.16); h2->Draw("COLZ");
-        ensure_dir(out.parent_path()); c.SaveAs(out.string().c_str());
+          // replacement – identical hit‑map but with the sector/board/tower grid
+          TCanvas c("c","IHCal/OHCal hit‑map",1300,800);
+          c.SetRightMargin(0.16);
+          c.SetBottomMargin(0.07);
+          c.SetLeftMargin(0.08);
+
+          /* axis labelling identical to the online monitor */
+          h2->GetXaxis()->SetTitle("#eta index");
+          h2->GetYaxis()->SetTitle("#phi index");
+          h2->GetXaxis()->SetNdivisions(24, kFALSE);   // 24 η bins
+          h2->GetYaxis()->SetNdivisions(64, kFALSE);   // 64 φ bins
+          h2->Draw("COLZ");
+
+          /* ── thick horizontal lines: 32 sectors (every 2 φ towers) ── */
+          for (int s = 0; s < 32; ++s) {
+            TLine *ls = new TLine(0, (s+1)*2, 24, (s+1)*2);
+            ls->SetLineColor(kBlack); ls->SetLineWidth(4); ls->Draw();
+          }
+
+          /* ── thick vertical lines at η = 8 and 16 (inner‑board groups) ── */
+          TLine lB1(8,  0, 8, 64);  lB1.SetLineColor(kBlack); lB1.SetLineWidth(4); lB1.Draw();
+          TLine lB2(16, 0, 16, 64); lB2.SetLineColor(kBlack); lB2.SetLineWidth(4); lB2.Draw();
+
+          /* ── fine grid: individual towers (1 × 1) ── */
+          for (int iphi = 0; iphi < 64; ++iphi) {
+            TLine *ly = new TLine(0, iphi+1, 24, iphi+1);
+            ly->SetLineColor(kBlack); ly->SetLineWidth(1); ly->Draw();
+          }
+          for (int ieta = 0; ieta < 24; ++ieta) {
+            TLine *lx = new TLine(ieta+1, 0, ieta+1, 64);
+            lx->SetLineColor(kBlack); lx->SetLineWidth(1); lx->Draw();
+          }
+
+          ensure_dir(out.parent_path());
+          c.SaveAs(out.string().c_str());
       }
       else if(o->InheritsFrom(TH2::Class())) save2D(static_cast<TH2*>(o),out);
       else                                   save1D(static_cast<TH1*>(o),out);
