@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <TGraphErrors.h>
 #include <memory>
 #include <regex>
 #include <set>
@@ -270,7 +271,7 @@ protected:
 class Pi0QA : public QA
 {
  public:
-  // pT bins that appear in the file names – must match CutKey values
+  /* pT bins that appear in the file names – must match CutKey values */
   const std::vector<std::pair<float,float>> m_ptBins {
       {2,4},{4,6},{6,8},{8,10},{10,12},{12,15},{15,20},{20,30} };
 
@@ -279,11 +280,20 @@ class Pi0QA : public QA
     double mean, sigma, chi2;  int ndf;
   };
 
-  Pi0QA(std::string t, fs::path b, const CentList& s,
-        std::ofstream& csvFit) :
+  /* ------------------------------------------------------------------ *
+   *  ctor – figure out the run label from the base directory            *
+   *  …/<output>/<run>/<trigger>  →  run = last element of parent_path() *
+   * ------------------------------------------------------------------ */
+  Pi0QA(std::string           t,
+        fs::path              b,
+        const CentList&       s,
+        std::ofstream&        csvFit_) :
         QA(std::move(t), std::move(b), s),
-        csvFit(csvFit)
+        csvFit(csvFit_)
   {
+    /* run label */
+    runID = root.parent_path().filename().string();  // "00066013", "Combined", …
+
     /* new CSV for S/B */
     fs::path p = root / "EMCal/pi0QA" / "Pi0SignalBackground.csv";
     ensure_dir(p.parent_path());
@@ -291,7 +301,11 @@ class Pi0QA : public QA
     csvSB << "trigger,cent,pTlo,pThi,slice,windowSigma,sb,err\n";
   }
 
-  ~Pi0QA() override { writeSummaryPanels(); }
+  ~Pi0QA() override
+  {
+      writeSummaryPanels();
+      writeRunSummary();            // only fires once in the Combined pass
+  }
 
   const auto& fitSummary() const { return _fitSummary; }
 
@@ -313,8 +327,12 @@ class Pi0QA : public QA
     //----------------------------------------------------------------
     // 0. Book‑keeping: where will the PNG go?
     //----------------------------------------------------------------
+    const std::string combDir = "E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy);
+    if (cutTag.empty())                 // store once per Pi0QA instance
+          cutTag = combDir;
+
     fs::path subDir = "EMCal/pi0QA";
-    subDir /= ("E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy));
+    subDir /= combDir;                  // …/pi0QA/<cut>/[…]
     if(!pTInt) subDir/=("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
     fs::path outPng = cPath(root,slice,subDir)/(n+".png");
     ensure_dir(outPng.parent_path());
@@ -336,27 +354,44 @@ class Pi0QA : public QA
     const double sigma0  = 0.025;
 
     //----------------------------------------------------------------
-    // 2.  Build the composite fit function
+    // 2.  Build the composite fit function  –  two‑stage strategy
     //----------------------------------------------------------------
     TF1 total("total","gaus(0)+pol2(3)",fitLo,fitHi);
     total.SetParNames("A","mu","sigma","c0","c1","c2");
-    total.SetParameters(amp0,mu0,sigma0,  // Gaussian
-                        1,0,0);           // poly (flat start)
-    total.SetParLimits(1,0.12,0.15);      // μ
-    total.SetParLimits(2,0.010,0.040);    // σ
 
-    /* be generous with Minuit */
+    /* --- stage‑1: safe starting values ------------------------------ */
+    total.SetParameters(amp0, mu0, 0.022,    // narrower σ start
+                          1,    0,   0);       // flat background
+    total.SetParLimits(0,      0,  1e9);     // A  ≥ 0
+    total.SetParLimits(1,   0.10,  0.17);    // μ  within window
+    total.SetParLimits(2,   0.010, 0.060);   // σ  sensible range
+
     ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
-    ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(5'000);
+    ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(3'000);
 
-    bool fitOK = (h->Fit(&total,"SRQN")==0);
+    /* --- stage‑2: robust polynomial bootstrap ----------------------- *
+       * 1) fit only the polynomial (mask the peak region)               */
+    TF1 polyTmp("polyTmp","pol2",fitLo,fitHi);
+    for(int ip = binAt(h,0.11); ip <= binAt(h,0.16); ++ip)
+          h->SetBinError(ip, 1e9);            // exclude peak from χ²
+    h->Fit(&polyTmp,"QRN0");                // quiet, range, no‑store
+    for(int ip = binAt(h,0.11); ip <= binAt(h,0.16); ++ip)
+          h->SetBinError(ip, std::sqrt(h->GetBinContent(ip)));  // restore
+
+    /* 2) use that as the polynomial start for the full fit            */
+    total.SetParameters(amp0, mu0, 0.022,
+                          polyTmp.GetParameter(0),
+                          polyTmp.GetParameter(1),
+                          polyTmp.GetParameter(2));
+
+    bool fitOK = (h->Fit(&total,"QRN0") == 0);          // final full fit
+
 
     //----------------------------------------------------------------
     // 3.  Extract parameters (or sentinel values)
     //----------------------------------------------------------------
-    double A = amp0, mu = mu0, sig = sigma0, chi2 = 0; int ndf = 1;
+    double mu = mu0, sig = sigma0, chi2 = 0; int ndf = 1;
     if(fitOK){
-      A    = total.GetParameter(0);
       mu   = total.GetParameter(1);
       sig  = total.GetParameter(2);
       chi2 = total.GetChisquare();
@@ -370,70 +405,48 @@ class Pi0QA : public QA
     poly.SetParameters(total.GetParameter(3),
                        total.GetParameter(4),
                        total.GetParameter(5));
-    poly.SetLineColor(kAzure+2); poly.SetLineWidth(2);
+    poly.SetLineColor(kAzure+2); poly.SetLineWidth(2); poly.SetLineStyle(2);
 
     //----------------------------------------------------------------
-    // 5.  Signal / Background ratios  (±1.25…2.25 σ windows)
+    // 5.  Signal / Background CSV  (unchanged) -----------------------
     //----------------------------------------------------------------
     const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
-    for(double w : ws)
-    {
+    for(double w : ws){
       const int i1 = binAt(h, std::max(mu-w*sig, fitLo));
       const int i2 = binAt(h, std::min(mu+w*sig, fitHi));
-
-      double sErr=0, bErr=0;
-      double B = 0, S = 0;
+      double S=0,B=0,sErr=0,bErr=0;
       for(int i=i1;i<=i2;++i){
         const double x  = h->GetBinCenter(i);
-        const double bg = std::max(poly.Eval(x),0.);          // ≥0
+        const double bg = std::max(poly.Eval(x),0.);
         const double cnt= h->GetBinContent(i);
-
-        B += bg;          bErr += bg;          // Poisson
-        S += cnt-bg;      sErr += cnt;         // Poisson (conservative)
+        B+=bg; S+=cnt-bg; sErr+=cnt; bErr+=bg;
       }
-      bErr = std::sqrt(bErr);
-      sErr = std::sqrt(sErr);
-
-      const double ratio = (B>0)? S/B : 0;
-      const double rErr  = (ratio>0)? ratio*std::sqrt((sErr*sErr)/(S*S) +
-                                                      (bErr*bErr)/(B*B)) : 0;
-
+      bErr = std::sqrt(bErr); sErr = std::sqrt(sErr);
+      double ratio=(B>0)?S/B:0, rErr=0;
+      if(ratio>0) rErr=ratio*std::sqrt((sErr*sErr)/(S*S)+(bErr*bErr)/(B*B));
       csvSB << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
             << slice << ',' << w << ',' << ratio << ',' << rErr << '\n';
     }
 
     //----------------------------------------------------------------
-    // 6.  Pretty plot -------------------------------------------------
+    // 6.  Pretty plot of this single spectrum -----------------------
     //----------------------------------------------------------------
-    TCanvas c;  h->SetStats(0); h->Draw();
+    {
+      TCanvas c; h->SetStats(0); h->Draw();
+      poly.Draw("SAME"); total.Draw("SAME");
 
-    poly.Draw("SAME");
-    total.Draw("SAME");
-
-    TLegend leg(0.55,0.68,0.88,0.88); leg.SetBorderSize(0);
-    leg.AddEntry((TObject*)nullptr, ("#mu = "    + sf3(mu)  + " GeV").c_str(), "");
-    leg.AddEntry((TObject*)nullptr, ("#sigma = " + sf3(sig) + " GeV").c_str(), "");
-
-    /* S/B annotation in ±2σ window */
-    const double wCore = 2.0;
-    const int i1c = binAt(h,std::max(mu-wCore*sig,fitLo));
-    const int i2c = binAt(h,std::min(mu+wCore*sig,fitHi));
-    double coreSigErr=0, coreBgErr=0, S=0,B=0;
-    for(int i=i1c;i<=i2c;++i){
-      const double x=h->GetBinCenter(i), cnt=h->GetBinContent(i);
-      const double bg=std::max(poly.Eval(x),0.);
-      B+=bg; S+=cnt-bg; coreSigErr+=cnt; coreBgErr+=bg;
+      TLegend leg(0.55,0.68,0.88,0.88); leg.SetBorderSize(0);
+      leg.AddEntry((TObject*)nullptr,
+                   Form("#mu = %.3f #pm %.3f GeV", mu, total.GetParError(1)),
+                   "");
+      leg.AddEntry((TObject*)nullptr,
+                   Form("#sigma = %.3f #pm %.3f GeV", sig, total.GetParError(2)),
+                   "");
+      c.SaveAs(outPng.string().c_str());
     }
-    double sb = (B>0)?S/B:0;
-
-    TLatex tx; tx.SetNDC(); tx.SetTextSize(0.04);
-    tx.DrawLatex(0.55,0.60,
-                 Form("S/B (|#Deltam|<2#sigma):  %.2f", sb));
-
-    c.SaveAs(outPng.string().c_str());
 
     //----------------------------------------------------------------
-    // 7.  CSV for fit parameters
+    // 7.  CSV & stored‑fit bookkeeping ------------------------------
     //----------------------------------------------------------------
     if(fitOK){
       csvFit << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
@@ -445,75 +458,220 @@ class Pi0QA : public QA
       _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,mu,sig,chi2,ndf});
     }
 
+    /* --- keep a copy of the fit (once per slice) ------------------ */
+    if(fitOK && _storedFit.count(slice)==0){
+        _storedFit[slice].total.reset(new TF1(total));
+        _storedFit[slice].poly .reset(new TF1(poly ));
+    }
+
+    /* --- store run‑summary point (Inclusive, pT‑integrated) ------- */
+    if(fitOK && pTInt && slice=="Inclusive" && s_runPoints.count(runID)==0){
+        s_runPoints[runID] = {mu, total.GetParError(1),
+                              sig, total.GetParError(2)};
+    }
+
     //----------------------------------------------------------------
     // 8.  Cache for overview canvases
     //----------------------------------------------------------------
     cacheForOverview(slice, n, h, pTInt);
-
     return true;
   }
 
  private:
   //---------------- helper: put clone into the right cache ----------
-  void cacheForOverview(const std::string& slice,const std::string& n,
+  void cacheForOverview(const std::string& slice,const std::string&,
                         TH1* src,bool pTIntegrated)
   {
-    auto* cl = static_cast<TH1*>(src->Clone(("__cl_"+n).c_str()));
+    auto* cl = static_cast<TH1*>(src->Clone());
     cl->SetDirectory(nullptr);
 
     if(pTIntegrated)
       _centralHists.emplace(slice,cl);
-    else{
-      auto it=std::find_if(m_ptBins.begin(),m_ptBins.end(),
-                           [&](auto& p){return fabs(p.first -cl->GetXaxis()->GetXmin())<1e-3;});
-      if(it!=m_ptBins.end()){
-        size_t idx=std::distance(m_ptBins.begin(),it);
-        auto& v = _ptHists[slice];
-        if(v.size()<m_ptBins.size()) v.resize(m_ptBins.size(),nullptr);
-        v[idx]=cl;
-      }
-    }
   }
 
-  //---------------- write 2×3 overview canvases --------------------
+  //---------------- write 2 × 3 overview + μ,σ vs centrality ---------
   void writeSummaryPanels()
   {
     if(_centralHists.empty()) return;
 
-    TCanvas c("c_pi0Cent","π0 – all centralities",1800,1000);
-    c.Divide(3,2,0.01,0.01);
+    /* ---------- (A) 2 × 3 mass spectra panel -------------------- */
+    TCanvas cGrid("c_pi0Cent","π0 – all centralities",1800,1000);
+    cGrid.Divide(3,2,0.01,0.01);
 
-    /* find common Y‑max for prettier comparison */
-    double yMax=0;
-    for(auto& [sl,h]:_centralHists) yMax=std::max(yMax,h->GetMaximum());
-
+    std::vector<double> vC,vCerr,vMu,vMuErr,vSi,vSiErr;
+    const double fitLo=0.05, fitHi=0.35;
     int pad=1;
-    for(const auto& sl: slices){
+
+    for(const auto& sl : slices){
       auto it=_centralHists.find(sl);
       if(it==_centralHists.end()) continue;
-      c.cd(pad++);
-      it->second->SetStats(0);
-      it->second->SetMaximum(yMax*1.05);
-      it->second->Draw();
-      TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
-      const std::string lbl = (sl == "Inclusive")
-              ? "Inclusive"
-              : "Centrality: " + sl.substr(0, sl.find('_')) + "–" +
-                sl.substr(sl.find('_') + 1) + " %";
-      tl.DrawLatex(0.14, 0.83, lbl.c_str());
+      TH1* h=it->second;
+      cGrid.cd(pad++); h->SetStats(0);
+
+      /* ---- pick stored fit or (rare) fall‑back quick fit ---------- */
+      TF1 *fTot=nullptr,*fBg=nullptr;
+      std::unique_ptr<TF1> tmpTot,tmpBg;
+      if(_storedFit.count(sl)){
+          fTot=_storedFit[sl].total.get();
+          fBg =_storedFit[sl].poly .get();
+      }else{
+          tmpTot=std::make_unique<TF1>("fTmp","gaus(0)+pol2(3)",fitLo,fitHi);
+          int iMax=h->GetMaximumBin();
+          tmpTot->SetParameters(h->GetBinContent(iMax),
+                                h->GetBinCenter (iMax),0.02,1,0,0);
+          h->Fit(tmpTot.get(),"QRN0");
+          tmpBg=std::make_unique<TF1>("fBgTmp","pol2",fitLo,fitHi);
+          tmpBg->SetParameters(tmpTot->GetParameter(3),
+                               tmpTot->GetParameter(4),
+                               tmpTot->GetParameter(5));
+          fTot=tmpTot.get(); fBg=tmpBg.get();
+      }
+
+      fTot->SetLineColor(kRed+1);   fTot->SetLineWidth(2);
+      fBg ->SetLineColor(kBlue+2);  fBg ->SetLineWidth(2);
+      fBg ->SetLineStyle(2);
+
+      h->SetMaximum(1.15*h->GetMaximum());
+      h->Draw(); fBg->Draw("SAME"); fTot->Draw("SAME");
+
+      double mu=fTot->GetParameter(1), emu=fTot->GetParError(1);
+      double si=fTot->GetParameter(2), esi=fTot->GetParError(2);
+
+      /* ---- helper: ASCII‑only label (defined once per call) --------- */
+      static const auto centLabel = [](const std::string& slice) {
+            if (slice == "Inclusive") return std::string("Inclusive");
+            const auto p = slice.find('_');
+            const std::string lo = slice.substr(0, p);
+            const std::string hi = slice.substr(p + 1);
+            return "Centrality: " + lo + "-" + hi + " %";   // plain ASCII dash
+      };
+
+      const std::string lbl = centLabel(sl);
+
+      TLatex tx; tx.SetNDC(); tx.SetTextSize(0.04);
+      tx.DrawLatex(0.13, 0.86, lbl.c_str());
+      tx.DrawLatex(0.13,0.78,Form("#mu = %.3f #pm %.3f GeV",mu,emu));
+      tx.DrawLatex(0.13,0.70,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
+
+      if(sl!="Inclusive"){
+          int lo=std::stoi(sl.substr(0,sl.find('_')));
+          int hi=std::stoi(sl.substr(sl.find('_')+1));
+          vC.push_back(0.5*(lo+hi));   vCerr.push_back(0.5*(hi-lo));
+          vMu.push_back(mu); vMuErr.push_back(emu);
+          vSi.push_back(si); vSiErr.push_back(esi);
+      }
     }
-    fs::path out = root/"EMCal/pi0QA"/"Pi0Mass_AllCentrality.png";
-    ensure_dir(out.parent_path());
-    c.SaveAs(out.string().c_str());
+
+    fs::path pngGrid = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_AllCentrality.png";
+    ensure_dir(pngGrid.parent_path()); cGrid.SaveAs(pngGrid.string().c_str());
+
+    /* ---------- (B) μ,σ versus centrality ------------------------ */
+    if(!vC.empty()){
+      int n=vC.size();
+      auto gMu=std::make_unique<TGraphErrors>(n,
+                    vC.data(),vMu.data(),vCerr.data(),vMuErr.data());
+      auto gSi=std::make_unique<TGraphErrors>(n,
+                    vC.data(),vSi.data(),vCerr.data(),vSiErr.data());
+      gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+      gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+
+      TCanvas cGS("c_mu_sigma_vs_cent",
+                  "π^{0} peak position / width vs centrality",800,800);
+
+      TPad *p1=new TPad("p1","",0,0.35,1,1);
+      p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
+      gMu->SetTitle("π^{0} mass versus centrality;Centrality [%];m_{π^{0}} (GeV/c^{2})");
+      gMu->Draw("AP");
+
+      cGS.cd();
+      TPad *p2=new TPad("p2","",0,0,1,0.32);
+      p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
+      p2->Draw(); p2->cd();
+      gSi->SetTitle(";Centrality [%];σ_{π^{0}} (GeV/c^{2})");
+      gSi->Draw("AP");
+
+      fs::path pngGraph = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_Sigma_vs_Centrality.png";
+
+      cGS.SaveAs(pngGraph.string().c_str());
+    }
   }
 
-  //-----------------------------------------------------------------
-  std::ofstream&                                   csvFit; // existing file
-  std::ofstream                                    csvSB;  // new S/B file
+  //---------------- write run‑by‑run μ,σ summary ---------------------
+  void writeRunSummary()
+  {
+      if (runID != "Combined" || s_runPoints.size() < 2) return;
+
+      static std::unordered_set<std::string> done;   // one PNG per cut
+      if (done.count(cutTag)) return;
+      done.insert(cutTag);
+
+      /* convert maps → sorted vectors (by run number) */
+      std::vector<int> runs;
+      for(const auto& [r,_]:s_runPoints)
+          if(std::all_of(r.begin(),r.end(),::isdigit))
+              runs.push_back(std::stoi(r));
+      if(runs.empty()) return;
+      std::sort(runs.begin(),runs.end());
+
+      const int n=runs.size();
+      std::vector<double> x(n),yMu(n),eMu(n),ySi(n),eSi(n);
+      for(int i=0;i<n;++i){
+          const auto& p=s_runPoints[std::to_string(runs[i])];
+          x[i]=runs[i]; yMu[i]=p.mu; eMu[i]=p.muErr;
+          ySi[i]=p.sigma; eSi[i]=p.sigmaErr;
+      }
+      auto gMu=new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
+      auto gSi=new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
+      gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+      gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+
+      TCanvas cR("c_mu_sigma_vs_run",
+                 "π^{0} peak position / width vs run",900,800);
+
+      TPad *p1=new TPad("p1","",0,0.35,1,1);
+      p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
+      gMu->SetTitle("π^{0} mass versus run;Run number;m_{π^{0}} (GeV/c^{2})");
+      gMu->Draw("AP");
+
+      cR.cd();
+      TPad *p2=new TPad("p2","",0,0,1,0.32);
+      p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
+      p2->Draw(); p2->cd();
+      gSi->SetTitle(";Run number;σ_{π^{0}} (GeV/c^{2})");
+      gSi->Draw("AP");
+
+      fs::path pngRun = root.parent_path() / (cutTag + "_Pi0Mass_Sigma_vs_Run.png");
+      cR.SaveAs(pngRun.string().c_str());
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  data members                                                    */
+  /* ---------------------------------------------------------------- */
+  std::ofstream&                                   csvFit;
+  std::ofstream                                    csvSB;
+
   std::unordered_map<std::string, TH1*>            _centralHists;
+
+  struct FitPair {
+      std::unique_ptr<TF1> total;
+      std::unique_ptr<TF1> poly;
+  };
+  std::unordered_map<std::string, FitPair>         _storedFit;
+
   std::unordered_map<std::string,
                      std::vector<TH1*>>            _ptHists;
   std::unordered_map<std::string, FitInfo>         _fitSummary;
+
+  /* run label of this instance */
+  std::string runID;
+  /* directory tag that identifies one (E , χ² , asym) cut‑combination
+       e.g. "E0.5_Chi3.0_Asym0.2" – filled once in process()             */
+  std::string cutTag;
+
+  /* ---------- static: accumulate points over all runs ------------ */
+  struct RunPoint { double mu, muErr, sigma, sigmaErr; };
+  static inline std::unordered_map<std::string, RunPoint> s_runPoints;
+  static inline bool s_summaryWritten=false;
 };
 
 
@@ -1062,15 +1220,17 @@ class JetQA : public QA
 class VnPlotQA : public QA
 {
  public:
-  /* ------------------------------------------------------------------ *
-   *  ctor – needs an output base directory (created if missing)        *
-   * ------------------------------------------------------------------ */
-  explicit VnPlotQA(std::filesystem::path out)
-  : QA()
-  , _outDir(std::move(out))
+    /* ------------------------------------------------------------------ *
+     *  ctor – standard QA signature (+ auto vn sub‑folder)               *
+     * ------------------------------------------------------------------ */
+  VnPlotQA(std::string           trig,
+             std::filesystem::path base,
+             const CentList&       slices)
+    : QA(std::move(trig), base, slices)     // initialise the QA base‑class
+    , _outDir(base / "vn")                  // all vₙ plots go into …/<trigger>/vn
   {
-    if (!std::filesystem::exists(_outDir))
-      std::filesystem::create_directories(_outDir);
+      if (!std::filesystem::exists(_outDir))
+        std::filesystem::create_directories(_outDir);
   }
 
   /* ------------------------------------------------------------------ *
@@ -1173,7 +1333,11 @@ class VnPlotQA : public QA
               _ownedGraphs.push_back(std::move(g));
               ++col;
             }
-            if (yMax > 0.) gPad->SetMaximum(1.15 * yMax);
+              if (yMax > 0.) {
+                  c.Update();                                            // ensure the frame exists
+                  auto *frame = static_cast<TH1*>(c.GetPrimitive("htemp"));   // implicit axis frame
+                  if (frame) frame->SetMaximum(1.15 * yMax);
+              }
 
             leg.Draw();
             saveCanvas(c, det, Form("v%d_%s_allCent_%s.png",
@@ -1354,6 +1518,7 @@ void analyzeRun24or25auau()
       qa.emplace_back(std::make_unique<MbdQA  >(trg,base,slices,mbdCache));
       qa.emplace_back(std::make_unique<SepdQA >(trg,base,slices,sepdCache));
       qa.emplace_back(std::make_unique<JetQA >(trg,base,slices));
+      qa.emplace_back(std::make_unique<VnPlotQA>(trg, base, slices));
 
       // histogram loop
       TIter itH(dTrig->GetListOfKeys());
