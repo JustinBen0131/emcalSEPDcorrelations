@@ -17,7 +17,6 @@
 #include <TMath.h>
 #include <TH2Poly.h>
 #include <CLHEP/Vector/ThreeVector.h>
-//––– CDB access ------------------------------------------------------------
 #include <cdbobjects/CDBTTree.h>
 #include <ffamodules/CDBInterface.h>
 //––– sPHENIX objects -------------------------------------------------------
