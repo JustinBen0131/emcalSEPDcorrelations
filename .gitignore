@@ -1,0 +1,3 @@
+# Analysis artefacts – never push these
+output/
+input/
