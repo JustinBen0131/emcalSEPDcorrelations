@@ -295,7 +295,7 @@ class Pi0QA : public QA
         csvFit(csvFit_)
   {
     /* run label */
-    runID = root.parent_path().filename().string();  
+    runID = root.parent_path().filename().string();
 
     fs::path p = root / "EMCal/pi0QA" / "Pi0SignalBackground.csv";
     ensure_dir(p.parent_path());
@@ -457,12 +457,14 @@ class Pi0QA : public QA
               gEta.SetParLimits(1,   etaLo,   etaHi);
               gEta.SetParLimits(2,   0.020,   0.090);
 
-              // softly constrain the background (±20 % around side‑band fit)
+              /* robust limits even if the nominal coefficient is ~0
+               * give each parameter at least ±1 × 10⁻³ head‑room            */
               for (int ip = 3; ip <= 5; ++ip) {
-                  const double p = bkg.GetParameter(ip - 3);
-                  gEta.SetParLimits(ip, 0.8 * p, 1.2 * p);
+                  const double p  = bkg.GetParameter(ip - 3);
+                  const double dp = std::max(std::fabs(p)*0.20, 1e-3);
+                  gEta.SetParLimits(ip, p - dp, p + dp);
               }
-
+              
               const bool etaOK = (h->Fit(&gEta, "QRN0") == 0);   // Q:quiet R:range N:no‑store 0:draw suppressed
               if (etaOK) {
                   etaMu     = gEta.GetParameter(1);
@@ -563,9 +565,10 @@ class Pi0QA : public QA
         _storedFit[slice].poly .reset(new TF1(poly ));
     }
 
-    /* --- store run‑summary point (Inclusive, pT‑integrated) ------- */
-    if(fitOK && pTInt && slice=="Inclusive" && s_runPoints.count(runID)==0){
-        s_runPoints[runID] = {piMu, piMuErr, piSig, piSigErr};
+   if (fitOK) {                                 // ← pTInt condition removed
+            auto &m = s_runPoints[slice];          // creates slice entry if missing
+            if (m.count(runID) == 0)               // keep first occurrence only
+                m[runID] = {piMu, piMuErr, piSig, piSigErr};
     }
 
     //----------------------------------------------------------------
@@ -782,54 +785,140 @@ class Pi0QA : public QA
     }
   }
 
-  //---------------- write run‑by‑run #mu,#sigma summary (#pi0 only) ----------
+    //--------------------------------------------------------------------
+    //  Write run‑by‑run π0‐mass summary   (called once, after “Combined”)
+    //--------------------------------------------------------------------
   void writeRunSummary()
   {
-      if (runID != "Combined" || s_runPoints.size() < 2) return;
+        /* -------------------------------------------------------------
+         * 1)  Guard clauses
+         * ----------------------------------------------------------- */
+        if (runID != "Combined") {
+            std::cout << "[Pi0QA]  writeRunSummary() – skipped:  not in \"Combined\" pass\n";
+            return;
+        }
+        if (s_runPoints.empty()) {
+            std::cout << "[Pi0QA]  writeRunSummary() – WARNING:  s_runPoints is EMPTY\n";
+            return;
+        }
 
-      static std::unordered_set<std::string> done;   // one PNG per cut
-      if (done.count(cutTag)) return;
-      done.insert(cutTag);
+        // one PNG per (E,χ,asy) cut – avoid duplicates when several Pi0QA
+        static std::unordered_set<std::string> s_done;
+        if (s_done.count(cutTag)) {
+            std::cout << "[Pi0QA]  writeRunSummary() – already written for cut "
+                      << cutTag << '\n';
+            return;
+        }
+        s_done.insert(cutTag);
 
-      /* convert maps → sorted vectors (by run number) */
-      std::vector<int> runs;
-      for(const auto& [r,_]:s_runPoints)
-          if(std::all_of(r.begin(),r.end(),::isdigit))
-              runs.push_back(std::stoi(r));
-      if(runs.empty()) return;
-      std::sort(runs.begin(),runs.end());
+        std::cout << "[Pi0QA]  ▶ building run‑summary for cut " << cutTag << '\n';
+        std::cout << "          slices stored : " << s_runPoints.size() << '\n';
 
-      const int n=runs.size();
-      std::vector<double> x(n),yMu(n),eMu(n),ySi(n),eSi(n);
-      for(int i=0;i<n;++i){
-          const auto& p=s_runPoints[std::to_string(runs[i])];
-          x[i]=runs[i]; yMu[i]=p.mu; eMu[i]=p.muErr;
-          ySi[i]=p.sigma; eSi[i]=p.sigmaErr;
-      }
-      auto gMu=new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
-      auto gSi=new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
-      gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-      gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+        /* -------------------------------------------------------------
+         * 2)  Colour palette
+         * ----------------------------------------------------------- */
+        const int cols[] = {kBlue+1,kRed+1,kGreen+2,kMagenta+2,
+                            kOrange+1,kCyan+2,kSpring+5,kPink+1};
+        constexpr int nCols = sizeof(cols)/sizeof(int);
 
-      TCanvas cR("c_mu_sigma_vs_run",
-                 "#pi^{0} peak position / width vs run",900,800);
+        /* -------------------------------------------------------------
+         * 3)  Build one TGraphErrors per slice
+         * ----------------------------------------------------------- */
+        std::vector<TGraphErrors*> gMuList, gSiList;
+        TLegend                    leg(0.12,0.73,0.42,0.88);  leg.SetBorderSize(0);
 
-      TPad *p1=new TPad("p1","",0,0.35,1,1);
-      p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
-      gMu->SetTitle("#pi^{0} mass versus run;Run number;m_{#pi^{0}} (GeV/c^{2})");
-      gMu->Draw("AP");
+        int colourIdx = 0;
+        for (const auto& [slice, mp] : s_runPoints)
+        {
+            /* --- collect run numbers (digits only) ------------------ */
+            std::vector<int> runs;
+            for (const auto& [runStr,_] : mp)
+                if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
+                    runs.push_back(std::stoi(runStr));
 
-      cR.cd();
-      TPad *p2=new TPad("p2","",0,0,1,0.32);
-      p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
-      p2->Draw(); p2->cd();
-      gSi->SetTitle(";Run number;#sigma_{#pi^{0}} (GeV/c^{2})");
-      gSi->Draw("AP");
+            if (runs.empty()) {
+                std::cout << "          · slice \"" << slice << "\" skipped – no numeric runs\n";
+                continue;
+            }
+            std::sort(runs.begin(), runs.end());
 
-      fs::path pngRun = root.parent_path() / (cutTag + "_Pi0Mass_Sigma_vs_Run.png");
-      cR.SaveAs(pngRun.string().c_str());
+            /* --- fill arrays ---------------------------------------- */
+            const int n = runs.size();
+            std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
+            for (int i = 0; i < n; ++i) {
+                const auto& p = mp.at(std::to_string(runs[i]));
+                x[i]  = runs[i];
+                yMu[i]= p.mu;      eMu[i]= p.muErr;
+                ySi[i]= p.sigma;   eSi[i]= p.sigmaErr;
+            }
+
+            auto gMu = new TGraphErrors(n, x.data(), yMu.data(), nullptr, eMu.data());
+            auto gSi = new TGraphErrors(n, x.data(), ySi.data(), nullptr, eSi.data());
+
+            const int col = cols[colourIdx++ % nCols];
+            gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+            gSi->SetMarkerStyle(kFullCircle); gSi->SetLineWidth(2);
+            gMu->SetMarkerColor(col); gMu->SetLineColor(col);
+            gSi->SetMarkerColor(col); gSi->SetLineColor(col);
+
+            gMuList.push_back(gMu);
+            gSiList.push_back(gSi);
+
+            const std::string lbl = (slice == "Inclusive") ?
+                                     "Inclusive" : "Cent " + slice + " %";
+            leg.AddEntry(gMu, lbl.c_str(), "pl");
+
+            std::cout << "          · slice \"" << slice << "\" – "
+                      << n << " runs, colour idx " << (colourIdx-1) << '\n';
+        }
+
+        if (gMuList.empty()) {
+            std::cout << "[Pi0QA]  writeRunSummary() – ABORT:  all slices empty, no graph created\n";
+            return;
+        }
+
+        /* -------------------------------------------------------------
+         * 4)  Draw canvas (μ upper, σ lower)
+         * ----------------------------------------------------------- */
+        TCanvas cR("c_mu_sigma_vs_run_allCent",
+                   "#pi^{0} peak position / width vs run", 900, 800);
+
+        // ---- μ pad --------------------------------------------------
+        TPad *p1 = new TPad("p1","", 0, 0.35, 1, 1);
+        p1->SetBottomMargin(0.02);  p1->Draw();  p1->cd();
+        gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV/#it{c}^{2})");
+
+        for (std::size_t i = 0; i < gMuList.size(); ++i)
+            gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
+        leg.Draw();
+
+        // ---- σ pad --------------------------------------------------
+        cR.cd();
+        TPad *p2 = new TPad("p2","", 0, 0, 1, 0.32);
+        p2->SetTopMargin(0.02);  p2->SetBottomMargin(0.30);
+        p2->Draw();  p2->cd();
+
+        gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV/#it{c}^{2})");
+        for (std::size_t i = 0; i < gSiList.size(); ++i)
+            gSiList[i]->Draw(i == 0 ? "AP" : "P SAME");
+
+        /* -------------------------------------------------------------
+         * 5)  Save PNG – catch I/O problems
+         * ----------------------------------------------------------- */
+        fs::path pngRun = root / "EMCal" / "pi0QA" / cutTag /
+                          "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
+        ensure_dir(pngRun.parent_path());
+
+        try {
+            cR.SaveAs(pngRun.string().c_str());
+            std::cout << "[Pi0QA]  ✔  run‑summary written to "
+                      << pngRun.string() << '\n';
+        }
+        catch (const std::exception& ex) {
+            std::cerr << "[Pi0QA]  ERROR while saving \"" << pngRun.string()
+                      << "\" – " << ex.what() << '\n';
+        }
   }
-
   /* ---------------------------------------------------------------- */
   /*  data members                                                    */
   /* ---------------------------------------------------------------- */
@@ -854,10 +943,13 @@ class Pi0QA : public QA
   /* directory tag that identifies one (E , χ² , asym) cut‑combination */
   std::string cutTag;
 
-  /* ---------- static: accumulate #pi0 points over all runs ---------- */
+  /* ---------- static: accumulate #pi0 points per slice & run ---------- */
   struct RunPoint { double mu, muErr, sigma, sigmaErr; };
-  static inline std::unordered_map<std::string, RunPoint> s_runPoints;
-  static inline bool s_summaryWritten=false;
+  /*   slice → runID → RunPoint   */
+  static inline std::unordered_map<
+                std::string,
+                std::unordered_map<std::string,RunPoint>>  s_runPoints;
+  static inline bool s_summaryWritten = false;
 };
 
 
@@ -912,33 +1004,60 @@ public:
     // =====================   final summary   ==========================
     ~CorrQA() override
     {
-        const std::string runID = root.parent_path().filename().string();
-        if (runID != "Combined" || s_done) return;
-        s_done = true;
+        /* --------------------------------------------
+           0)  Guard: Only once per trigger / subDir
+           ------------------------------------------ */
+        const std::string runID   = root.parent_path().filename().string();
+        const std::string trigKey = root.filename().string();           //!  trigger folder name
+        if (runID != "Combined") return;
 
-        const fs::path baseOut = root.parent_path();   // “…/Combined/<trigger>”
+        /* one summary *per trigger* → keep a set ‑ not one global bool */
+        static std::unordered_set<std::string> done;                    //! NEW
+        if (done.count(trigKey)) return;                                //! NEW
+        done.insert(trigKey);                                           //! NEW
 
+        std::cout << "[CorrQA] Building summary for trigger \""         //! LOG
+                  << trigKey << "\"  …\n";
+
+        /* --------------------------------------------
+           1)  Output root = “…/Combined/<trigger>”
+           ------------------------------------------ */
+        const fs::path baseOut = root;                                  //! FIX (was parent_path)
+
+        /* --------------------------------------------
+           2)  Traverse the cached maps
+           ------------------------------------------ */
         for (const auto& [subDir, byName] : s_cache)
-            for (const auto& [hName, byRun] : byName)
+            for (const auto& [hNameRaw, byRun] : byName)
             {
                 if (byRun.empty()) continue;
 
-                /* gather <run,hist> sorted by run number (as string) */
+                /* ---- sanitise hName for the filesystem ----------------- */
+                std::string hName = hNameRaw;                            //! NEW
+                for (char& ch : hName)
+                    if (ch == ' ' || ch == ':' || ch == '<' || ch == '>' ||
+                        ch == '"' || ch == '\\' || ch == '/' || ch == '|')
+                        ch = '_';                                        //! replace illegal chars
+
+                /* ---- gather <run,hist> sorted by run number ------------ */
                 std::vector<std::pair<std::string,TH2*>> runs;
                 runs.reserve(byRun.size());
                 for (const auto& [r,h] : byRun) runs.emplace_back(r, h.get());
                 std::sort(runs.begin(), runs.end(),
                            [](auto& a, auto& b){ return a.first < b.first; });
 
-                /* common log‑safe colour‑scale */
-                double zMax = 0;
-                for (const auto& [_,h] : runs) zMax = std::max(zMax, h->GetMaximum());
-                for (const auto& [_,h] : runs) { h->SetMinimum(1); h->SetMaximum(zMax); }
+                if (runs.empty()) continue;
 
-                /* paginated 10×10 grids */
+                /* ---- common colour scale ------------------------------- */
+                double zMax = 0;
+                for (auto& [_,h] : runs) zMax = std::max(zMax, h->GetMaximum());
+                for (auto& [_,h] : runs) { h->SetMinimum(1); h->SetMaximum(zMax); }
+
+                /* ---- pagination (100 pads per page) -------------------- */
                 const int perPage = 100;
                 const int nPages  = (runs.size() + perPage - 1) / perPage;
-                fs::path outDir   = baseOut / subDir / ("summary_" + hName);
+
+                fs::path outDir = baseOut / subDir / ("summary_" + hName);
                 ensure_dir(outDir);
 
                 for (int pg = 0; pg < nPages; ++pg)
@@ -946,21 +1065,30 @@ public:
                     const int lo =  pg      * perPage;
                     const int hi = (pg + 1) * perPage;
 
-                    TCanvas c(Form("c_%s_p%02d", hName.c_str(), pg+1), "", 3000, 3000);
-                    c.Divide(10,10,0.000,0.000);
+                    TCanvas c(Form("c_%s_pg%02d", hName.c_str(), pg+1), "", 3000, 3000);
+                    c.Divide(10, 10, 0.000, 0.000);
 
                     for (int i = lo; i < hi && i < (int)runs.size(); ++i)
                     {
                         c.cd(i - lo + 1);
-                        setupPad(gPad);                       // pad‑specific margins/log‑Z
+                        setupPad(gPad);
                         runs[i].second->Draw("COLZ");
 
                         TLatex tl; tl.SetNDC(); tl.SetTextSize(0.06);
                         tl.DrawLatex(0.02, 0.90, runs[i].first.c_str());
                     }
-                    c.SaveAs((outDir / Form("page%02d.png", pg+1)).string().c_str());
-                }
-            }
+
+                    const fs::path png = outDir / Form("page%02d.png", pg+1);
+                    try {                                                     //! TRY/CATCH
+                        c.SaveAs(png.string().c_str());
+                        std::cout << "   ↳  " << png.string() << '\n';       //! LOG
+                    }
+                    catch (const std::exception& ex) {
+                        std::cerr << "[CorrQA] ERROR writing \""
+                                  << png.string() << "\": " << ex.what() << '\n';
+                  }
+              }
+         }
     }
 
     // =====================   helpers   ================================
@@ -1490,11 +1618,22 @@ class JetQA : public QA
 
     fs::path outBase = cPath(root, slice, fs::path("jetQA") / rLab);
 
+    // fixed code – log‑Y axis
     if (is1D && o->InheritsFrom(TH1::Class()))
     {
-      save1D(static_cast<TH1*>(o), outBase / (n + ".png"));
-      return true;
+          TH1* h1 = static_cast<TH1*>(o);
+          h1->SetTitle(makeTitle(n).c_str());   // optional: readable title
+
+          TCanvas c;
+          c.SetLogy();                          // ← logarithmic y‑axis
+          h1->SetStats(0);
+          h1->Draw();
+
+          ensure_dir(outBase);
+          c.SaveAs((outBase / (n + ".png")).string().c_str());
+          return true;
     }
+      
     if (is2D && o->InheritsFrom(TH2::Class()))
       return handle2D(static_cast<TH2*>(o), outBase, n);
 
@@ -1588,31 +1727,31 @@ class JetQA : public QA
   }
 };
 
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                V n   P l o t   P o s t ‑ P r o c e s s o r        ║
+// ╚═══════════════════════════════════════════════════════════════════╝
 class VnPlotQA : public QA
 {
  public:
-    /* ------------------------------------------------------------------ *
-     *  ctor – standard QA signature (+ auto vn sub‑folder)               *
-     * ------------------------------------------------------------------ */
+  /* ctor – inherits QA constructor and auto‑creates “…/<trigger>/vn” */
   VnPlotQA(std::string           trig,
-             std::filesystem::path base,
-             const CentList&       slices)
-    : QA(std::move(trig), base, slices)     // initialise the QA base‑class
-    , _outDir(base / "vn")                  // all vₙ plots go into …/<trigger>/vn
+           std::filesystem::path base,
+           const CentList&       slices)
+  : QA(std::move(trig), base, slices)
+  , _outDir(base / "vn")
   {
-      if (!std::filesystem::exists(_outDir))
-        std::filesystem::create_directories(_outDir);
+    if (!std::filesystem::exists(_outDir))
+      std::filesystem::create_directories(_outDir);
   }
 
   /* ------------------------------------------------------------------ *
-   *  called once for *every* TObject in the input ROOT file            *
+   *  process(): cache every TProfile that matches                      *
    * ------------------------------------------------------------------ */
   bool process(TObject* o) override
   {
     if (!o->InheritsFrom(TProfile::Class())) return false;
 
     const std::string hname = o->GetName();
-    /*  pattern:  p_v< n >_< DET >_< lo >_< hi >_< trigger >            */
     std::smatch m;
     static const std::regex re(
         R"(p_v([123])_([A-Za-z0-9_]+)_([0-9]+)_([0-9]+)_(.+))");
@@ -1620,26 +1759,26 @@ class VnPlotQA : public QA
     if (!std::regex_match(hname, m, re)) return false;
 
     const int    nHarm = std::stoi(m[1]);               // 1,2,3
-    const string det   = m[2];
+    const string det   = m[2];                          // CEMC_S, …
     const string cent  = m[3].str() + '_' + m[4].str(); // "20_40"
-    const string trig  = m[5];
+    const string trig  = m[5];                          // trigger label
 
-    /* trigger → detector → harmonic → centrality → list<TProfile*> */
     _cache[trig][det][nHarm][cent]
         .push_back(static_cast<TProfile*>(o));
     return true;
   }
 
   /* ------------------------------------------------------------------ *
-   *  destructor = single final plotting pass                           *
+   *  destructor = single, final plotting pass                          *
    * ------------------------------------------------------------------ */
   ~VnPlotQA() override { writeCanvases(); }
 
  private:
-  using ProfileVec = std::vector<TProfile*>;
-
-  /* ---- helper: convert one TProfile → TGraphErrors ----------------- */
-  static std::unique_ptr<TGraphErrors> makeGraph(const TProfile* p)
+  /* ------------------------------------------------------------------ *
+   *  helper: produce a TGraphErrors from a TProfile (no x‑errors)      *
+   * ------------------------------------------------------------------ */
+  static std::unique_ptr<TGraphErrors> makeGraph(const TProfile* p,
+                                                 bool withXerr = false)
   {
     const int nb = p->GetNbinsX();
     auto g = std::make_unique<TGraphErrors>(nb);
@@ -1649,7 +1788,7 @@ class VnPlotQA : public QA
       const double xLo = p->GetXaxis()->GetBinLowEdge(i);
       const double xHi = p->GetXaxis()->GetBinUpEdge (i);
       const double x   = 0.5 * (xLo + xHi);
-      const double ex  = 0.5 * (xHi - xLo);
+      const double ex  = withXerr ? 0.5 * (xHi - xLo) : 0.0;
 
       const double y   = p->GetBinContent(i);
       const double ey  = p->GetBinError  (i);
@@ -1662,67 +1801,91 @@ class VnPlotQA : public QA
     return g;
   }
 
-  /* ---- heavy part: generate canvases and write PNGs ---------------- */
+  /* ------------------------------------------------------------------ *
+   *  helper: integrate a TProfile over pT → one value per centrality   *
+   * ------------------------------------------------------------------ */
+  static std::pair<double,double> meanOfProfile(const TProfile* p)
+  {
+    double num = 0., den = 0., err2 = 0.;
+    const int nb = p->GetNbinsX();
+
+    for (int i = 1; i <= nb; ++i)
+    {
+      const double   y  = p->GetBinContent (i);
+      const double   e  = p->GetBinError   (i);
+      const double   w  = p->GetBinEntries(i);     // TProfile weight
+      if (w <= 0) continue;
+
+      num  += w * y;
+      den  += w;
+      err2 += (w * e) * (w * e);
+    }
+    const double mean = (den > 0) ? num / den : 0.;
+    const double err  = (den > 0) ? std::sqrt(err2) / den : 0.;
+    return {mean, err};
+  }
+
+  /* ------------------------------------------------------------------ *
+   *  heavy part: generate canvases and write PNGs                      *
+   * ------------------------------------------------------------------ */
   void writeCanvases()
   {
+    /* loop hierarchy: trigger → detector → harmonic → centrality */
     for (const auto& [trig, detMap] : _cache)
       for (const auto& [det, harmMap] : detMap)
-        for (const auto& [n, centMap] : harmMap)          // n = 1,2,3
+        for (const auto& [n,  centMap] : harmMap)
         {
           //----------------------------------------------------------------
-          // (A) one canvas: *all* centralities, fixed {detector,n,trigger}
+          // (A)  vₙ(pT) – all centralities, fixed detector & harmonic
           //----------------------------------------------------------------
           {
-            const std::string ttl = Form("v_{%d} vs p_{T} – %s (%s trigger)",
-                                         n, det.c_str(), trig.c_str());
+            const std::string ttl =
+              Form("v_{%d}(p_{T}) – %s (%s trigger)",
+                   n, det.c_str(), trig.c_str());
 
-            TCanvas c(Form("c_v%d_%s_%s", n, det.c_str(), trig.c_str()),
+            TCanvas c(Form("c_v%d_%s_allCent_%s", n, det.c_str(), trig.c_str()),
                       "", 1200, 900);
             c.SetGrid();
 
             TLegend leg(0.15, 0.70, 0.45, 0.88); leg.SetBorderSize(0);
-
             int    col  = 1;
             double yMax = 0.;
 
             for (const auto& [cent, profList] : centMap)
             {
               if (profList.empty()) continue;
-              auto g = makeGraph(profList.front());
-              g->SetLineColor(col);
+              auto g = makeGraph(profList.front());          // no x‑error
+              g->SetLineColor  (col);
               g->SetMarkerColor(col);
               g->SetTitle(ttl.c_str());
 
               g->Draw(col == 1 ? "APL" : "PL SAME");
               leg.AddEntry(g.get(), Form("Cent %s %%", cent.c_str()), "pl");
 
-              const int    npts = g->GetN();
-              const double localMax =
-                  TMath::MaxElement(npts, g->GetY());
-              yMax = std::max(yMax, localMax);
+              const int npts = g->GetN();
+              yMax = std::max(yMax, TMath::MaxElement(npts, g->GetY()));
 
               _ownedGraphs.push_back(std::move(g));
               ++col;
             }
-              if (yMax > 0.) {
-                  c.Update();                                            // ensure the frame exists
-                  auto *frame = static_cast<TH1*>(c.GetPrimitive("htemp"));   // implicit axis frame
-                  if (frame) frame->SetMaximum(1.15 * yMax);
-              }
-
+            if (yMax > 0.) {
+              c.Update();
+              auto *frame = static_cast<TH1*>(c.GetPrimitive("htemp"));
+              if (frame) frame->SetMaximum(1.15 * yMax);
+            }
             leg.Draw();
-            saveCanvas(c, det, Form("v%d_%s_allCent_%s.png",
-                                    n, det.c_str(), trig.c_str()));
+            saveCanvas(c, det,
+                       Form("v%d_%s_allCent_%s.png", n, det.c_str(), trig.c_str()));
           }
 
           //----------------------------------------------------------------
-          // (B) one canvas *per* centrality: compare detectors
+          // (B)  vₙ(pT) – one canvas per centrality, compare detectors
           //----------------------------------------------------------------
-          for (const auto& [centWanted, _junk] : centMap)
+          for (const auto& [centWanted, _] : centMap)
           {
             const std::string ttl =
-                Form("v_{%d} vs p_{T} – Cent %s %% (%s trigger)",
-                     n, centWanted.c_str(), trig.c_str());
+              Form("v_{%d}(p_{T}) – Cent %s %% (%s trigger)",
+                   n, centWanted.c_str(), trig.c_str());
 
             TCanvas c(Form("c_v%d_cent%s_%s", n,
                            centWanted.c_str(), trig.c_str()),
@@ -1730,8 +1893,8 @@ class VnPlotQA : public QA
             c.SetGrid();
 
             TLegend leg(0.15, 0.70, 0.45, 0.88); leg.SetBorderSize(0);
-
             int col = 1;
+
             for (const auto& [det2, harmMap2] : detMap)
             {
               auto itH = harmMap2.find(n);
@@ -1740,8 +1903,8 @@ class VnPlotQA : public QA
               auto itC = itH->second.find(centWanted);
               if (itC == itH->second.end() || itC->second.empty()) continue;
 
-              auto g = makeGraph(itC->second.front());
-              g->SetLineColor(col);
+              auto g = makeGraph(itC->second.front());       // no x‑error
+              g->SetLineColor  (col);
               g->SetMarkerColor(col);
               g->SetTitle(ttl.c_str());
 
@@ -1756,10 +1919,59 @@ class VnPlotQA : public QA
                        Form("v%d_cent%s_%s.png",
                             n, centWanted.c_str(), trig.c_str()));
           }
-        } // … harmonic loop
+
+          //----------------------------------------------------------------
+          // (C)  NEW:  v̄ₙ(cent) – pT‑integrated, one detector & harmonic
+          //----------------------------------------------------------------
+          {
+            auto gCent = std::make_unique<TGraphErrors>();
+            int   ip   = 0;
+
+            for (const auto& [cent, profList] : centMap)
+            {
+              if (profList.empty()) continue;
+              const TProfile* p = profList.front();
+
+              /* parse "lo_hi" → numeric centre of bin                      */
+              const auto pos = cent.find('_');
+              const double lo = std::stod(cent.substr(0, pos));
+              const double hi = std::stod(cent.substr(pos + 1));
+              const double x  = 0.5 * (lo + hi);
+              const double ex = 0.5 * (hi - lo);
+
+              const auto [vbar, vErr] = meanOfProfile(p);
+
+              gCent->SetPoint     (ip, x,  vbar);
+              gCent->SetPointError(ip, ex, vErr);
+              ++ip;
+            }
+
+            if (gCent->GetN() > 0)
+            {
+              const std::string ttl =
+                Form("v_{%d} vs centrality – %s (%s trigger)",
+                     n, det.c_str(), trig.c_str());
+
+              TCanvas c(Form("c_vbar%d_%s_%s", n, det.c_str(), trig.c_str()),
+                        "", 1200, 900);
+              c.SetGrid();
+              gCent->SetTitle(ttl.c_str());
+              gCent->SetMarkerStyle(kFullCircle);
+              gCent->SetLineWidth(2);
+              gCent->Draw("AP");
+              _ownedGraphs.push_back(std::move(gCent));
+
+              saveCanvas(c, det,
+                         Form("vbar%d_%s_vsCent_%s.png",
+                              n, det.c_str(), trig.c_str()));
+            }
+          }
+        } // harmonic loop
   }
 
-  /* ---- helper: save a canvas & create directory if needed ---------- */
+  /* ------------------------------------------------------------------ *
+   *  helper: save canvas under …/<trigger>/vn/FlowQA/<subDir>/         *
+   * ------------------------------------------------------------------ */
   void saveCanvas(TCanvas& c,
                   const std::string& subDir,
                   const std::string& fileName) const
@@ -1768,16 +1980,14 @@ class VnPlotQA : public QA
     if (!std::filesystem::exists(dir))
       std::filesystem::create_directories(dir);
 
-    const std::string full = (dir / fileName).string();
-    c.SaveAs(full.c_str());
+    c.SaveAs((dir / fileName).string().c_str());
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  data members                                                      */
-  /* ------------------------------------------------------------------ */
+  /* data members */
   std::filesystem::path _outDir;
 
-  /*  trigger → detector → n(=1,2,3) → centrality → list<TProfile*>  */
+  /* trigger → detector → n → centrality tag → list<TProfile*> */
+  using ProfileVec = std::vector<TProfile*>;
   std::unordered_map<
       std::string,
       std::unordered_map<
@@ -1786,8 +1996,7 @@ class VnPlotQA : public QA
               int,
               std::map<std::string, ProfileVec>>>> _cache;
 
-  /* keep graphs alive until end‑of‑job */
-  std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs;
+  std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs; // keep alive
 };
 
 
@@ -1936,7 +2145,7 @@ public:
         };
 
         /*  (A) vertex‑Z overlay  ----------------------------------- */
-        if (s_points.size() > 1)
+        if (!s_points.empty())
         {
             TCanvas c("c_vz_overlay","Primary‑vertex Z – all runs",900,600);
             TLegend leg(0.68,0.57,0.88,0.88); leg.SetBorderSize(0);
@@ -1993,6 +2202,23 @@ public:
             gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
             gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
+            /* ---- dynamic y‑ranges ---------------------------------------------- */
+            double minMu = yMu[0] - eMu[0], maxMu = yMu[0] + eMu[0];
+            double maxSig = ySi[0] + eSi[0];
+            for (int i = 1; i < n; ++i) {
+                minMu  = std::min(minMu , yMu[i] - eMu[i]);
+                maxMu  = std::max(maxMu , yMu[i] + eMu[i]);
+                maxSig = std::max(maxSig, ySi[i] + eSi[i]);
+            }
+            double absMu = std::max(std::fabs(minMu), std::fabs(maxMu));
+            if (absMu <= 0.) absMu = 0.01;            // safety against zero spread
+            gMu->SetMinimum(-1.10 * absMu);           // centre on 0, add 10 % margin
+            gMu->SetMaximum( 1.10 * absMu);
+
+            gSi->SetMinimum(0.0);
+            gSi->SetMaximum(1.10 * maxSig);           // 10 % head‑room above max σ
+
+            /* ---- canvas & pads -------------------------------------------------- */
             TCanvas c("c_mu_sigma_vs_run","vertex‑Z  #mu,#sigma  vs run",900,800);
 
             TPad* p1 = new TPad("p1","",0,0.35,1,1);
@@ -2007,7 +2233,10 @@ public:
             gSi->SetTitle(";Run number;#sigma  [cm]");
             gSi->Draw("AP");
 
-            c.SaveAs((outDir/"VertexZ_MeanSigma_vs_Run.png").string().c_str());
+            /* ---- export --------------------------------------------------------- */
+            fs::path pngRun = root / "EventQA" / "VertexZ_MeanSigma_vs_Run.png";
+            ensure_dir(pngRun.parent_path());
+            c.SaveAs(pngRun.string().c_str());
         }
     }
 
@@ -2201,17 +2430,24 @@ void analyzeRun24or25auau()
         return;
     }
 
-    /* 1. decide pool size (≤ physical cores, ≥ 1) ------------------ */
-    const std::size_t nWorkers =
-        std::min<std::size_t>(runFiles.size(),
-                              std::max<unsigned>(1, std::thread::hardware_concurrency()));
+//    /* 1. decide pool size (≤ physical cores, ≥ 1) ------------------ */
+//    const std::size_t nWorkers =
+//        std::min<std::size_t>(runFiles.size(),
+//                              std::max<unsigned>(1, std::thread::hardware_concurrency()));
+//
+//    ROOT::TProcessExecutor exec(nWorkers);        // **preforked** process pool
+//
+//    log::banner("Launching " + std::to_string(runFiles.size())   +
+//                " runs on "    + std::to_string(exec.GetPoolSize()) +
+//                " parallel processes");
 
-    ROOT::TProcessExecutor exec(nWorkers);        // **preforked** process pool
+    /* --- run all QA passes in‑process: no fork, shared statics -------- */
+    ROOT::TSequentialExecutor exec;                // single‑process executor
 
-    log::banner("Launching " + std::to_string(runFiles.size())   +
-                " runs on "    + std::to_string(exec.GetPoolSize()) +
-                " parallel processes");
-
+    log::banner("Running " + std::to_string(runFiles.size()) +
+                " runs sequentially (shared memory)");
+    
+    
     /* 2. worker function – receives the *index* (not the path) ----- */
     auto worker = [&](unsigned int idx)->int
     {
