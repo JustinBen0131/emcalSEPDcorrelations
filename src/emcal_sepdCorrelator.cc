@@ -527,10 +527,16 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
 
     {
       const std::string name = "p_R2_vs_cent_" + trig;
+
+    /* ----------  create a Double_t copy of the centrality edges  ---------- */
+      std::vector<double> centEdgeD(m_centEdges.begin(), m_centEdges.end());
+
       auto* p = new TProfile(name.c_str(),
                              "cos 2(#Psi_{2}^{N}-#Psi_{2}^{S}) vs centrality;"
                              "centrality bin [%];#LT cos 2Δ#Psi #GT",
-                             m_centEdges.size()-1, &m_centEdges[0], "s");
+                             centEdgeD.size() - 1,            // NB: −1 bins
+                             centEdgeD.data(),                // Double_t *
+                             "s");
       p->SetStats(0);
       H[name] = p;
     }
@@ -1102,7 +1108,10 @@ emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
                        ";#varphi  [rad];r  [cm]",
                        24, 0., 2.*TMath::Pi(),   // 24 × 15°
                        16, rEdge);               // *** non‑linear *** radii
-    h->SetCanExtend(TH1::kAllAxes);
+    // Allow the uniform φ‑axis to grow if ever needed, but keep the
+    // variable‑bin r‑axis fixed – this prevents the ROOT ExtendAxis
+    // warning and preserves overflow statistics.
+    h->SetCanExtend(TH1::kXaxis);
     return h;
 }
 
@@ -1148,22 +1157,31 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
       return false;
     };
 
-  /* ------------------------------------------------------------------ */
-  /* 0 bis.  *** NEW helper: polar filler with 30° tile‑0 ***           */
-  /* ------------------------------------------------------------------ */
-  auto fillPolar = [this](TH2* h, double phi, double r, double w,
-                          unsigned epdKey)
+    /* 0 bis.  *** NEW helper: polar filler with 30° tile‑0 ***           */
+  auto fillPolar = [](TH2* h, double phi, double r, double w,
+                        unsigned epdKey)
   {
-    if (!h) return;
-      const int ring = TowerInfoDefs::get_epd_rbin(epdKey);      // 0 … 15
-    if (ring == 0)                                     // tile‑0 spans 30°
-    {
-      const double dphi = TMath::Pi()/12.;             // 15°
-      h->Fill(phi         , r, w);
-      h->Fill(phi + dphi  , r, w);                     // neighbouring bin
-    }
-    else
-      h->Fill(phi, r, w);
+      if (!h) return;
+
+      const double twoPi = 2. * TMath::Pi();
+      auto wrap = [twoPi](double a)
+      {
+        a = std::fmod(a, twoPi);          // keep 0 ≤ φ < 2π
+        return (a < 0) ? a + twoPi : a;
+      };
+
+      const int ring = TowerInfoDefs::get_epd_rbin(epdKey);        // 0 … 15
+
+      if (ring == 0)                                              // tile‑0 spans 30°
+      {
+        const double dphi = TMath::Pi() / 12.;                    // 15°
+        h->Fill(wrap(phi)       , r, w);
+        h->Fill(wrap(phi + dphi), r, w);                          // neighbouring bin
+      }
+      else
+      {
+        h->Fill(wrap(phi), r, w);
+      }
   };
   /* ------------------------------------------------------------------ */
 
@@ -2247,12 +2265,19 @@ emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
       /* (2a)   sanity checks (printed only once per flavour) --------- */
       auto chk = [&](double v, const char* lab)
       {
-        if (!std::isfinite(v))
-          warnOnce(det+lab+"_nan", "non‑finite " << lab << " for det="
-                                                << det << ", bin=" << ib);
-        else if (std::fabs(v) > 1.5)   // |vₙ| should be ≤ 1 in most cases
-          warnOnce(det+lab+"_big", Form("|%s| = %.2f exceeds 1.5 (det=%s, bin=%zu)",
-                                        lab, v, det.c_str(), ib));
+          if (!std::isfinite(v))
+          {
+            std::ostringstream msg;
+            msg << "non‑finite " << lab << " for det=" << det << ", bin=" << ib;
+            warnOnce(det + lab + "_nan", msg.str());
+          }
+          else if (std::fabs(v) > 1.5)
+          {
+            std::ostringstream msg;
+            msg << '|' << lab << "| = " << v
+                << " > 1.5  (det=" << det << ", bin=" << ib << ")";
+            warnOnce(det + lab + "_big", msg.str());
+          }
       };
       chk(v1, "v1");  chk(v2, "v2");  chk(v3, "v3");
 
