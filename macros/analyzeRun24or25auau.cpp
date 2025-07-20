@@ -269,7 +269,7 @@ protected:
 
 
 // ╔══════════════════════════════════════════════╗
-// ║     #pi0   I N V A R I A N T ‑ M A S S   QA    ║
+// ║     #pi0   I N V A R I A N T ‑ M A S S   QA  ║
 // ╚══════════════════════════════════════════════╝
 class Pi0QA : public QA
 {
@@ -295,9 +295,8 @@ class Pi0QA : public QA
         csvFit(csvFit_)
   {
     /* run label */
-    runID = root.parent_path().filename().string();  // "00066013", "Combined", …
+    runID = root.parent_path().filename().string();  
 
-    /* new CSV for S/B */
     fs::path p = root / "EMCal/pi0QA" / "Pi0SignalBackground.csv";
     ensure_dir(p.parent_path());
     csvSB.open(p);
@@ -319,7 +318,7 @@ class Pi0QA : public QA
   {
     if (!o->InheritsFrom(TH1::Class())) return false;
     std::string n = o->GetName();
-    if (n.rfind("mInv_",0)!=0) return false;          // not a #pi0 spectrum
+    if (n.rfind("mInv_",0)!=0) return false;
 
     CutKey ck;              // parse name
     if (!decodeInvName(n, ck)) return false;
@@ -342,7 +341,7 @@ class Pi0QA : public QA
     }
 
     fs::path subDir = "EMCal/pi0QA";
-    subDir /= combDir;                  // …/pi0QA/<cut>/[…]
+    subDir /= combDir;                 
     if(!pTInt) subDir/=("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
     fs::path outPng = cPath(root,slice,subDir)/(n+".png");
     ensure_dir(outPng.parent_path());
@@ -636,24 +635,34 @@ class Pi0QA : public QA
 
       const std::string lbl = centLabel(sl);
 
-      /* -------- intelligent corner placement – never overlaps with data ------- */
-      const double lm = gPad->GetLeftMargin();     // pad margins in NDC
-      const double rm = gPad->GetRightMargin();
-      const double tm = gPad->GetTopMargin();
+    /* ---------- very‑simple “top for first two, bottom for all others” logic ------------- */
+    const double lm = gPad->GetLeftMargin();
+    const double rm = gPad->GetRightMargin();
+    const double tm = gPad->GetTopMargin();
+    const double bm = gPad->GetBottomMargin();
 
-      const bool   putRight = (mu < 0.22);         // peak on the left  → text right
-      const double xText    = putRight ? 1.0 - rm - 0.35   /* 0.35 ≈ text box width */
-                                         :        lm + 0.02; /* left margin + safety  */
-      const double yTop     = 1.0 - tm - 0.03;     // stay 3 % below top margin
+    /*  Which slice is this?  Examples of sl: “0_10”, “10_20”, “20_30”, … */
+    const bool isTopSlice = (sl == "40_50" || sl == "50_60");
 
-      TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.04);
-      tx.SetTextAlign(13);                          // left‑top anchoring
-      tx.DrawLatex(xText, yTop,
-                     lbl.c_str());                    // centrality label
-      tx.DrawLatex(xText, yTop - 0.07,
-                     Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
-      tx.DrawLatex(xText, yTop - 0.14,
-                     Form("#sigma = %.3f #pm %.3f GeV", si, esi));
+    /* 1) horizontal side – always use the right‑hand corner so the axis labels
+          at the left are never hidden.                                         */
+    const double xText = 1.0 - rm - 0.35;                      // 0.35 NDC ≈ block width
+
+    /* 2) vertical location                                                      */
+    const bool   putBottom = !isTopSlice;                      // top slices → top, else bottom
+    const double yAnchor   = putBottom ? bm + 0.07             // 7 % above x‑axis
+                                       : 1.0 - tm - 0.05;      // 5 % below pad title
+
+    /* 3) draw three lines – upward if at bottom, downward if at top             */
+    const double dy   = 0.07;                                  // line spacing (NDC)
+    const double y1   = putBottom ? yAnchor + 2*dy : yAnchor;
+    const double y2   = putBottom ? yAnchor +   dy : yAnchor - dy;
+    const double y3   = putBottom ? yAnchor         : yAnchor - 2*dy;
+
+    TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.04);  tx.SetTextAlign(13);
+    tx.DrawLatex(xText, y1, lbl.c_str());
+    tx.DrawLatex(xText, y2, Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
+    tx.DrawLatex(xText, y3, Form("#sigma = %.3f #pm %.3f GeV", si, esi));
 
 
       if(sl!="Inclusive"){
