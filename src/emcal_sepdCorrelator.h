@@ -4,7 +4,6 @@
 //==========================================================================
 //  EMCal × sEPD × MBD correlator – headers
 //==========================================================================
-
 //––– Framework ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
 #include <fun4all/SubsysReco.h>
 #include <calotrigger/TriggerAnalyzer.h>
@@ -112,6 +111,7 @@ class emcal_sepdCorrelator : public SubsysReco
   int         m_runNumber   = -1;
   bool        verbose       = true;
   double      m_vzCut       = 10.;        // [cm]
+  double      m_towMinE   {0.050};
   bool        m_useVzCut    = true;
   const GlobalVertex* m_vtx {nullptr};
   double m_vx {0.}, m_vy {0.}, m_vz {0.};
@@ -214,11 +214,16 @@ class emcal_sepdCorrelator : public SubsysReco
   // --- vn flow helpers ------------------------------------------------------
   static constexpr int kMaxHarm = 3;                       // we need n=2,3
   struct FlowAcc
-  {
-      double sumW  = 0.;                                     // Σ w
-      double qx[kMaxHarm+1] = {0.};                          // Σ w cos nφ   (n=1…3)
-      double qy[kMaxHarm+1] = {0.};                          // Σ w sin nφ
-      void   reset() { sumW = 0.; std::fill_n(qx,4,0.); std::fill_n(qy,4,0.); }
+    {
+        double sumW{0.};
+        double qx[4]{}, qy[4]{};
+
+        void reset()
+        {
+          sumW = 0.;
+          std::fill(std::begin(qx), std::end(qx), 0.);
+          std::fill(std::begin(qy), std::end(qy), 0.);
+        }
   };
   std::map<std::string, std::vector<FlowAcc>>  m_flowAcc;  // "CEMC" → 8 pT bins
 

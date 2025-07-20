@@ -203,8 +203,13 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   /* ------------------------------------------------------------------ */
   if (m_flowAcc.empty())                               // only first InitRun
   {
-      const std::vector<std::string> dets =
-          {"CEMC","IHCAL","OHCAL","HCAL","ALL"};
+      const std::vector<std::string> dets = {
+        "CEMC_S","CEMC_N",
+        "IHCAL_S","IHCAL_N",
+        "OHCAL_S","OHCAL_N",
+        "HCAL_S","HCAL_N",
+        "ALL_S","ALL_N"
+      };
       for (const auto& d : dets)
         m_flowAcc[d].assign(m_ptBins.size(), {});         // 8 × zero‑initialised
   }
@@ -483,24 +488,52 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
 
 void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
 {
-  /* one TProfile per {detector, harmonic, cent bin} filled versus pT‑bin index */
-  const int nPt = m_ptBins.size();
+    /* one TProfile per {detector, harmonic, centrality} filled versus *real* pT */
+    std::vector<double> ptEdge;                         // lower‑edge array
+    ptEdge.reserve(m_ptBins.size()+1);
+    ptEdge.push_back(m_ptBins.front().first);
+    for (auto& b : m_ptBins) ptEdge.push_back(b.second);
 
-  auto make = [&](const std::string& det, int n, int lo, int hi)
-  {
-    std::ostringstream name;
-    name << "p_v" << n << '_' << det << '_' << lo << '_' << hi << '_' << trig;
-    auto* p = new TProfile(name.str().c_str(),
-                           Form("v_{%d} (%s);p_{T} bin index;v_{%d}",n,det.c_str(),n),
-                           nPt, 0, nPt, "s");
-    p->SetStats(0);
-    H[name.str()] = p;
-  };
+    auto make = [&](const std::string& det, int n, int lo, int hi)
+    {
+      std::ostringstream name;
+      name << "p_v" << n << '_' << det << '_' << lo << '_' << hi << '_' << trig;
+      auto* p = new TProfile(name.str().c_str(),
+                             Form("v_{%d} (%s);p_{T}^{tower} [GeV];v_{%d}",
+                                  n,det.c_str(),n),
+                             ptEdge.size()-1, &ptEdge[0], "s");
+      p->SetStats(0);
+      H[name.str()] = p;
+    };
 
-  for (int n : {2,3})
-    for (const auto& det : {"CEMC","IHCAL","OHCAL","HCAL","ALL"})
-      for (std::size_t i=0;i+1<m_centEdges.size();++i)
-        make(det,n,m_centEdges[i],m_centEdges[i+1]);
+    for (int n : {1,2,3})
+      for (const auto& det :
+           {"CEMC_S","CEMC_N",
+            "IHCAL_S","IHCAL_N",
+            "OHCAL_S","OHCAL_N",
+            "HCAL_S","HCAL_N",
+            "ALL_S","ALL_N"})
+        for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+          make(det, n, m_centEdges[i], m_centEdges[i + 1]);
+
+    for (int n : {1,2,3})
+      for (const auto& det :
+           {"CEMC_S","CEMC_N",
+            "IHCAL_S","IHCAL_N",
+            "OHCAL_S","OHCAL_N",
+            "HCAL_S","HCAL_N",
+            "ALL_S","ALL_N"})
+        make(det, n, 0, 100);
+
+    {
+      const std::string name = "p_R2_vs_cent_" + trig;
+      auto* p = new TProfile(name.c_str(),
+                             "cos 2(#Psi_{2}^{N}-#Psi_{2}^{S}) vs centrality;"
+                             "centrality bin [%];#LT cos 2Δ#Psi #GT",
+                             m_centEdges.size()-1, &m_centEdges[0], "s");
+      p->SetStats(0);
+      H[name] = p;
+    }
 }
 
 
@@ -1421,7 +1454,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
     for (unsigned ch = 0; ch < twC->size(); ++ch)
     {
       auto* tw = twC->get_tower_at_channel(ch); if (!tw) continue;
-      const double e = tw->get_energy();        if (e <= 0) continue;
+      const double e = tw->get_energy();        if (e < m_towMinE) continue;
 
       /* ---------- bookkeeping & 1‑D spectra ------------------------- */
       sumE += e; ++nHit;
@@ -1435,7 +1468,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 
       RawTowerGeom* tg  = ck.second.g->get_tower_geometry(key);
       const double  eta = tg ? tg->get_eta() : 0.;
-      const double  et  = e;
+      const double  et  = e / std::cosh(eta);
 
       /* ---------- arm‑separated ΣE​T -------------------------------- */
       if (lbl == "CEMC")       (eta < 0 ? m_cemcEt_arm[0] : m_cemcEt_arm[1]) += et;
@@ -1488,7 +1521,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
       /* ---------- consistency checks ---------------------------------- */
       if (et < 0)
       {
-          LOG(1, CLR_YELLOW, "      [WARN] negative energy et=" << et
+          LOG(20, CLR_YELLOW, "      [WARN] negative energy et=" << et
                                  << " – tower skipped");
           continue;                 // skip this tower
       }
@@ -1506,7 +1539,7 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
             static bool warned = false;
             if (!warned)
             {
-                LOG(1, CLR_YELLOW, "      [INFO] et=" << et
+                LOG(20, CLR_YELLOW, "      [INFO] et=" << et
                                    << " outside configured pT range – clamped to bin "
                                    << ptBin << " (tower kept)");
                 warned = true;
@@ -1514,10 +1547,11 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
         }
 
       if (Verbosity() >= 7)
-          LOG(7, CLR_MAGENTA, "      et=" << et << "  →  bin " << ptBin);
+          LOG(20, CLR_MAGENTA, "      et=" << et << "  →  bin " << ptBin);
 
-        /* ---------- harmonic basis (φ from tower/cluster tg) ------------- */
-      const double phi = tg ? tg->get_phi() : 0.0;
+      /* ---------- harmonic basis (φ from tower/cluster tg) ------------- */
+      double phi = tg ? tg->get_phi() : 0.0;   // RawTowerGeom gives (‑π,π]
+      if (phi < 0) phi += 2.*M_PI;
 
       const double c1 = std::cos(phi),  s1 = std::sin(phi);
       const double c2 = c1 * c1 - s1 * s1;            // cos 2φ
@@ -1547,10 +1581,15 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
       };
 
       /* ---------- do the actual accumulation -------------------------- */
-      accumulate(lbl);                       // native subsystem
-      if (lbl == "IHCAL" || lbl == "OHCAL")  // merged HCAL view
-          accumulate("HCAL");
-      accumulate("ALL");
+      if (eta < 0) {
+          accumulate(lbl + "_S");
+          if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL_S");
+          accumulate("ALL_S");
+      } else {
+          accumulate(lbl + "_N");
+          if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL_N");
+          accumulate("ALL_N");
+      }
 
       /* ---------- per‑event debug summary ------------------------------ */
       if (Verbosity() >= 6)
@@ -2157,94 +2196,101 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
 }
 
 
-
-//--------------------------------------------------------------------
-//  fillFlowHists – store detector‑level flow coefficients v₂,v₃
-//--------------------------------------------------------------------
-void emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
+//––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+//  fillFlowHists – stores raw v₁, v₂, v₃  +  ⟨cos 2 ΔΨ⟩  vs centrality
+//                  with lightweight, self‑throttling sanity checks
+//––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+void
+emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
 {
-  /* ------------------------------------------------------------------ */
-  /* (0)  determine the centrality slice label                          */
-  /* ------------------------------------------------------------------ */
-  int lo = 0, hi = 100;                                    // default 0–100 %
+  /* (0) map this event to a <lo,hi> centrality slice ----------------- */
+  int lo = 0, hi = 100;
   if (m_centBin >= 0)
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
       if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i];  hi = m_centEdges[i + 1];  break; }
+      { lo = m_centEdges[i];  hi = m_centEdges[i + 1]; break; }
 
-  if (Verbosity() >= 4)
-    LOG(4, CLR_CYAN, "  [fillFlowHists] centBin=" << m_centBin
-                         << "  → slice " << lo << "‑" << hi << "%");
+  if (Verbosity() >= 3)
+    LOG(3, CLR_CYAN, "[fillFlowHists] cent=" << m_centBin
+                       << "  → slice " << lo << "–" << hi << '%');
 
-  /* SEPD‑South event‑plane angles (pre‑computed in doSepdQA) ---------- */
-  const double cPsi2 = std::cos(2. * m_psi2_S),  sPsi2 = std::sin(2. * m_psi2_S);
-  const double cPsi3 = std::cos(3. * m_psi3_S),  sPsi3 = std::sin(3. * m_psi3_S);
+  /* (1) harmonic basis for the SEPD‑South event plane ---------------- */
+  const double cPsi1 = std::cos(m_psi1_S),         sPsi1 = std::sin(m_psi1_S);
+  const double cPsi2 = std::cos(2.*m_psi2_S),      sPsi2 = std::sin(2.*m_psi2_S);
+  const double cPsi3 = std::cos(3.*m_psi3_S),      sPsi3 = std::sin(3.*m_psi3_S);
 
-  /* helper – print a single warning per missing histogram key --------- */
-  auto warnOnce = [&](const std::string& key)
+  /* ------------------------------------------------------------------ *
+   *  helper that prints **once** per anomaly type                      *
+   * ------------------------------------------------------------------ */
+  auto warnOnce = [&](const std::string& tag, const std::string& msg)
   {
-    static std::unordered_set<std::string> issued;
-    if (issued.insert(key).second)
-      LOG(1, CLR_YELLOW, "      [WARN] histogram \"" << key
-                               << "\" missing or wrong type");
+    static std::unordered_set<std::string> told;
+    if (told.insert(tag).second && Verbosity() >= 6)
+      LOG(6, CLR_YELLOW, "[fillFlowHists] WARNING: " << msg);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* (1)  loop over detectors and pT‑/E‑bins                            */
-  /* ------------------------------------------------------------------ */
+  /* (2) detector → pT‑bin loop -------------------------------------- */
   for (const auto& [det, vec] : m_flowAcc)
   {
-    if (Verbosity() >= 4)
-      LOG(4, CLR_BLUE, "    detector \"" << det << "\"  bins=" << vec.size());
-
     for (std::size_t ib = 0; ib < vec.size(); ++ib)
     {
-      const auto& a = vec[ib];
-      if (a.sumW <= 0.)
+      const FlowAcc& a = vec[ib];
+      if (a.sumW <= 0.) continue;
+
+      const double ptCtr = 0.5 * (m_ptBins[ib].first + m_ptBins[ib].second);
+
+      /* orthogonal projections – keep *raw* v₂ (no resolution yet) --- */
+      const double v1 = (a.qx[1]*cPsi1 + a.qy[1]*sPsi1) / a.sumW;
+      const double v2 = (a.qx[2]*cPsi2 + a.qy[2]*sPsi2) / a.sumW;  // raw
+      const double v3 = (a.qx[3]*cPsi3 + a.qy[3]*sPsi3) / a.sumW;
+
+      /* (2a)   sanity checks (printed only once per flavour) --------- */
+      auto chk = [&](double v, const char* lab)
       {
-        if (Verbosity() >= 6)
-          LOG(6, CLR_MAGENTA, "      bin " << ib << " – sumW=0, skipped");
-        continue;
-      }
+        if (!std::isfinite(v))
+          warnOnce(det+lab+"_nan", "non‑finite " << lab << " for det="
+                                                << det << ", bin=" << ib);
+        else if (std::fabs(v) > 1.5)   // |vₙ| should be ≤ 1 in most cases
+          warnOnce(det+lab+"_big", Form("|%s| = %.2f exceeds 1.5 (det=%s, bin=%zu)",
+                                        lab, v, det.c_str(), ib));
+      };
+      chk(v1, "v1");  chk(v2, "v2");  chk(v3, "v3");
 
-      /* ---- compute v₂, v₃  (project Q‑vector onto SEPD plane) ------ */
-      const double v2 = (a.qx[2] * cPsi2 + a.qy[2] * sPsi2) / a.sumW;
-      const double v3 = (a.qx[3] * cPsi3 + a.qy[3] * sPsi3) / a.sumW;
-
-      /* sanity – clamp numeric noise outside physical range ---------- */
-      const double v2_clamped = std::clamp(v2, -1.0, 1.0);
-      const double v3_clamped = std::clamp(v3, -1.0, 1.0);
-
-      if (Verbosity() >= 5)
-        std::cout << CLR_CYAN << "      bin=" << ib
-                  << "  sumW=" << a.sumW
-                  << "  v2=" << v2_clamped
-                  << "  v3=" << v3_clamped << CLR_RESET << '\n';
-
-      /* ---- fill the TProfiles (one per trigger) -------------------- */
+      /* (3) fill per‑trigger profiles (unit weight) ------------------ */
       for (const std::string& t : trig)
       {
         auto& H = qaHistogramsByTrigger[t];
 
-        std::ostringstream k2, k3;
-        k2 << "p_v2_" << det << '_' << lo << '_' << hi << '_' << t;
-        k3 << "p_v3_" << det << '_' << lo << '_' << hi << '_' << t;
+        const std::string k1 = Form("p_v1_%s_%d_%d_%s", det.c_str(), lo, hi, t.c_str());
+        const std::string k2 = Form("p_v2_%s_%d_%d_%s", det.c_str(), lo, hi, t.c_str());
+        const std::string k3 = Form("p_v3_%s_%d_%d_%s", det.c_str(), lo, hi, t.c_str());
 
-        /* v₂ --------------------------------------------------------- */
-        if (auto* p = dynamic_cast<TProfile*>(H[k2.str()]); p)
-          p->Fill(static_cast<double>(ib) + 0.5, v2_clamped);
-        else
-          warnOnce(k2.str());
+        if (auto* p = dynamic_cast<TProfile*>(H[k1])) p->Fill(ptCtr, v1, 1.0);
+        if (auto* p = dynamic_cast<TProfile*>(H[k2])) p->Fill(ptCtr, v2, 1.0);
+        if (auto* p = dynamic_cast<TProfile*>(H[k3])) p->Fill(ptCtr, v3, 1.0);
+      }
 
-        /* v₃ --------------------------------------------------------- */
-        if (auto* p = dynamic_cast<TProfile*>(H[k3.str()]); p)
-          p->Fill(static_cast<double>(ib) + 0.5, v3_clamped);
-        else
-          warnOnce(k3.str());
-      } // trigger loop
-    }   // bin loop
-  }     // detector loop
+      /* (3a) verbose per‑tower dump (fine‑grained) ------------------- */
+      if (Verbosity() >= 7)
+        LOG(7, CLR_MAGENTA, "  det=" << det << "  ib=" << ib << "  pT=" << ptCtr
+                        << "  v=( " << v1 << ", " << v2 << ", " << v3 << " )"
+                        << "  Σw=" << a.sumW);
+    }
+  }
+
+  /* (4) store ⟨cos 2 ΔΨ⟩ for later R₂ extraction ---------------------- */
+  const double cos2 = std::cos(2.*(m_psi2_N - m_psi2_S));
+  if (!std::isfinite(cos2) || std::fabs(cos2) > 1.0)
+    warnOnce("cos2_out_of_range",
+             Form("cos 2ΔΨ = %.3f outside [-1,1] (Ψ2N=%.3f, Ψ2S=%.3f)",
+                  cos2, m_psi2_N, m_psi2_S));
+
+  for (const std::string& t : trig)
+    if (auto* pR = dynamic_cast<TProfile*>(qaHistogramsByTrigger[t]
+                                           ["p_R2_vs_cent_" + t]))
+      pR->Fill(static_cast<double>(lo), cos2, 1.0);
 }
+
 
 
 //==========================================================================
