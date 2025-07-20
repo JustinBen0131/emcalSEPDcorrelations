@@ -1178,17 +1178,17 @@ public:
     c.Divide(3, 2, 0.01, 0.01);
 
     int pad = 1;
-    for (const auto& sl : slices) {
-      auto it = _centralMaps.find(sl);
-      if (it == _centralMaps.end()) continue;
+    for (const auto& kv : _centralMaps)        // iterate over the maps we really have
+    {
+        if (pad > 6) break;                      // 2 × 3 canvas → max 6 pads
+        c.cd(pad++);
+        kv.second->Draw("COLZ");
 
-      c.cd(pad++);
-      it->second->Draw("COLZ");
-
-      TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
-      tl.DrawLatex(0.15, 0.85,
-                   (sl == "Inclusive" ? "Inclusive"
-                                      : ("Cent " + sl)).c_str());
+        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.05);
+        const std::string lbl = (kv.first == "Inclusive")
+                                ? "Inclusive"
+                                : ("Cent " + kv.first);
+        tl.DrawLatex(0.15, 0.85, lbl.c_str());
     }
 
     fs::path out = root / "EMCal" / "EMCalHitMap_AllCentrality.png";

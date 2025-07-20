@@ -1,4 +1,4 @@
-# EMCAL × sEPD × MBD – **Run‑25 Au+Au (CALOFITTING)**  
+# CALO × sEPD × MBD – **Run‑25 Au+Au (CALOFITTING)**  
 *(patsfan753 · July 2025 · BNL sPHENIX farm)*
 
 End‑to‑end instructions to turn raw **CALOFITTING** DSTs into merged,
