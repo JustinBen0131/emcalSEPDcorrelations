@@ -402,71 +402,83 @@ class Pi0QA : public QA
         piSigErr = total.GetParError (2);
     }
 
-    //----------------------------------------------------------------
-    // 3.  Fixed‑background η peak search (0.45 – 0.80 GeV)
-    //----------------------------------------------------------------
-    double etaMu = 0, etaSig = 0, etaMuErr = 0, etaSigErr = 0;
+     /* ----------------------------------------------------------------
+       * 3.  Robust η‑peak search & fit   (0.45 – 0.80 GeV)
+       *     –  stage‑1:   find seed   (side‑band‑subtracted maximum)
+       *     –  stage‑2:   background from side‑bands only (2nd‑order)
+       *     –  stage‑3:   simultaneous   Gaus + Poly2 fit
+      * ---------------------------------------------------------------- */
+     double etaMu = 0, etaSig = 0, etaMuErr = 0, etaSigErr = 0;
 
-    if (runID == "Combined")          // ← skip per‑run files
-    {
-          const double etaLo = 0.45, etaHi = 0.80;
+     if (runID == "Combined")          // ← skip per‑run files
+      {
+          const double etaLo = 0.45, etaHi = 0.80;     // full η window
+          const double side   = 0.03;                  // half‑width of blind zone
+                                                       // around the candidate peak
 
-          /* take the poly coefficients from the #pi0 fit (good first‑order BKG) */
-          TF1 bkg("bkg","pol2",etaLo,etaHi);
-          bkg.SetParameters(total.GetParameter(3),
-                            total.GetParameter(4),
-                            total.GetParameter(5));
+          /* ---- (1) quick seed from raw spectrum ------------------------ */
+          int iLo = binAt(h, etaLo),  iHi = binAt(h, etaHi);
+          int iMax = iLo;  double maxCnt = 0.;
+          for (int i = iLo; i <= iHi; ++i)
+              if (h->GetBinContent(i) > maxCnt) { maxCnt = h->GetBinContent(i); iMax = i; }
 
-          /* background‑subtracted max gives seed */
-          int iLoEta = binAt(h, etaLo),  iHiEta = binAt(h, etaHi);
-          int iMaxEta = iLoEta;  double maxCntEta = 0.;
-          for (int i = iLoEta; i <= iHiEta; ++i)
+          if (maxCnt > 0)                       // peak candidate found
           {
-              double y = h->GetBinContent(i) -
-                         std::max(bkg.Eval(h->GetBinCenter(i)), 0.);
-              if (y > maxCntEta) { maxCntEta = y; iMaxEta = i; }
-          }
+              etaMu  = h->GetBinCenter(iMax);
+              etaSig = 0.040;                   // start slightly wider than π0
 
-          if (maxCntEta > 0)            // peak exists
-          {
-              etaMu  = h->GetBinCenter(iMaxEta);
-              etaSig = 0.035;                          // rough width
+              /* ---- (2) background from *side‑bands only* ----------------- *
+               *      exclude ±side around the seed to avoid bias            */
+              TF1 bkg("bkg","pol2", etaLo, etaHi);
 
-              TF1 gEta("gEta","gaus(0)+pol2(3)",etaLo,etaHi);
+              // build an exclusion mask for χ² evaluation
+              for (int i = iLo; i <= iHi; ++i) {
+                  const double x = h->GetBinCenter(i);
+                  const bool inPeak = (std::fabs(x - etaMu) < side);
+                  h->SetBinError(i, inPeak ? 1e9 : std::sqrt(h->GetBinContent(i)));
+              }
+              h->Fit(&bkg, "QN0");              // quiet, no draw, store params
+
+              // restore original errors
+              for (int i = iLo; i <= iHi; ++i)
+                  h->SetBinError(i, std::sqrt(h->GetBinContent(i)));
+
+              /* ---- (3) combined fit – let background float, *
+               *      but keep it close to the side‑band shape  */
+              TF1 gEta("gEta", "gaus(0)+pol2(3)", etaLo, etaHi);
               gEta.SetParNames("A","#mu","#sigma","c0","c1","c2");
-              double ampEta = maxCntEta;
-              gEta.SetParameters(ampEta, etaMu, etaSig,
+              gEta.SetParameters(maxCnt, etaMu, etaSig,
                                  bkg.GetParameter(0),
                                  bkg.GetParameter(1),
                                  bkg.GetParameter(2));
 
-              gEta.SetParLimits(0,      0,   1e9);
-              gEta.SetParLimits(1,   etaLo,  etaHi);
-              gEta.SetParLimits(2,   0.015,  0.080);
+              // sensible limits
+              gEta.SetParLimits(0,      0,      1e9);
+              gEta.SetParLimits(1,   etaLo,   etaHi);
+              gEta.SetParLimits(2,   0.020,   0.090);
 
-              /* fix background so the η‑Gaussian is stable */
-              gEta.FixParameter(3, bkg.GetParameter(0));
-              gEta.FixParameter(4, bkg.GetParameter(1));
-              gEta.FixParameter(5, bkg.GetParameter(2));
+              // softly constrain the background (±20 % around side‑band fit)
+              for (int ip = 3; ip <= 5; ++ip) {
+                  const double p = bkg.GetParameter(ip - 3);
+                  gEta.SetParLimits(ip, 0.8 * p, 1.2 * p);
+              }
 
-              bool etaOK = (h->Fit(&gEta, "QRN0") == 0);
-              if (etaOK)
-              {
+              const bool etaOK = (h->Fit(&gEta, "QRN0") == 0);   // Q:quiet R:range N:no‑store 0:draw suppressed
+              if (etaOK) {
                   etaMu     = gEta.GetParameter(1);
                   etaMuErr  = gEta.GetParError (1);
                   etaSig    = gEta.GetParameter(2);
                   etaSigErr = gEta.GetParError (2);
 
-                  /* store η fit once per slice for later overlays */
+                  /* cache for overview */
                   if (_storedEtaFit.count(slice) == 0)
                       _storedEtaFit[slice].reset(new TF1(gEta));
+              } else {                          // fit failed → blanks
+                  etaMu = etaSig = etaMuErr = etaSigErr = 0;
               }
-              else
-              {
-                  etaMu = etaSig = etaMuErr = etaSigErr = 0;   // failed fit
-            }
-        }
-    }
+          }
+      }
+
 
     //----------------------------------------------------------------
     // 4.  Background TF1  (clone of the poly part)
