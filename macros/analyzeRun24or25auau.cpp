@@ -2,10 +2,10 @@
 // ===============================================================
 //  • Pass‑0: catalogue every histogram in the file  (console + .txt)
 //  • Pass‑1: modular QA (EMCal, HCal, sEPD, MBD, correlations,
-//            π0 invariant‑mass spectra, …) with automatic centrality
+//            #pi0 invariant‑mass spectra, …) with automatic centrality
 //            slice replication and North/South map fusion.
 //  • Built‑in [TRACE] instrumentation to pinpoint run‑time crashes.
-//  • Global toggle kDoPi0Fit to switch π0 mass fitting on/off
+//  • Global toggle kDoPi0Fit to switch #pi0 mass fitting on/off
 // ===============================================================
 
 #include <ROOT/RDataFrame.hxx>
@@ -70,7 +70,7 @@ constexpr int kHCalCanvasH = 1200;  // IHCal / OHCal height  [px]
 
 constexpr int kEMCalCanvasW = 800;  // EMCal  hit‑map width  [px]
 constexpr int kEMCalCanvasH = 1200; // EMCal  hit‑map height [px]
-/*  <<<   π0‐fit master switch   >>>                                         *
+/*  <<<   #pi0‐fit master switch   >>>                                         *
  *  false  → spectra are drawn, but *no* TF1 fit is attempted and            *
  *           InvariantMassSummary.csv is left empty (except header).         *
  *  true   → run the Gaussian‑plus‑poly fit and fill CSV.                    */
@@ -192,7 +192,7 @@ inline fs::path cPath(fs::path base, const string& slice, fs::path sub)
 
 
 // ╔══════════════════════════════════════════════╗
-// ║ 4.  π0 CUT KEY / PEAK FITTER                 ║
+// ║ 4.  #pi0 CUT KEY / PEAK FITTER                 ║
 // ╚══════════════════════════════════════════════╝
 struct CutKey{ float E,chi,asy,pLo,pHi; string trigger; };
 
@@ -269,7 +269,7 @@ protected:
 
 
 // ╔══════════════════════════════════════════════╗
-// ║     π0   I N V A R I A N T ‑ M A S S   QA    ║
+// ║     #pi0   I N V A R I A N T ‑ M A S S   QA    ║
 // ╚══════════════════════════════════════════════╝
 class Pi0QA : public QA
 {
@@ -319,7 +319,7 @@ class Pi0QA : public QA
   {
     if (!o->InheritsFrom(TH1::Class())) return false;
     std::string n = o->GetName();
-    if (n.rfind("mInv_",0)!=0) return false;          // not a π0 spectrum
+    if (n.rfind("mInv_",0)!=0) return false;          // not a #pi0 spectrum
 
     CutKey ck;              // parse name
     if (!decodeInvName(n, ck)) return false;
@@ -348,10 +348,10 @@ class Pi0QA : public QA
     ensure_dir(outPng.parent_path());
 
     //----------------------------------------------------------------
-    // 1.  Robust π0 peak search  → initial μ, A
+    // 1.  Robust #pi0 peak search  → initial #mu, A
     //----------------------------------------------------------------
     TH1* h = static_cast<TH1*>(o);
-    const double piFitLo = 0.05, piFitHi = 0.35;            // π0 window
+    const double piFitLo = 0.05, piFitHi = 0.35;            // #pi0 window
     const int    iLoPi   = binAt(h,piFitLo),  iHiPi = binAt(h,piFitHi);
 
     int iMaxPi = iLoPi;
@@ -364,16 +364,16 @@ class Pi0QA : public QA
     const double piSigma0  = 0.025;
 
     //----------------------------------------------------------------
-    // 2.  Composite fit function  π0‑Gaus + poly‑2 background
+    // 2.  Composite fit function  #pi0‑Gaus + poly‑2 background
     //----------------------------------------------------------------
     TF1 total("total","gaus(0)+pol2(3)",piFitLo,piFitHi);
     total.SetParNames("A","mu","sigma","c0","c1","c2");
 
-    total.SetParameters(piAmp0, piMu0, 0.022,    // narrower σ start
+    total.SetParameters(piAmp0, piMu0, 0.022,    // narrower #sigma start
                         1,       0,     0);      // flat background
     total.SetParLimits(0,   0,  1e9);            // A  ≥ 0
-    total.SetParLimits(1,   0.10,  0.17);        // μ  within window
-    total.SetParLimits(2,   0.010, 0.060);       // σ  sensible range
+    total.SetParLimits(1,   0.10,  0.17);        // #mu  within window
+    total.SetParLimits(2,   0.010, 0.060);       // #sigma  sensible range
 
     ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
     ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(3'000);
@@ -393,7 +393,7 @@ class Pi0QA : public QA
 
     bool fitOK = (h->Fit(&total,"QRN0") == 0);
 
-    /* -------------- π0 parameters -------------------------------- */
+    /* -------------- #pi0 parameters -------------------------------- */
     double piMu=piMu0, piSig=piSigma0,
            piMuErr=0,   piSigErr=0;
     if(fitOK){
@@ -412,7 +412,7 @@ class Pi0QA : public QA
     {
           const double etaLo = 0.45, etaHi = 0.80;
 
-          /* take the poly coefficients from the π0 fit (good first‑order BKG) */
+          /* take the poly coefficients from the #pi0 fit (good first‑order BKG) */
           TF1 bkg("bkg","pol2",etaLo,etaHi);
           bkg.SetParameters(total.GetParameter(3),
                             total.GetParameter(4),
@@ -479,7 +479,7 @@ class Pi0QA : public QA
     poly.SetLineColor(kAzure+2); poly.SetLineWidth(2); poly.SetLineStyle(2);
 
     //----------------------------------------------------------------
-    // 5.  Signal / Background CSV  (unchanged for π0)
+    // 5.  Signal / Background CSV  (unchanged for #pi0)
     //----------------------------------------------------------------
     const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
     for(double w : ws){
@@ -511,7 +511,7 @@ class Pi0QA : public QA
       leg.SetBorderSize(0);
       leg.SetTextAlign(12);                         // left‑align text
 
-      /* π0: write μ‑line and σ‑line underneath one another */
+      /* #pi0: write #mu‑line and #sigma‑line underneath one another */
       leg.AddEntry((TObject*)nullptr,
                      Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV", piMu, piMuErr),
                      "");
@@ -546,7 +546,7 @@ class Pi0QA : public QA
     _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,piMu,piSig,
                                    total.GetChisquare(),total.GetNDF()});
 
-    /* --- keep a copy of the π0 fit (once per slice) --------------- */
+    /* --- keep a copy of the #pi0 fit (once per slice) --------------- */
     if(fitOK && _storedFit.count(slice)==0){
         _storedFit[slice].total.reset(new TF1(total));
         _storedFit[slice].poly .reset(new TF1(poly ));
@@ -576,13 +576,13 @@ class Pi0QA : public QA
       _centralHists.emplace(slice,cl);
   }
 
-  //---------------- write 2 × 3 overview + μ,σ vs centrality ---------
+  //---------------- write 2 × 3 overview + #mu,#sigma vs centrality ---------
   void writeSummaryPanels()
   {
     if(_centralHists.empty()) return;
 
     /* ---------- (A) 2 × 3 mass spectra panel -------------------- */
-    TCanvas cGrid("c_pi0Cent","π0 – all centralities",1800,1000);
+    TCanvas cGrid("c_pi0Cent","#pi0 – all centralities",1800,1000);
     cGrid.Divide(3,2,0.01,0.01);
 
     std::vector<double> vC,vCerr,vMu,vMuErr,vSi,vSiErr;
@@ -636,19 +636,23 @@ class Pi0QA : public QA
 
       const std::string lbl = centLabel(sl);
 
-        /* ------------------------------------------------------------------ *
-         *  Smart text placement:                                              *
-         *     – If the peak sits on the left‑hand side (μ ≲ 0.22 GeV) the     *
-         *        annotation is moved to the right (x ≈ 0.60) to avoid overlap *
-         *     – Otherwise it stays on the default left margin (x ≈ 0.13).     *
-         * ------------------------------------------------------------------ */
-        const double xText = (mu < 0.22) ? 0.60 : 0.13;   // 0.22 GeV ~ middle of canvas
+      /* -------- intelligent corner placement – never overlaps with data ------- */
+      const double lm = gPad->GetLeftMargin();     // pad margins in NDC
+      const double rm = gPad->GetRightMargin();
+      const double tm = gPad->GetTopMargin();
 
-        TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.04);
-        tx.DrawLatex(xText, 0.86, lbl.c_str());
-        tx.DrawLatex(xText, 0.78,
+      const bool   putRight = (mu < 0.22);         // peak on the left  → text right
+      const double xText    = putRight ? 1.0 - rm - 0.35   /* 0.35 ≈ text box width */
+                                         :        lm + 0.02; /* left margin + safety  */
+      const double yTop     = 1.0 - tm - 0.03;     // stay 3 % below top margin
+
+      TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.04);
+      tx.SetTextAlign(13);                          // left‑top anchoring
+      tx.DrawLatex(xText, yTop,
+                     lbl.c_str());                    // centrality label
+      tx.DrawLatex(xText, yTop - 0.07,
                      Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
-        tx.DrawLatex(xText, 0.70,
+      tx.DrawLatex(xText, yTop - 0.14,
                      Form("#sigma = %.3f #pm %.3f GeV", si, esi));
 
 
@@ -664,7 +668,7 @@ class Pi0QA : public QA
     fs::path pngGrid = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_AllCentrality.png";
     ensure_dir(pngGrid.parent_path()); cGrid.SaveAs(pngGrid.string().c_str());
 
-    /* ---------- (B) μ,σ versus centrality (π0 only, unchanged) --- */
+    /* ---------- (B) #mu,#sigma versus centrality (#pi0 only, unchanged) --- */
     if(!vC.empty()){
       int n=vC.size();
       auto gMu = std::make_unique<TGraphErrors>(n,
@@ -675,19 +679,36 @@ class Pi0QA : public QA
       gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
       TCanvas cGS("c_mu_sigma_vs_cent",
-                  "π^{0} peak position / width vs centrality",800,800);
+                  "#pi^{0} peak position / width vs centrality",800,800);
 
-      TPad *p1=new TPad("p1","",0,0.35,1,1);
-      p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
-      gMu->SetTitle("π^{0} mass versus centrality;Centrality [%];m_{π^{0}} (GeV/c^{2})");
-      gMu->Draw("AP");
+
+      TPad *p1 = new TPad("p1", "upper", 0, 0.30, 1, 1);   // 70 % height
+      p1->SetBottomMargin(0.001);        // virtually zero gap
+      p1->SetLeftMargin  (0.12);
+      p1->Draw();
+      p1->cd();
+
+      gMu->SetTitle("#pi^{0} mass versus centrality; ;m_{#pi^{0}} (GeV/c^{2})");
+      gMu->Draw("AP");                   // same x‑range for both pads
+      gMu->GetXaxis()->SetLabelOffset(999);  // hide x‑labels & ticks in upper pad
+      gMu->GetXaxis()->SetTitleOffset(999);
+      gMu->GetXaxis()->SetTickLength(0);
 
       cGS.cd();
-      TPad *p2=new TPad("p2","",0,0,1,0.32);
-      p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
-      p2->Draw(); p2->cd();
-      gSi->SetTitle(";Centrality [%];σ_{π^{0}} (GeV/c^{2})");
+      TPad *p2 = new TPad("p2", "lower", 0, 0.00, 1, 0.30); // 30 % height
+      p2->SetTopMargin   (0.00);
+      p2->SetBottomMargin(0.35);
+      p2->SetLeftMargin  (0.12);
+      p2->Draw();
+      p2->cd();
+
+      gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
       gSi->Draw("AP");
+      gSi->GetXaxis()->SetNdivisions(506);   // nice ticks 0,10,20,…
+      gSi->GetXaxis()->SetTitleSize(0.12);
+      gSi->GetXaxis()->SetLabelSize(0.10);
+      gSi->GetYaxis()->SetTitleSize(0.12);
+      gSi->GetYaxis()->SetLabelSize(0.10);
 
       fs::path pngGraph = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_Sigma_vs_Centrality.png";
 
@@ -695,7 +716,7 @@ class Pi0QA : public QA
     }
   }
 
-  //---------------- write run‑by‑run μ,σ summary (π0 only) ----------
+  //---------------- write run‑by‑run #mu,#sigma summary (#pi0 only) ----------
   void writeRunSummary()
   {
       if (runID != "Combined" || s_runPoints.size() < 2) return;
@@ -725,18 +746,18 @@ class Pi0QA : public QA
       gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
       TCanvas cR("c_mu_sigma_vs_run",
-                 "π^{0} peak position / width vs run",900,800);
+                 "#pi^{0} peak position / width vs run",900,800);
 
       TPad *p1=new TPad("p1","",0,0.35,1,1);
       p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
-      gMu->SetTitle("π^{0} mass versus run;Run number;m_{π^{0}} (GeV/c^{2})");
+      gMu->SetTitle("#pi^{0} mass versus run;Run number;m_{#pi^{0}} (GeV/c^{2})");
       gMu->Draw("AP");
 
       cR.cd();
       TPad *p2=new TPad("p2","",0,0,1,0.32);
       p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
       p2->Draw(); p2->cd();
-      gSi->SetTitle(";Run number;σ_{π^{0}} (GeV/c^{2})");
+      gSi->SetTitle(";Run number;#sigma_{#pi^{0}} (GeV/c^{2})");
       gSi->Draw("AP");
 
       fs::path pngRun = root.parent_path() / (cutTag + "_Pi0Mass_Sigma_vs_Run.png");
@@ -767,7 +788,7 @@ class Pi0QA : public QA
   /* directory tag that identifies one (E , χ² , asym) cut‑combination */
   std::string cutTag;
 
-  /* ---------- static: accumulate π0 points over all runs ---------- */
+  /* ---------- static: accumulate #pi0 points over all runs ---------- */
   struct RunPoint { double mu, muErr, sigma, sigmaErr; };
   static inline std::unordered_map<std::string, RunPoint> s_runPoints;
   static inline bool s_summaryWritten=false;
@@ -1337,7 +1358,7 @@ struct MBDTag{
   static bool accept(const std::string& s)
   {
     return  s.rfind("h_MBD_"      , 0) == 0   ||   // hit‑maps
-            s.rfind("h_charge_MBD", 0) == 0   ||   // per‑event ΣQ spectra
+            s.rfind("h_charge_MBD", 0) == 0   ||   // per‑event #sigmaQ spectra
             s.rfind("h_Qsum_MBD"  , 0) == 0;        // centrality helper
   }
   static constexpr const char* subdir = "MBD";
@@ -1737,7 +1758,7 @@ public:
             g.SetParameters(h->GetMaximum(), mu, sigma);
 
             //----------------------------------------------------------------
-            //  STEP‑1   iterative 2.5 σ shrinking until convergence
+            //  STEP‑1   iterative 2.5 #sigma shrinking until convergence
             //----------------------------------------------------------------
             constexpr int    kMaxIter   = 5;
             constexpr double kNSigmaFit = 2.5;
@@ -1783,7 +1804,7 @@ public:
                 c.SaveAs(outPng.string().c_str());
             }
 
-            /* ---- cache for global overlays / μ,σ vs run ------------ */
+            /* ---- cache for global overlays / #mu,#sigma vs run ------------ */
             if (runID != "Combined") {
                 VzPoint& p = s_points[runID];
                 p.mu = mu; p.muErr = muErr; p.sigma = sigma; p.sigmaErr = sigErr;
@@ -1866,7 +1887,7 @@ public:
             c.SaveAs((outDir/"Centrality_AllRuns.png").string().c_str());
         }
 
-        /*  (C) μ,σ versus run number  ------------------------------ */
+        /*  (C) #mu,#sigma versus run number  ------------------------------ */
         if (s_points.size() > 1)
         {
             std::vector<int> runs;
@@ -1888,7 +1909,7 @@ public:
             gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
             gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
-            TCanvas c("c_mu_sigma_vs_run","vertex‑Z  μ,σ  vs run",900,800);
+            TCanvas c("c_mu_sigma_vs_run","vertex‑Z  #mu,#sigma  vs run",900,800);
 
             TPad* p1 = new TPad("p1","",0,0.35,1,1);
             p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
