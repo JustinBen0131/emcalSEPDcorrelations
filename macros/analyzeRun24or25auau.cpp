@@ -341,7 +341,7 @@ class Pi0QA : public QA
     }
 
     fs::path subDir = "EMCal/pi0QA";
-    subDir /= combDir;                 
+    subDir /= combDir;
     if(!pTInt) subDir/=("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
     fs::path outPng = cPath(root,slice,subDir)/(n+".png");
     ensure_dir(outPng.parent_path());
@@ -635,35 +635,57 @@ class Pi0QA : public QA
 
       const std::string lbl = centLabel(sl);
 
-    /* ---------- very‑simple “top for first two, bottom for all others” logic ------------- */
-    const double lm = gPad->GetLeftMargin();
-    const double rm = gPad->GetRightMargin();
-    const double tm = gPad->GetTopMargin();
-    const double bm = gPad->GetBottomMargin();
+      /* ---------- very‑simple “top for first two, bottom for all others” logic ------------- */
+      const double lm = gPad->GetLeftMargin();
+      const double rm = gPad->GetRightMargin();
+      const double tm = gPad->GetTopMargin();
+      const double bm = gPad->GetBottomMargin();
 
-    /*  Which slice is this?  Examples of sl: “0_10”, “10_20”, “20_30”, … */
-    const bool isTopSlice = (sl == "40_50" || sl == "50_60");
+      /*  Which slice is this?  Examples of sl: “0_10”, “10_20”, “20_30”, … */
+      const bool isTopSlice = (sl == "30_40" || sl == "40_50" || sl == "50_60");
 
-    /* 1) horizontal side – always use the right‑hand corner so the axis labels
-          at the left are never hidden.                                         */
-    const double xText = 1.0 - rm - 0.35;                      // 0.35 NDC ≈ block width
+      /* 1) horizontal side – keep right‑hand corner but move ~7 % pad‑width left  */
+      const double xText = 1.0 - rm - 0.42;    // shift left a touch
 
-    /* 2) vertical location                                                      */
-    const bool   putBottom = !isTopSlice;                      // top slices → top, else bottom
-    const double yAnchor   = putBottom ? bm + 0.07             // 7 % above x‑axis
-                                       : 1.0 - tm - 0.05;      // 5 % below pad title
+      /* 2) vertical anchor  (unchanged logic)                                     */
+      const bool   putBottom = !isTopSlice;
+      const double yAnchor   = putBottom ? bm + 0.07 : 1.0 - tm - 0.05;
+      const double dy        = 0.063;
 
-    /* 3) draw three lines – upward if at bottom, downward if at top             */
-    const double dy   = 0.07;                                  // line spacing (NDC)
-    const double y1   = putBottom ? yAnchor + 2*dy : yAnchor;
-    const double y2   = putBottom ? yAnchor +   dy : yAnchor - dy;
-    const double y3   = putBottom ? yAnchor         : yAnchor - 2*dy;
+      /* 3) prettify trigger and run strings                                       */
+      std::string runShort  = runID;                                // drop leading zeros
+      if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+            runShort = std::to_string(std::stoi(runID));
 
-    TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.04);  tx.SetTextAlign(13);
-    tx.DrawLatex(xText, y1, lbl.c_str());
-    tx.DrawLatex(xText, y2, Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
-    tx.DrawLatex(xText, y3, Form("#sigma = %.3f #pm %.3f GeV", si, esi));
+      std::string trigLabel = trig;                                 // nicer trigger text
+      if (trig == "MBD_NandS_geq_2") trigLabel = "MBD NS #geq 2";
 
+      TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.035);  tx.SetTextAlign(13);
+
+      if (runID != "Combined")            // per‑run files: 5‑line block
+      {
+            const double yRun  = putBottom ? yAnchor + 4*dy : yAnchor;
+            const double yTrig = putBottom ? yAnchor + 3*dy : yAnchor -   dy;
+            const double yCent = putBottom ? yAnchor + 2*dy : yAnchor - 2*dy;
+            const double yMu   = putBottom ? yAnchor +   dy : yAnchor - 3*dy;
+            const double ySig  = putBottom ? yAnchor         : yAnchor - 4*dy;
+
+            tx.DrawLatex(xText, yRun,  Form("Run: %s",     runShort.c_str()));
+            tx.DrawLatex(xText, yTrig, Form("Trigger: %s", trigLabel.c_str()));
+            tx.DrawLatex(xText, yCent, lbl.c_str());                       // centrality
+            tx.DrawLatex(xText, yMu,   Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
+            tx.DrawLatex(xText, ySig,  Form("#sigma = %.3f #pm %.3f GeV", si, esi));
+      }
+      else                                 // combined file: keep original 3‑line block
+      {
+            const double y1 = putBottom ? yAnchor + 2*dy : yAnchor;
+            const double y2 = putBottom ? yAnchor +   dy : yAnchor - dy;
+            const double y3 = putBottom ? yAnchor         : yAnchor - 2*dy;
+
+            tx.DrawLatex(xText, y1, lbl.c_str());
+            tx.DrawLatex(xText, y2, Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
+            tx.DrawLatex(xText, y3, Form("#sigma = %.3f #pm %.3f GeV", si, esi));
+      }
 
       if(sl!="Inclusive"){
           int lo=std::stoi(sl.substr(0,sl.find('_')));
@@ -690,35 +712,58 @@ class Pi0QA : public QA
       TCanvas cGS("c_mu_sigma_vs_cent",
                   "#pi^{0} peak position / width vs centrality",800,800);
 
+      /* ---------- pad geometry: add a 2 % blank strip between μ‑ and σ‑panels ---- */
+      const double padLeft  = 0.18;          // identical inner widths
+      const double padRight = 0.04;          // symmetrical right margin
 
-      TPad *p1 = new TPad("p1", "upper", 0, 0.30, 1, 1);   // 70 % height
-      p1->SetBottomMargin(0.001);        // virtually zero gap
-      p1->SetLeftMargin  (0.12);
+      const double gapFrac  = 0.02;          // 2 % of canvas → visual spacer
+      const double fracBot  = 0.30;          // σ‑panel height (30 %)
+      const double fracTop  = 1.0 - fracBot - gapFrac;
+
+      /* ----------------------------- upper (μ) pad ------------------------------ */
+      TPad *p1 = new TPad("p1", "upper",
+                            0,                    gapFrac + fracBot,   // y‑low
+                            1,                    1);                  // y‑high
+      p1->SetBottomMargin(0.04);               // 4 % → small white gap
+      p1->SetTopMargin   (0.04);
+      p1->SetLeftMargin  (padLeft);
+      p1->SetRightMargin (padRight);
       p1->Draw();
       p1->cd();
 
-      gMu->SetTitle("#pi^{0} mass versus centrality; ;m_{#pi^{0}} (GeV/c^{2})");
+      gMu->SetTitle("; ;#mu_{#pi^{0}} (GeV/c^{2})");
       gMu->Draw("AP");                   // same x‑range for both pads
       gMu->GetXaxis()->SetLabelOffset(999);  // hide x‑labels & ticks in upper pad
       gMu->GetXaxis()->SetTitleOffset(999);
       gMu->GetXaxis()->SetTickLength(0);
 
+
       cGS.cd();
-      TPad *p2 = new TPad("p2", "lower", 0, 0.00, 1, 0.30); // 30 % height
-      p2->SetTopMargin   (0.00);
-      p2->SetBottomMargin(0.35);
-      p2->SetLeftMargin  (0.12);
+
+      /* ----------------------------- lower (σ) pad ------------------------------ */
+      TPad *p2 = new TPad("p2", "lower",
+                            0,                    0,                   // y‑low
+                            1,                    fracBot);            // y‑high
+      p2->SetTopMargin   (0.06);               // 4 % + 2 % gap visual balance
+      p2->SetBottomMargin(0.38);
+      p2->SetLeftMargin  (padLeft);
+      p2->SetRightMargin (padRight);
       p2->Draw();
       p2->cd();
 
       gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
       gSi->Draw("AP");
-      gSi->GetXaxis()->SetNdivisions(506);   // nice ticks 0,10,20,…
-      gSi->GetXaxis()->SetTitleSize(0.12);
-      gSi->GetXaxis()->SetLabelSize(0.10);
-      gSi->GetYaxis()->SetTitleSize(0.12);
-      gSi->GetYaxis()->SetLabelSize(0.10);
 
+      /* ---------- axis fonts & ticks – scaled for the small pad ----------------- */
+      gSi->GetXaxis()->SetNdivisions(506);                      // 0,10,20 …
+      gSi->GetXaxis()->SetTitleSize(0.09);
+      gSi->GetXaxis()->SetLabelSize(0.07);
+
+      gSi->GetYaxis()->SetTitleSize(0.09);
+      gSi->GetYaxis()->SetLabelSize(0.07);
+      gSi->GetYaxis()->SetTitleOffset(0.90);                    // centred in margin
+      gSi->GetYaxis()->SetTickLength(0.035);                    // visual match to m_{π0}
+        
       fs::path pngGraph = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_Sigma_vs_Centrality.png";
 
       cGS.SaveAs(pngGraph.string().c_str());
@@ -1971,6 +2016,44 @@ void runOneQaPass(const std::string& inFile,
   std::unique_ptr<TFile> in(TFile::Open(kInputFile.c_str(), "READ"));
   if (!in || in->IsZombie()) { log::err("Cannot open " + kInputFile); return; }
   log::ok("Input file opened");
+    
+  // ------------------------------------------------------------------
+  // 0‑bis.  Quick statistics sanity‑check
+  //        → skip this run if *every* histogram is empty
+  // ------------------------------------------------------------------
+  bool hasStatistics = false;                 // assume “all empty” for now
+    {
+      TIter itTop(in->GetListOfKeys());
+      while (auto* kDir = dynamic_cast<TKey*>(itTop())) {
+        if (strcmp(kDir->GetClassName(), "TDirectoryFile")) continue;
+
+        const std::string trg = kDir->GetName();        // e.g. "MBD_NandS_geq_2"
+        if (!kTriggersWanted.count(trg)) continue;      // ignore unwanted triggers
+
+        TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
+        TIter itH(dTrig->GetListOfKeys());
+
+        while (auto* kHist = dynamic_cast<TKey*>(itH())) {
+          std::unique_ptr<TObject> obj(kHist->ReadObj());   // RAII – autodelete
+          if (!obj->InheritsFrom(TH1::Class())) continue;   // TH2/TH3 inherit TH1
+
+          TH1* h = static_cast<TH1*>(obj.get());
+          if (h->GetEntries() > 0 && h->Integral() > 0) {   // non‑empty hist found
+            hasStatistics = true;
+            break;
+          }
+        }
+        if (hasStatistics) break;               // early exit if anything has stats
+      }
+    }
+
+    if (!hasStatistics) {
+      log::warn("Run skipped: every histogram in \"" + inFile +
+                "\" is empty (zero entries / zero integral).");
+      return;                                    // ← abort QA early → no output
+  }
+  // ------------------------------------------------------------------
+
 
   CentList slices = discoverSlices(in.get());
   {
