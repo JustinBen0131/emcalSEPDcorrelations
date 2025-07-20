@@ -1122,6 +1122,14 @@ public:
           _zMax = std::max(_zMax, hi);
         }
       }
+        
+      std::string runLabel = root.parent_path().filename().string();   // “00066484” …
+      if (std::all_of(runLabel.begin(), runLabel.end(), ::isdigit))    // numeric?
+            runLabel = std::to_string(std::stoi(runLabel));              // strip leading 0s
+
+      std::string baseTitle = src->GetTitle();                         // keep original
+      if (baseTitle.empty()) baseTitle = src->GetName();               // fallback to name
+      rot->SetTitle( (baseTitle + " (" + runLabel + ")").c_str() );
 
       /* 3)  save individual PNG (1 bin ⇔ 1 pixel) ---------------------- */
       const int cw = (kEMCalCanvasW > 0) ? kEMCalCanvasW : nEta * px;
@@ -1136,7 +1144,8 @@ public:
       c.SetFixedAspectRatio(false);           // allow resizing in a viewer
       c.SetLeftMargin  (0.14);
       c.SetBottomMargin(0.08);
-      c.SetTopMargin   (0.04);
+      const double kTopPad = 0.055;          // 0.04 → 0.10 moves title upward
+      c.SetTopMargin(kTopPad);
       c.SetFixedAspectRatio();                // lock 1 bin = 1 pixel
 
       rot->Draw("COLZ");
@@ -1246,7 +1255,15 @@ class HcalQA : public QA
       rot->SetMinimum(1.);
       rot->GetXaxis()->SetTitle("#eta index");
       rot->GetYaxis()->SetTitle("#phi index");
+        
+      std::string runLabel = root.parent_path().filename().string();   // “00066484” …
+      if (std::all_of(runLabel.begin(), runLabel.end(), ::isdigit))    // numeric?
+            runLabel = std::to_string(std::stoi(runLabel));              // strip leading 0s
 
+      std::string baseTitle = src->GetTitle();                         // keep original
+      if (baseTitle.empty()) baseTitle = src->GetName();               // fallback to name
+      rot->SetTitle( (baseTitle + " (" + runLabel + ")").c_str() );
+        
       /* --- make tick‑label fonts smaller & tidy titles ---------------- */
       const double kLabSize = 0.025;   // tick‑label font (default ≈ 0.04)
       const double kTitSize = 0.030;   // axis‑title font  (default ≈ 0.04)
@@ -1271,7 +1288,8 @@ class HcalQA : public QA
       c.SetRightMargin(0.16);
       c.SetLeftMargin (0.08);
       c.SetBottomMargin(0.08);
-      c.SetTopMargin  (0.04);
+      const double kTopPad = 0.055;          // 0.04 → 0.10 moves title upward
+      c.SetTopMargin(kTopPad);
       c.SetFixedAspectRatio();                  // 1 bin ⇔ 1 pixel
 
       rot->Draw("COLZ");
@@ -2221,16 +2239,50 @@ void analyzeRun24or25auau()
         const path combined = kInputDir / "output_ALL_COMBINED.root";
         log::banner("Hadd – building " + combined.string());
 
+        // ------------------------------------------------------------
+        // (a)  print a detailed file list with individual sizes
+        // ------------------------------------------------------------
+        log::info("Files to be merged (" + std::to_string(runFiles.size()) + " total):");
+        std::uintmax_t totBytes = 0;
+        for (const auto& f : runFiles) {
+            const auto sz = fs::file_size(f);
+            totBytes += sz;
+            log::info("   + " + f.filename().string() +
+                      "  (" + std::to_string(sz / 1'024'000) + " MB)");
+        }
+        log::info("   ------------------------------------------------");
+        log::info("Accumulated input size : " +
+                  std::to_string(totBytes / 1'024'000) + " MB");
+
+        // ------------------------------------------------------------
+        // (b)  run TFileMerger with progress timing
+        // ------------------------------------------------------------
+        const auto t0Hadd = std::chrono::steady_clock::now();
+
         TFileMerger merger(/*dryRun=*/false, /*verbose=*/true);
         merger.OutputFile(combined.c_str(), "RECREATE");
-        for (const auto& f : runFiles) merger.AddFile(f.c_str());
+
+        for (const auto& f : runFiles) {
+            log::trace("TFileMerger  ← adding  " + f.string());
+            merger.AddFile(f.c_str());
+        }
 
         if (!merger.Merge()) {
             log::err("TFileMerger failed – combined QA skipped");
             return;
         }
-        log::ok("Combined ROOT file written");
 
+        const auto dHadd = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - t0Hadd).count();
+        const auto outSize = fs::file_size(combined);
+
+        log::ok("Combined ROOT file created in " +
+                std::to_string(dHadd).substr(0,5) + " s,  size " +
+                std::to_string(outSize / 1'024'000) + " MB");
+
+        // ------------------------------------------------------------
+        // (c)  re‑run the QA pass on the freshly merged file
+        // ------------------------------------------------------------
         runOneQaPass(combined.string(),
                      (kOutputDir / "Combined").string());
     }
