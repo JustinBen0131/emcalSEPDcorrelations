@@ -51,7 +51,7 @@ namespace term {
       inline ::ROOT::TGenericClassInfo *GenerateInitInstance()
       {
          static ::ROOT::TGenericClassInfo 
-            instance("term", 0 /*version*/, "analyzeRun24or25auau.cpp", 104,
+            instance("term", 0 /*version*/, "analyzeRun24or25auau.cpp", 102,
                      ::ROOT::Internal::DefineBehavior((void*)nullptr,(void*)nullptr),
                      &term_Dictionary, 0);
          return &instance;
@@ -78,7 +78,7 @@ namespace log {
       inline ::ROOT::TGenericClassInfo *GenerateInitInstance()
       {
          static ::ROOT::TGenericClassInfo 
-            instance("log", 0 /*version*/, "analyzeRun24or25auau.cpp", 113,
+            instance("log", 0 /*version*/, "analyzeRun24or25auau.cpp", 111,
                      ::ROOT::Internal::DefineBehavior((void*)nullptr,(void*)nullptr),
                      &log_Dictionary, 0);
          return &instance;
@@ -111,7 +111,7 @@ namespace ROOT {
       ::CutKey *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::CutKey));
       static ::ROOT::TGenericClassInfo 
-         instance("CutKey", "analyzeRun24or25auau.cpp", 207,
+         instance("CutKey", "analyzeRun24or25auau.cpp", 205,
                   typeid(::CutKey), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &CutKey_Dictionary, isa_proxy, 4,
                   sizeof(::CutKey) );
@@ -159,7 +159,7 @@ namespace ROOT {
       ::NSCache<MapPair> *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::NSCache<MapPair>));
       static ::ROOT::TGenericClassInfo 
-         instance("NSCache<MapPair>", "analyzeRun24or25auau.cpp", 248,
+         instance("NSCache<MapPair>", "analyzeRun24or25auau.cpp", 246,
                   typeid(::NSCache<MapPair>), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &NSCachelEMapPairgR_Dictionary, isa_proxy, 4,
                   sizeof(::NSCache<MapPair>) );
@@ -207,7 +207,7 @@ namespace ROOT {
       ::NSCache<MapPair>::H *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::NSCache<MapPair>::H));
       static ::ROOT::TGenericClassInfo 
-         instance("NSCache<MapPair>::H", "analyzeRun24or25auau.cpp", 253,
+         instance("NSCache<MapPair>::H", "analyzeRun24or25auau.cpp", 251,
                   typeid(::NSCache<MapPair>::H), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &NSCachelEMapPairgRcLcLH_Dictionary, isa_proxy, 4,
                   sizeof(::NSCache<MapPair>::H) );
@@ -255,7 +255,7 @@ namespace ROOT {
       ::MapPair *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::MapPair));
       static ::ROOT::TGenericClassInfo 
-         instance("MapPair", "analyzeRun24or25auau.cpp", 261,
+         instance("MapPair", "analyzeRun24or25auau.cpp", 259,
                   typeid(::MapPair), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &MapPair_Dictionary, isa_proxy, 4,
                   sizeof(::MapPair) );
@@ -301,7 +301,7 @@ namespace ROOT {
       ::QA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::QA));
       static ::ROOT::TGenericClassInfo 
-         instance("QA", "analyzeRun24or25auau.cpp", 268,
+         instance("QA", "analyzeRun24or25auau.cpp", 266,
                   typeid(::QA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &QA_Dictionary, isa_proxy, 4,
                   sizeof(::QA) );
@@ -345,7 +345,7 @@ namespace ROOT {
       ::Pi0QA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::Pi0QA));
       static ::ROOT::TGenericClassInfo 
-         instance("Pi0QA", "analyzeRun24or25auau.cpp", 288,
+         instance("Pi0QA", "analyzeRun24or25auau.cpp", 286,
                   typeid(::Pi0QA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &Pi0QA_Dictionary, isa_proxy, 4,
                   sizeof(::Pi0QA) );
@@ -391,7 +391,7 @@ namespace ROOT {
       ::Pi0QA::FitInfo *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::Pi0QA::FitInfo));
       static ::ROOT::TGenericClassInfo 
-         instance("Pi0QA::FitInfo", "analyzeRun24or25auau.cpp", 295,
+         instance("Pi0QA::FitInfo", "analyzeRun24or25auau.cpp", 293,
                   typeid(::Pi0QA::FitInfo), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &Pi0QAcLcLFitInfo_Dictionary, isa_proxy, 4,
                   sizeof(::Pi0QA::FitInfo) );
@@ -439,7 +439,7 @@ namespace ROOT {
       ::Pi0QA::FitPair *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::Pi0QA::FitPair));
       static ::ROOT::TGenericClassInfo 
-         instance("Pi0QA::FitPair", "analyzeRun24or25auau.cpp", 301,
+         instance("Pi0QA::FitPair", "analyzeRun24or25auau.cpp", 299,
                   typeid(::Pi0QA::FitPair), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &Pi0QAcLcLFitPair_Dictionary, isa_proxy, 4,
                   sizeof(::Pi0QA::FitPair) );
@@ -487,7 +487,7 @@ namespace ROOT {
       ::NSPair *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::NSPair));
       static ::ROOT::TGenericClassInfo 
-         instance("NSPair", "analyzeRun24or25auau.cpp", 1267,
+         instance("NSPair", "analyzeRun24or25auau.cpp", 1274,
                   typeid(::NSPair), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &NSPair_Dictionary, isa_proxy, 4,
                   sizeof(::NSPair) );
@@ -533,7 +533,7 @@ namespace ROOT {
       ::CorrQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::CorrQA));
       static ::ROOT::TGenericClassInfo 
-         instance("CorrQA", "analyzeRun24or25auau.cpp", 1270,
+         instance("CorrQA", "analyzeRun24or25auau.cpp", 1277,
                   typeid(::CorrQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &CorrQA_Dictionary, isa_proxy, 4,
                   sizeof(::CorrQA) );
@@ -577,7 +577,7 @@ namespace ROOT {
       ::EmcalQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::EmcalQA));
       static ::ROOT::TGenericClassInfo 
-         instance("EmcalQA", "analyzeRun24or25auau.cpp", 1629,
+         instance("EmcalQA", "analyzeRun24or25auau.cpp", 1656,
                   typeid(::EmcalQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &EmcalQA_Dictionary, isa_proxy, 4,
                   sizeof(::EmcalQA) );
@@ -621,7 +621,7 @@ namespace ROOT {
       ::HcalQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::HcalQA));
       static ::ROOT::TGenericClassInfo 
-         instance("HcalQA", "analyzeRun24or25auau.cpp", 1830,
+         instance("HcalQA", "analyzeRun24or25auau.cpp", 1857,
                   typeid(::HcalQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &HcalQA_Dictionary, isa_proxy, 4,
                   sizeof(::HcalQA) );
@@ -665,7 +665,7 @@ namespace ROOT {
       ::SepdPlaneQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::SepdPlaneQA));
       static ::ROOT::TGenericClassInfo 
-         instance("SepdPlaneQA", "analyzeRun24or25auau.cpp", 2006,
+         instance("SepdPlaneQA", "analyzeRun24or25auau.cpp", 2033,
                   typeid(::SepdPlaneQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &SepdPlaneQA_Dictionary, isa_proxy, 4,
                   sizeof(::SepdPlaneQA) );
@@ -709,7 +709,7 @@ namespace ROOT {
       ::NSDetectorQA<MBDTag> *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::NSDetectorQA<MBDTag>));
       static ::ROOT::TGenericClassInfo 
-         instance("NSDetectorQA<MBDTag>", "analyzeRun24or25auau.cpp", 2059,
+         instance("NSDetectorQA<MBDTag>", "analyzeRun24or25auau.cpp", 2086,
                   typeid(::NSDetectorQA<MBDTag>), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &NSDetectorQAlEMBDTaggR_Dictionary, isa_proxy, 4,
                   sizeof(::NSDetectorQA<MBDTag>) );
@@ -753,7 +753,7 @@ namespace ROOT {
       ::NSDetectorQA<sEPDTag> *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::NSDetectorQA<sEPDTag>));
       static ::ROOT::TGenericClassInfo 
-         instance("NSDetectorQA<sEPDTag>", "analyzeRun24or25auau.cpp", 2059,
+         instance("NSDetectorQA<sEPDTag>", "analyzeRun24or25auau.cpp", 2086,
                   typeid(::NSDetectorQA<sEPDTag>), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &NSDetectorQAlEsEPDTaggR_Dictionary, isa_proxy, 4,
                   sizeof(::NSDetectorQA<sEPDTag>) );
@@ -799,7 +799,7 @@ namespace ROOT {
       ::MBDTag *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::MBDTag));
       static ::ROOT::TGenericClassInfo 
-         instance("MBDTag", "analyzeRun24or25auau.cpp", 2179,
+         instance("MBDTag", "analyzeRun24or25auau.cpp", 2206,
                   typeid(::MBDTag), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &MBDTag_Dictionary, isa_proxy, 4,
                   sizeof(::MBDTag) );
@@ -847,7 +847,7 @@ namespace ROOT {
       ::sEPDTag *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::sEPDTag));
       static ::ROOT::TGenericClassInfo 
-         instance("sEPDTag", "analyzeRun24or25auau.cpp", 2195,
+         instance("sEPDTag", "analyzeRun24or25auau.cpp", 2222,
                   typeid(::sEPDTag), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &sEPDTag_Dictionary, isa_proxy, 4,
                   sizeof(::sEPDTag) );
@@ -893,7 +893,7 @@ namespace ROOT {
       ::EventQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::EventQA));
       static ::ROOT::TGenericClassInfo 
-         instance("EventQA", "analyzeRun24or25auau.cpp", 2220,
+         instance("EventQA", "analyzeRun24or25auau.cpp", 2247,
                   typeid(::EventQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &EventQA_Dictionary, isa_proxy, 4,
                   sizeof(::EventQA) );
@@ -939,7 +939,7 @@ namespace ROOT {
       ::EventQA::VzPoint *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::EventQA::VzPoint));
       static ::ROOT::TGenericClassInfo 
-         instance("EventQA::VzPoint", "analyzeRun24or25auau.cpp", 2476,
+         instance("EventQA::VzPoint", "analyzeRun24or25auau.cpp", 2503,
                   typeid(::EventQA::VzPoint), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &EventQAcLcLVzPoint_Dictionary, isa_proxy, 4,
                   sizeof(::EventQA::VzPoint) );
@@ -985,7 +985,7 @@ namespace ROOT {
       ::JetQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::JetQA));
       static ::ROOT::TGenericClassInfo 
-         instance("JetQA", "analyzeRun24or25auau.cpp", 2501,
+         instance("JetQA", "analyzeRun24or25auau.cpp", 2528,
                   typeid(::JetQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &JetQA_Dictionary, isa_proxy, 4,
                   sizeof(::JetQA) );
@@ -1029,7 +1029,7 @@ namespace ROOT {
       ::VnPlotQA *ptr = nullptr;
       static ::TVirtualIsAProxy* isa_proxy = new ::TIsAProxy(typeid(::VnPlotQA));
       static ::ROOT::TGenericClassInfo 
-         instance("VnPlotQA", "analyzeRun24or25auau.cpp", 2740,
+         instance("VnPlotQA", "analyzeRun24or25auau.cpp", 2767,
                   typeid(::VnPlotQA), ::ROOT::Internal::DefineBehavior(ptr, ptr),
                   &VnPlotQA_Dictionary, isa_proxy, 4,
                   sizeof(::VnPlotQA) );

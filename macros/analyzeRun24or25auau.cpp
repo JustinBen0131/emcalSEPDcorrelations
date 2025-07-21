@@ -1232,6 +1232,15 @@ static std::string stripLeadingZeros(const std::string& runDir)
     return runDir;                                       // fallback
 }
 
+static void tightenAxes(TH1* h)
+{
+    // Fine‑tune only what exists on a 1‑D histogram
+    h->GetXaxis()->CenterTitle(true);
+    h->GetYaxis()->CenterTitle(true);
+    h->GetXaxis()->SetTitleOffset(1.1F);
+    h->GetYaxis()->SetTitleOffset(1.25F);
+}
+
 /* Tighten the displayed X/Y range so that the upper edge coincides with
    the last *non‑empty* bin, keeping the lower edge fixed at zero.       */
 static void tightenAxes(TH2* h)
@@ -1296,77 +1305,97 @@ class CorrQA : public QA
     // ─────────────────────────────── 1. per-histogram ──────────────────────
     bool process(TObject* o) override
     {
-        if (!o->InheritsFrom(TH2::Class())) return false;
+        /* ------------------------------------------------------------------ *
+         * Accept both 2‑D (“…_vs_…”) maps  *and*  the new 1‑D Δη / Δφ spectra *
+         * ------------------------------------------------------------------ */
+        if (!o->InheritsFrom(TH1::Class())) return false;     // neither TH1 nor TH2 → skip
 
-        const std::string   hName = o->GetName();
+        const std::string hName = o->GetName();
 
-        /* Skip jet-QA lead-/sub-jet maps – they belong to JetQA, not CorrQA */
-        if (hName.rfind("h_leadEt_vs_subEt_", 0) == 0) return false;
+        /* keep if it is either “…_vs_…”   or   starts with “h_dEta_ / h_dPhi_” */
+        const bool is2D = (hName.find("_vs_") != std::string::npos);
+        const bool is1D = (hName.rfind("h_dEta_",0)==0) || (hName.rfind("h_dPhi_",0)==0);
+        if (!(is2D || is1D)) return false;
 
-        /* Keep only genuine detector-correlation histograms */
-        if (hName.find("_vs_") == std::string::npos) return false;
+        const std::string slice   = sliceKey(hName);          // Inclusive / 0_10 …
+        const bool        hasCent = (slice != "Inclusive");
 
-        const std::string   slice = sliceKey(hName);         // Inclusive / 0_10 …
-        const bool          hasCent = (slice != "Inclusive");
-
-        /* ------------------------------------------------------------------
-         * A.  Extract *clean* detector names
-         *     (strip centrality, trigger, trailing numbers, N/S postfixes)
-         * ----------------------------------------------------------------- */
-        const std::string tokA = hName.substr( 2, hName.find("_vs_") - 2 );
-        const std::string tokB = hName.substr( hName.find("_vs_") + 4 );
+        /* ------------------------------------------------------------------ *
+         * A.  Extract *clean* detector names                                  *
+         * ------------------------------------------------------------------ */
+        std::string tokA, tokB;
+        if (is2D) {
+            tokA = hName.substr( 2, hName.find("_vs_") - 2 );
+            tokB = hName.substr( hName.find("_vs_") + 4 );
+        } else {                           /* 1‑D  “h_dEta_<DET1>_<DET2>” …     */
+            const std::string tail = hName.substr(7);          // drop “h_dEta_ / h_dPhi_”
+            const std::size_t us   = tail.find('_');
+            tokA = tail.substr(0, us);
+            tokB = tail.substr(us + 1);
+        }
 
         const std::string detA = canonicalDet(tokA);
         const std::string detB = canonicalDet(tokB);
 
-        /*  detect North/South once the canonical name is known ------------- */
+        /* detect North/South once the canonical name is known --------------- */
         const bool isNorth = (tokA.find("_North")!=std::string::npos ||
                               tokB.find("_North")!=std::string::npos);
         const bool isSouth = (tokA.find("_South")!=std::string::npos ||
                               tokB.find("_South")!=std::string::npos);
 
-        /* ------------------------------------------------------------------
-         * B.  Directory group name construction
-         * ----------------------------------------------------------------- */
+        /* ------------------------------------------------------------------ *
+         * B.  Directory group name construction                               *
+         * ------------------------------------------------------------------ */
         const bool hasIH = (detA=="IHCal" || detB=="IHCal");
         const bool hasOH = (detA=="OHCal" || detB=="OHCal");
 
         std::string groupDir, hcalMode, otherDet;
-        if (hasIH ^ hasOH) {                       // exactly one HCal sub-system
+        if (hasIH ^ hasOH) {                       /* exactly one HCal sub‑system  */
             hcalMode = hasIH ? "IHCal" : "OHCal";
             otherDet = (detA!=hcalMode)?detA:detB;
-            groupDir = hcalMode + "_" + otherDet;
-        } else if (hasIH && hasOH) {               // both IHCal & OHCal present
+
+            /* put EMCal first to obtain  “EMCal_IHCal”  /  “EMCal_OHCal” */
+            if (otherDet == "EMCal")
+                groupDir = otherDet + "_" + hcalMode;
+            else
+                groupDir = hcalMode + "_" + otherDet;
+        }
+        else if (hasIH && hasOH) {                 /* both IHCal & OHCal present   */
             hcalMode = "totalHCal";
             otherDet = (detA!="IHCal" && detA!="OHCal") ? detA : detB;
             groupDir = hcalMode + "_" + otherDet;
-        } else {                                   // no HCal involved
+        }
+        else {                                     /* no HCal involved             */
             groupDir = (detA < detB) ? detA + "_" + detB
                                      : detB + "_" + detA;
         }
 
-        /* ------------------------------------------------------------------
-         * C.  Style & save the individual PNG
-         * ----------------------------------------------------------------- */
-        auto* h2 = static_cast<TH2*>(o);
-        tidyAxes(h2);  styleAxes(h2,false);
+        /* ------------------------------------------------------------------ *
+         * C.  Style & save the individual PNG (handles TH1 and TH2)           *
+         * ------------------------------------------------------------------ */
+        TH2* h2 = dynamic_cast<TH2*>(o);
+        TH1* h1 = dynamic_cast<TH1*>(o);           /* works for TH1 *and* TH2      */
+
+        tidyAxes(h1);               /* tidyAxes / styleAxes accept TH1 base class */
+        styleAxes(h1,false);
 
         fs::path outDir = root / "correlations" / groupDir;
         if (hasCent) outDir /= ("Cent_" + slice);
         ensure_dir(outDir);
 
-        fs::path pngFile = outDir / (h2->GetName() + std::string(".png"));
+        fs::path pngFile = outDir / (o->GetName() + std::string(".png"));
         {
             TCanvas c("c_corr","",1100,800); setupPad(&c);
-            c.SetLogz();
 
-            /* NEW: tighten axes before drawing */
-            tightenAxes(h2);
-
-            /* draw and add run label */
-            h2->Draw("COLZ");
+            if (h2) {                               /* 2‑D map */
+                c.SetLogz();
+                tightenAxes(h2);
+                h2->Draw("COLZ");
+            } else {                                /* 1‑D spectrum */
+                tightenAxes(h1);
+                h1->Draw();
+            }
             drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
-            
             c.SaveAs(pngFile.string().c_str());
         }
 
@@ -1906,25 +1935,25 @@ class HcalQA : public QA
           c.SetFixedAspectRatio();
 
           rot->Draw("COLZ");
+          gPad->Update();                 // make sure user coords are frozen
 
-          // adaptive grid ─ thin lines everywhere, heavy “sector” dividers
-          for (int x = 0; x <= nEta; ++x)               // vertical lines (η index)
-          {
-              TLine lx(x, 0, x, nPhi);
-              lx.SetLineColor(kBlack);
-              lx.SetLineWidth( (x % 8 == 0) ? 3 : 1 );  // heavy every 8 towers
-              lx.Draw();
+          // vertical grid (η index)
+          for (int x = 0; x <= nEta; ++x) {
+              auto *lx = new TLine(x, 0, x, nPhi);      // heap → canvas keeps it
+              lx->SetLineColor(kBlack);
+              lx->SetLineWidth((x % 8 == 0) ? 3 : 1);   // heavy every 8 towers
+              lx->Draw("same");
           }
 
-          for (int y = 0; y <= nPhi; ++y)               // horizontal lines (φ index)
-          {
-              TLine ly(0, y, nEta, y);
-              ly.SetLineColor(kBlack);
-              ly.SetLineWidth( (y % 2 == 0) ? 3 : 1 );  // heavy every 2 towers
-              ly.Draw();
+          // horizontal grid (φ index)
+          for (int y = 0; y <= nPhi; ++y) {
+              auto *ly = new TLine(0, y, nEta, y);
+              ly->SetLineColor(kBlack);
+              ly->SetLineWidth((y % 2 == 0) ? 3 : 1);   // heavy every 2 towers
+              ly->Draw("same");
           }
 
-          ensure_dir(outPng.parent_path());
+          c.Modified(); c.Update();        // register all new primitives
           c.SaveAs(outPng.string().c_str());
           log::trace("HcalQA  → wrote " + outPng.string());
       }
