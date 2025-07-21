@@ -4,8 +4,6 @@
 //  • Pass‑1: modular QA (EMCal, HCal, sEPD, MBD, correlations,
 //            #pi0 invariant‑mass spectra, …) with automatic centrality
 //            slice replication and North/South map fusion.
-//  • Built‑in [TRACE] instrumentation to pinpoint run‑time crashes.
-//  • Global toggle kDoPi0Fit to switch #pi0 mass fitting on/off
 // ===============================================================
 
 #include <ROOT/RDataFrame.hxx>
