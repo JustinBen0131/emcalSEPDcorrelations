@@ -15,7 +15,7 @@ fi
 export LDFLAGS="${LDFLAGS:-} -Wl,-no_warn_duplicate_libraries"
 
 # ---------- 3. build the ROOT command ---------------------------------------
-root_cmd=(root -b -q "${macro}++O(${test_arg})")
+root_cmd=(root -b -q "${macro}+Ok(${test_arg})")
 
 # ---------- 4. run — strip *only* the duplicate‑rpath line ------------------
 # keep exit status; show every other message unchanged

@@ -688,8 +688,9 @@ class Pi0QA : public QA
   {
     if(_centralHists.empty()) return;
 
-    /* ---------- (A) 2 × 3 mass spectra panel -------------------- */
     TCanvas cGrid("c_pi0Cent","#pi0 – all centralities",1800,1000);
+    gStyle->SetOptTitle(0);
+    cGrid.SetTopMargin(0.12);          // leave 12 % canvas height for the banner
     cGrid.Divide(3,2,0.01,0.01);
 
     std::vector<double> vC,vCerr,vMu,vMuErr,vSi,vSiErr;
@@ -778,7 +779,6 @@ class Pi0QA : public QA
             const double yMu   = putBottom ? yAnchor +   dy : yAnchor - 3*dy;
             const double ySig  = putBottom ? yAnchor         : yAnchor - 4*dy;
 
-            tx.DrawLatex(xText, yRun,  Form("Run: %s",     runShort.c_str()));
             tx.DrawLatex(xText, yTrig, Form("Trigger: %s", trigLabel.c_str()));
             tx.DrawLatex(xText, yCent, lbl.c_str());                       // centrality
             tx.DrawLatex(xText, yMu,   Form("#mu = %.3f #pm %.3f GeV",  mu,  emu));
@@ -803,10 +803,33 @@ class Pi0QA : public QA
           vSi.push_back(si); vSiErr.push_back(esi);
       }
     }
-    /* ── writeSummaryPanels(): corrected locations ───────────────────── */
-    fs::path pngGrid  = root/"EMCal"/"invMassQA"/cutTag          // cut‑combination
-                           /"Pi0Mass_AllCentrality.png";
-    ensure_dir(pngGrid.parent_path());
+      fs::path pngGrid = root/"EMCal"/"invMassQA"/cutTag
+                            /"Pi0Mass_AllCentrality.png";
+      ensure_dir(pngGrid.parent_path());
+
+    {   /* run‑number and cut combination header */
+          std::string runShort = runID;
+          if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+              runShort = std::to_string(std::stoi(runID));
+
+          double eCut = 0, chiCut = 0, asyCut = 0;
+          std::smatch m;
+          if (std::regex_match(cutTag, m,
+              std::regex(R"(E([0-9]+p[0-9]+)_Chi([0-9]+p[0-9]+)_Asym([0-9]+p[0-9]+))")))
+          {
+              auto p2d = [](const std::string& s){
+                  return std::stod(std::regex_replace(s, std::regex("p"), "."));
+              };
+              eCut   = p2d(m[1]);   chiCut = p2d(m[2]);   asyCut = p2d(m[3]);
+          }
+
+          cGrid.cd();                                   // make *canvas* current
+          TLatex tl; tl.SetNDC(); tl.SetTextSize(0.035); tl.SetTextAlign(13);
+          tl.DrawLatex(0.31, 0.99,
+              Form("Run: %s   E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
+                   runShort.c_str(), eCut, asyCut, chiCut));
+    }
+
     cGrid.SaveAs(pngGrid.string().c_str());
 
     /* ---------- (B) #mu,#sigma versus centrality (#pi0 only, unchanged) --- */
@@ -861,21 +884,21 @@ class Pi0QA : public QA
       p2->Draw();
       p2->cd();
 
-      gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
-      gSi->Draw("AP");
+        gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
+        gSi->Draw("AP");
 
-      /* ---------- axis fonts & ticks – scaled for the small pad ----------------- */
-      gSi->GetXaxis()->SetNdivisions(506);
-      gSi->GetXaxis()->SetTitleSize(0.09);
-      gSi->GetXaxis()->SetLabelSize(0.07);
+        /* ---------- axis fonts & ticks – scaled for the small pad ----------------- */
+        gSi->GetXaxis()->SetNdivisions(506);
+        gSi->GetXaxis()->SetTitleSize(0.09);
+        gSi->GetXaxis()->SetLabelSize(0.07);
 
-      gSi->GetYaxis()->SetTitleSize(0.09);
-      gSi->GetYaxis()->SetLabelSize(0.07);
-      gSi->GetYaxis()->SetTitleOffset(0.90);
-      gSi->GetYaxis()->SetTickLength(0.035);
+        gSi->GetYaxis()->SetTitleSize(0.09);
+        gSi->GetYaxis()->SetLabelSize(0.07);
+        gSi->GetYaxis()->SetTitleOffset(0.90);
+        gSi->GetYaxis()->SetTickLength(0.035);
 
-      /* ---------- run‑number + cut‑combination label ---------------------------- */
-      {
+        /* ---------- run‑number + cut‑combination label ---------------------------- */
+        {
             /* ---- (1) shorten run ID (strip leading zeros) ---- */
             std::string runShort = runID;
             if (std::all_of(runID.begin(), runID.end(), ::isdigit))
@@ -896,15 +919,18 @@ class Pi0QA : public QA
             }
 
             /* ---- (3) draw label ---- */
-            TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.04);  tl.SetTextAlign(13);
-            tl.DrawLatex(0.14, 0.93,
-                         Form("Run: %s   E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
-                              runShort.c_str(), eCut, asyCut, chiCut));
+            cGS.cd();                                         
+            TLatex tl; tl.SetNDC(); tl.SetTextSize(0.025);
+
+            tl.DrawLatex(0.4, 0.96, Form("Run:  %s", runShort.c_str()));
+            tl.DrawLatex(0.4, 0.91,
+                         Form("Cuts:  E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
+                              eCut, asyCut, chiCut));
         }
                 
         fs::path pngGraph = root/"EMCal"/"invMassQA"/cutTag
-                             /"CentralitySummaryHistograms"
                              /"Pi0Mass_Sigma_vs_Centrality.png";
+        ensure_dir(pngGraph.parent_path());          // ← create folder
 
         cGS.SaveAs(pngGraph.string().c_str());
         

@@ -377,6 +377,23 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
   H["h_SEPD_N_vs_CEMC_North"] = book2(("h_SEPD_N_vs_CEMC_North_" + trig).c_str(),
                                       "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
                                       nC, 0, cMax, nE, 0, eMax);
+    
+  H["h_IHCAL_vs_CEMC"] = book2(("h_IHCAL_vs_CEMC_" + trig).c_str(),
+                                 "IHCAL #SigmaE vs CEMC #SigmaE",
+                                 nE, 0, eMax,   nE, 0, eMax);
+
+  H["h_OHCAL_vs_CEMC"] = book2(("h_OHCAL_vs_CEMC_" + trig).c_str(),
+                                 "OHCAL #SigmaE vs CEMC #SigmaE",
+                                 nE, 0, eMax,   nE, 0, eMax);
+    
+    
+  /* ---------- NEW ► Δη, Δφ between EMCal and IHCAL towers (one‑dim. histos) ---------- */
+  H["h_dEta_CEMC_IHCAL"] = new TH1F(("h_dEta_CEMC_IHCAL_" + trig).c_str(),
+                                      "#Delta#eta (IHCAL – CEMC);#Delta#eta;Events",
+                                      120, -6.0, 6.0);     // 0.1‑wide bins
+  H["h_dPhi_CEMC_IHCAL"] = new TH1F(("h_dPhi_CEMC_IHCAL_" + trig).c_str(),
+                                      "#Delta#phi (IHCAL – CEMC);#Delta#phi;Events",
+                                      128, -TMath::Pi(), TMath::Pi());   // 5° bins
 
   /* --- ΣQ(sEPD South) × ΣQ(sEPD North) ----------------------- */
   H["h_SEPD_S_vs_SEPD_N"] =
@@ -401,6 +418,21 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
     /* remember the index so we can look it up quickly at fill time */
     std::ostringstream tag; tag << '_' << lo << '_' << hi;
     m_centIdxCache[tag.str()] = 1;        // value unused – we only need the key
+  };
+    
+  /* helper that clones a TH1F for a given centrality slice --------------- */
+  auto clone1D = [&](const std::string& base,
+                       int lo, int hi,
+                       const char*   title,
+                       int nb, double loX, double hiX)
+    {
+        std::ostringstream key;           // final histogram key
+        key << base << '_' << lo << '_' << hi << '_' << trig;
+        H[key.str()] = new TH1F(key.str().c_str(), title, nb, loX, hiX);
+
+        /* allow quick lookup at fill time (value is unused) */
+        std::ostringstream tag; tag << '_' << lo << '_' << hi;
+        m_centIdxCache[tag.str()] = 1;
   };
 
   /* loop over consecutive edges: [e0,e1), [e1,e2), … ------------------- */
@@ -434,6 +466,21 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
     addClone("h_SEPD_S_vs_SEPD_N", lo,hi,
                "#SigmaQ_{sEPD South}  vs  #SigmaQ_{sEPD North}",
                nC,0,cMax, nC,0,cMax);
+      
+    addClone("h_IHCAL_vs_CEMC", lo,hi,
+               "IHCAL #SigmaE vs CEMC #SigmaE",
+               nE,0,eMax, nE,0,eMax);
+    addClone("h_OHCAL_vs_CEMC", lo,hi,
+               "OHCAL #SigmaE vs CEMC #SigmaE",
+               nE,0,eMax, nE,0,eMax);
+
+    clone1D("h_dEta_CEMC_IHCAL", lo,hi,
+              "#Delta#eta (IHCAL – CEMC);#Delta#eta;Events",
+              120,-6.0,6.0);
+
+    clone1D("h_dPhi_CEMC_IHCAL", lo,hi,
+              "#Delta#phi (IHCAL – CEMC);#Delta#phi;Events",
+              128,-TMath::Pi(),TMath::Pi());
   }
 }
 
@@ -1531,6 +1578,7 @@ void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig
 void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 {
   LOG(3, CLR_BLUE, "  [doCaloQA] processing calorimeter towers");
+  std::vector<std::pair<double,double>> cemcPos;
 
   /* ------------------------------------------------------------------ */
   /* 0.  clear per‑event FlowAcc containers                             */
@@ -1647,8 +1695,60 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
           LOG(20, CLR_MAGENTA, "      et=" << et << "  →  bin " << ptBin);
 
       /* ---------- harmonic basis (φ from tower/cluster tg) ------------- */
-      double phi = tg ? tg->get_phi() : 0.0;   // RawTowerGeom gives (‑π,π]
+      double phi = tg ? tg->get_phi() : 0.0;   // RawTowerGeom gives (-π,π]
       if (phi < 0) phi += 2.*M_PI;
+
+      /* ---------- cache CEMC tower positions for later Δη/Δφ ----------- */
+      if (lbl == "CEMC")
+            cemcPos.emplace_back(eta, phi);
+
+      /* ---------- Δη / Δφ to the nearest CEMC tower -------------------- */
+      if (lbl == "IHCAL" && !cemcPos.empty())
+      {
+            double bestDEta = 999.0, bestDPhi = 999.0;
+            for (const auto& ep : cemcPos)
+            {
+                double dEta = eta - ep.first;
+                double dPhi = TVector2::Phi_mpi_pi(phi - ep.second);
+                if (std::hypot(dEta, dPhi) < std::hypot(bestDEta, bestDPhi))
+                {
+                    bestDEta = dEta;
+                    bestDPhi = dPhi;
+                }
+            }
+
+            for (const auto& t : trig)
+            {
+                /* global 1‑D spectra */
+                static_cast<TH1F*>(qaHistogramsByTrigger[t]
+                                   ["h_dEta_CEMC_IHCAL"])->Fill(bestDEta);
+                static_cast<TH1F*>(qaHistogramsByTrigger[t]
+                                   ["h_dPhi_CEMC_IHCAL"])->Fill(bestDPhi);
+
+                /* centrality‑tagged clones */
+                if (m_centBin >= 0)
+                {
+                    int lo = 0, hi = 100;
+                    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+                        if (m_centBin >= m_centEdges[i] &&
+                            m_centBin <  m_centEdges[i + 1])
+                        { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
+                    std::ostringstream tag; tag << '_' << lo << '_' << hi << '_' << t;
+
+                    const std::string kEta = "h_dEta_CEMC_IHCAL" + tag.str();
+                    const std::string kPhi = "h_dPhi_CEMC_IHCAL" + tag.str();
+
+                    if (auto it = qaHistogramsByTrigger[t].find(kEta);
+                            it != qaHistogramsByTrigger[t].end())
+                        static_cast<TH1F*>(it->second)->Fill(bestDEta);
+
+                    if (auto it = qaHistogramsByTrigger[t].find(kPhi);
+                            it != qaHistogramsByTrigger[t].end())
+                        static_cast<TH1F*>(it->second)->Fill(bestDPhi);
+              }
+          }
+      }
 
       const double c1 = std::cos(phi),  s1 = std::sin(phi);
       const double c2 = c1 * c1 - s1 * s1;            // cos 2φ
@@ -2055,9 +2155,15 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
     binsFilled[t] += safeFill(H["h_MBD_vs_CEMC" ], m_mbdQ, cemc ,
                               "h_MBD_vs_CEMC", t);
     binsFilled[t] += safeFill(H["h_MBD_vs_IHCAL"], m_mbdQ, ihcal,
-                              "h_MBD_vs_IHCAL", t);
+                                "h_MBD_vs_IHCAL", t);
     binsFilled[t] += safeFill(H["h_MBD_vs_OHCAL"], m_mbdQ, ohcal,
-                              "h_MBD_vs_OHCAL", t);
+                                "h_MBD_vs_OHCAL", t);
+
+    /* --- NEW global EMCal ↔ HCal maps ---------------------------------- */
+    binsFilled[t] += safeFill(H["h_IHCAL_vs_CEMC"], ihcal, cemc,
+                                "h_IHCAL_vs_CEMC", t);
+    binsFilled[t] += safeFill(H["h_OHCAL_vs_CEMC"], ohcal, cemc,
+                                "h_OHCAL_vs_CEMC", t);
 
     /* — 3.3 centrality‑tagged clones ———————————— */
     auto tryCent = [&](const std::string& base,
@@ -2080,12 +2186,14 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
     binsFilled[t] += tryCent("h_MBD_vs_OHCAL",  m_mbdQ, ohcal);
 
     binsFilled[t] += tryCent("h_SEPD_S_vs_CEMC_South", m_sepdQ_arm[0],
-                             m_cemcEt_arm[0]);
+                               m_cemcEt_arm[0]);
     binsFilled[t] += tryCent("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1],
-                             m_cemcEt_arm[1]);
-      
+                               m_cemcEt_arm[1]);
+        
     binsFilled[t] += tryCent("h_SEPD_S_vs_SEPD_N",
-                               m_sepdQ_arm[0], m_sepdQ_arm[1]);
+                                 m_sepdQ_arm[0], m_sepdQ_arm[1]);
+    binsFilled[t] += tryCent("h_IHCAL_vs_CEMC", ihcal, cemc);
+    binsFilled[t] += tryCent("h_OHCAL_vs_CEMC", ohcal, cemc);
   } // trigger loop
 
   /* —— 4. Human‑readable one‑line summary ——————————————————— */

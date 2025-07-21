@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 ###############################################################################
 # merge_data.sh – highly verbose Condor hadd helper
-# Author: <you>
-# Usage:
-#   DEBUG=1 ./merge_data.sh condor [test|firstHalf]
-#   DEBUG=1 ./merge_data.sh addRuns [condor]
+#
+# ▸ Purpose
+#   1.  One “hadd” job per run directory      →   MODE = condor
+#   2.  Merge all per‑run ROOT files          →   MODE = addRuns
+#   3.  Merge a single run locally            →   MODE = local <runNumber>
+#
+# ▸ New in this version
+#   • Busy‑run detection (unchanged from v2)
+#   • **removeOtherJobs** switch:
+#       – gathers every live HTCondor job (for $USER)
+#       – deletes its chunk list, partial ROOT outputs and the job itself
+#       – makes the merge phase immune to corrupted, half‑written files
 ###############################################################################
 
 ###############################################################################
@@ -12,10 +20,8 @@
 ###############################################################################
 set -euo pipefail
 IFS=$'\n\t'
+(( ${DEBUG:-0} )) && set -x
 
-(( ${DEBUG:-0} )) && set -x        # shell‑level trace if you want it
-
-# global error hook – fires on *every* non‑zero exit status
 trap 'err=$?; printf "\033[0;31m%s  ✘  line %d – cmd `%s` exited %d\033[0m\n" \
                 "$(date "+%F %T")" "${BASH_LINENO[0]}" "$BASH_COMMAND" "$err" >&2' ERR
 
@@ -46,22 +52,53 @@ mkdir -p "$OUTPUT_DIR" "$TMP_LIST_DIR" "$CONDOR_STDOUT" \
          "$CONDOR_STDERR" "$CONDOR_LOGDIR"
 
 ###############################################################################
-# ---- 4. Usage guard ---------------------------------------------------------
+# ---- 4. Usage & CLI parsing -------------------------------------------------
 ###############################################################################
 usage() {
   cat <<EOF
 Usage:
-  $0 condor [test|firstHalf]   # one Condor job per run
-  $0 addRuns [condor]          # hadd run‑level outputs → total
-  $0 local     <runNumber>       # merge a single run locally
+  $0 MODE [removeOtherJobs] [QUALIFIER]
+
+  MODE
+    condor   – merge every idle run via Condor (per‑run hadd)
+               QUALIFIER = test | firstHalf
+    addRuns  – grand‑total merge of per‑run outputs
+               QUALIFIER = condor   (do the grand‑total on Condor)
+    local    – merge a single run locally
+               QUALIFIER = <runNumber>
+
+  removeOtherJobs
+      (optional, may follow any MODE)
+      Purge every still‑running job in your Condor queue **before**
+      the merge starts.  The purge:
+        • deletes the affected *.list chunk files
+        • deletes partial *.root files in \$CONDOR_OUT_BASE/<run>
+        • runs 'condor_rm \$USER'
+
 Environment:
   DEBUG=1   enable shell trace & extra logging
 EOF
   exit 1
 }
-[[ $# -lt 1 || $# -gt 2 ]] && usage
-MODE=$1; SUBMODE=${2:-}
-[[ $MODE != condor && $MODE != addRuns && $MODE != local ]] && usage
+
+(( $# >= 1 )) || usage
+MODE=$1; shift
+
+#  -- optional purge switch ---------------------------------------------------
+PURGE=0
+if [[ ${1:-} == removeOtherJobs ]]; then
+    PURGE=1
+    shift
+fi
+
+SUBMODE=${1:-}
+
+case "$MODE" in
+  condor)     [[ -z "$SUBMODE" || "$SUBMODE" =~ ^(test|firstHalf)$ ]] || usage ;;
+  addRuns)    [[ -z "$SUBMODE" || "$SUBMODE" == condor ]]              || usage ;;
+  local)      [[ -n "$SUBMODE" && "$SUBMODE" =~ ^[0-9]{5,8}$ ]]        || usage ;;
+  *)          usage ;;
+esac
 
 ###############################################################################
 # ---- 5. Build the tiny wrapper executed inside each Condor slot ------------
@@ -72,87 +109,116 @@ set -euo pipefail
 LIST=$1; OUT=$2
 [[ -s $LIST ]] || { echo "[FATAL] empty list $LIST"; exit 2; }
 
-# ── temporarily relax nounset so the sPHENIX env script can
-#    reference variables that might be unset ──
+#  sPHENIX environment --------------------------------------------------------
 set +u
 export PGHOST=${PGHOST:-localhost}
 source /opt/sphenix/core/bin/sphenix_setup.sh -n
 set -u
 
-# flush every line so Condor can stream it back live
-exec 1> >(stdbuf -oL cat) 2>&1
-
+exec 1> >(stdbuf -oL cat) 2>&1          # live stdout/err streaming
 echo "[wrapper] $(wc -l <"$LIST") inputs  →  $OUT"
 hadd -v -v -v -f "$OUT" @"$LIST"
 EOS
 chmod +x "$HADD_WRAPPER"
 
 ###############################################################################
-# ---- 6. Helper: safe, noisy find --------------------------------------------
+# ---- 6. Helpers -------------------------------------------------------------
 ###############################################################################
-safe_find() {
-  local dir=$1 list_file=$2
+safe_find() {                                  # noisy, fault‑tolerant “find”
+  local dir=$1 list=$2
   say "  • scanning $dir"
-  # run find in a subshell with its own error handling
   (
     set +e +o pipefail
     find "$dir" -type f -name '*.root' -print 2> >(while read -r l; do warn "    find: $l"; done) |
-      sort > "$list_file"
+      sort > "$list"
   )
-  local rc=$?
-  if (( rc != 0 )); then
-      warn "    find exited $rc (ignored)"
+  (( $? == 0 && -s $list )) || { warn "    ➜ no ROOT files"; return 1; }
+  (( DEBUG )) && { say "    first 10 entries:"; head -n 10 "$list" | sed 's/^/      /'; }
+}
+
+# ---- 6a. busy‑run cache -----------------------------------------------------
+declare -Ag busySet=()                 # busySet[run]=1   (global)
+
+refresh_busy_runs() {
+  busySet=()
+  while read -r token; do busySet["$token"]=1; done < <(
+      condor_q "$USER" -af Cmd Args 2>/dev/null |
+      grep -Eo '[0-9]{5,8}' | sort -u
+  )
+}
+
+# ---- 6b. heavy‑duty purge ---------------------------------------------------
+purge_busy_jobs() {
+  refresh_busy_runs
+  (( ${#busySet[@]} )) || { good "No running Condor jobs – nothing to purge"; return; }
+
+  say  "removeOtherJobs  –  purging $(printf '%d' "${#busySet[@]}") busy run(s)"
+
+  # 1) remove chunk *.list files ------------------------------------------------
+  mapfile -t busyLists < <(
+      condor_q "$USER" -af Args 2>/dev/null |
+      grep -Eo '/[^[:space:]]+tmp_condor_lists[^[:space:]]+\.list' | sort -u
+  )
+  if (( ${#busyLists[@]} )); then
+      say "  • deleting ${#busyLists[@]} temporary list(s)"
+      for f in "${busyLists[@]}"; do [[ -f $f ]] && rm -f "$f" && say "      – $(basename "$f")"; done
+  else
+      say "  • no chunk lists to delete"
   fi
-  if [[ ! -s $list_file ]]; then
-      warn "    ➜ NO root files found"
-      return 1
+
+  # 2) remove partial output ROOTs --------------------------------------------
+  say "  • cleaning per‑run output directories"
+  for run in "${!busySet[@]}"; do
+      outDir="$CONDOR_OUT_BASE/$run"
+      [[ -d $outDir ]] || continue
+      n=$(find "$outDir" -type f -name '*.root' | wc -l)
+      [[ $n -gt 0 ]] && { find "$outDir" -type f -name '*.root' -delete; say "      – run $run  ($n file(s) purged)"; }
+  done
+
+  # 3) remove Condor jobs ------------------------------------------------------
+  say "  • condor_rm $USER"
+  if condor_rm "$USER" >/dev/null 2>&1; then
+      good "All Condor jobs removed"
+  else
+      warn "condor_rm failed – please check manually"
   fi
-  if (( DEBUG )); then
-      say "    first 10 entries:"; head -n 10 "$list_file" | sed 's/^/      /'
-  fi
-  return 0
 }
 
 ###############################################################################
-# ---- 7.  PER‑RUN MERGE ------------------------------------------------------
+# ---- 7. Optional pre‑merge purge -------------------------------------------
+###############################################################################
+if (( PURGE )); then purge_busy_jobs; fi
+refresh_busy_runs                     # always refresh cache afterwards
+
+###############################################################################
+# ---- 8.  PER‑RUN MERGE (MODE = condor) --------------------------------------
 ###############################################################################
 if [[ $MODE == condor ]]; then
-  # ─────────────────────────────────────────────────────────────
-  #  pre‑submission clean‑up
-  #    • purge old stdout / stderr / log text files
-  #    • remove any previous run‑merged ROOT files
-  # ─────────────────────────────────────────────────────────────
+  # housekeeping --------------------------------------------------------------
   say "Cleaning previous Condor text outputs"
   for d in "$CONDOR_STDOUT" "$CONDOR_STDERR" "$CONDOR_LOGDIR"; do
       [[ -d $d ]] && find "$d" -type f -delete
   done
-
   say "Removing stale per‑run ROOT files from $OUTPUT_DIR"
-  find "$OUTPUT_DIR" -maxdepth 1 -type f \
-       -name "${RUN_MERGED_PREFIX}_????????.root" -delete
+  find "$OUTPUT_DIR" -maxdepth 1 -type f -name "${RUN_MERGED_PREFIX}_????????.root" -delete
 
+  # Step 1 – enumerate run directories ----------------------------------------
   say "Step 1 – enumerating run directories under $CONDOR_OUT_BASE"
   mapfile -t runs < <(find "$CONDOR_OUT_BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
 
+  # Step 2 – drop busy runs ----------------------------------------------------
   say "Step 2 – filtering out active Condor runs"
-  mapfile -t busy < <(condor_q "$USER" -af Cmd Args 2>/dev/null | grep -Eo '[0-9]{8}' | sort -u)
-  if (( ${#busy[@]} )); then
-      say "    active: ${busy[*]}"
-  else
-      say "    none"
-  fi
-  declare -A busySet; for r in "${busy[@]}";  do busySet[$r]=1; done
   runs=( $(for r in "${runs[@]}"; do [[ -z ${busySet[$r]+x} ]] && echo "$r"; done) )
+  (( ${#busySet[@]} )) && say "    active: $(printf '%s ' "${!busySet[@]}")" || say "    none"
   (( ${#runs[@]} )) || { good "Nothing idle to merge"; exit 0; }
-  say "Step 3 – ${#runs[@]} idle run(s) will be processed"
 
-  case $SUBMODE in
+  say "Step 3 – ${#runs[@]} idle run(s) will be processed"
+  case "$SUBMODE" in
       test)      runs=( "${runs[0]}" ); warn "TEST mode – only ${runs[0]}" ;;
-      firstHalf) half=$(( ${#runs[@]}/2 )); runs=( "${runs[@]:0:$half}" ); warn "FIRST‑HALF mode – $half run(s)" ;;
-      "")        ;;
-      *)         usage ;;
+      firstHalf) half=$(( ${#runs[@]} / 2 )); runs=( "${runs[@]:0:$half}" ); warn "FIRST‑HALF mode – $half run(s)" ;;
   esac
 
+  # Condor submit description --------------------------------------------------
   SUB="$TMP_LIST_DIR/merge_runs.sub"; : > "$SUB"
   cat >>"$SUB" <<EOT
 universe        = vanilla
@@ -174,76 +240,59 @@ EOT
       inDir=$CONDOR_OUT_BASE/$run
       list=$TMP_LIST_DIR/in_${run}.txt
       outFile=$OUTPUT_DIR/${RUN_MERGED_PREFIX}_${run}.root
-
-      if ! safe_find "$inDir" "$list"; then
-          continue
-      fi
-
+      safe_find "$inDir" "$list" || continue
       nFiles=$(wc -l <"$list")
       say "    will merge $nFiles file(s) → $outFile"
-
       printf 'arguments = %s %s\nqueue 1\n' "$list" "$outFile" >> "$SUB"
       (( ++jobCnt ))
   done
 
   (( jobCnt )) || fatal "Zero jobs created – aborting"
-
-  if (( DEBUG )); then
-      say "Submit description (first 10 lines):"
-      head -n 10 "$SUB" | sed 's/^/    /'
-  fi
-
+  (( DEBUG )) && { say "Submit description (first 10 lines):"; head -n 10 "$SUB" | sed 's/^/    /'; }
   say "Step 4 – submitting $jobCnt job(s) to Condor"
   condor_submit "$SUB"
   good "Condor submission finished"
   exit 0
 fi
 
-
 ###############################################################################
-# ---- 7b.  SINGLE‑RUN LOCAL MERGE -------------------------------------------
+# ---- 9.  SINGLE‑RUN LOCAL MERGE --------------------------------------------
 ###############################################################################
 if [[ $MODE == local ]]; then
-    [[ -z $SUBMODE ]] && fatal "local mode requires a <runNumber>"
-    run="$SUBMODE"
+  run="$SUBMODE"
+  [[ -n ${busySet[$run]+x} ]] && { warn "Run $run is still active in Condor – skipping local merge"; exit 0; }
 
-    say "Local merge for run ${run}"
-
-    inDir=$CONDOR_OUT_BASE/$run
-    list=$TMP_LIST_DIR/in_${run}.txt
-    outFile=$OUTPUT_DIR/${RUN_MERGED_PREFIX}_${run}.root
-
-    # 1) collect inputs
-    if ! safe_find "$inDir" "$list"; then
-        fatal "No ROOT files found for run ${run}"
-    fi
-    nFiles=$(wc -l <"$list")
-    say "  • will merge $nFiles file(s)"
-
-    # 2) clean previous artefacts
-    [[ -f $outFile ]] && { say "  • removing old $outFile"; rm -f "$outFile"; }
-
-    # 3) environment + hadd  (reuse the same wrapper logic)
-    "$HADD_WRAPPER" "$list" "$outFile"
-
-    good "Merge finished – $(ls -lh "$outFile")"
-    exit 0
+  say "Local merge for run ${run}"
+  inDir=$CONDOR_OUT_BASE/$run
+  list=$TMP_LIST_DIR/in_${run}.txt
+  outFile=$OUTPUT_DIR/${RUN_MERGED_PREFIX}_${run}.root
+  safe_find "$inDir" "$list" || fatal "No ROOT files found for run ${run}"
+  [[ -f $outFile ]] && { say "  • removing old $outFile"; rm -f "$outFile"; }
+  "$HADD_WRAPPER" "$list" "$outFile"
+  good "Merge finished – $(ls -lh "$outFile")"
+  exit 0
 fi
 
-
 ###############################################################################
-# ---- 8.  GRAND‑TOTAL MERGE --------------------------------------------------
+# ---- 10. GRAND‑TOTAL MERGE --------------------------------------------------
 ###############################################################################
 say "Grand‑total stage – collecting per‑run outputs in $OUTPUT_DIR"
-mapfile -t runFiles < <(find "$OUTPUT_DIR" -maxdepth 1 -type f -name "${RUN_MERGED_PREFIX}_*.root" | sort)
+mapfile -t runFiles < <(
+  find "$OUTPUT_DIR" -maxdepth 1 -type f -name "${RUN_MERGED_PREFIX}_*.root" |
+  while read -r f; do
+      [[ $f =~ _([0-9]{5,8})\.root$ ]] || continue
+      r=${BASH_REMATCH[1]}
+      [[ -z ${busySet[$r]+x} ]] && echo "$f"
+  done | sort
+)
 (( ${#runFiles[@]} < 2 )) && { good "Nothing to add"; exit 0; }
 
 LIST_ALL="$TMP_LIST_DIR/all_runs.txt"; printf '%s\n' "${runFiles[@]}" > "$LIST_ALL"
 FINAL="$OUTPUT_DIR/${RUN_MERGED_PREFIX}_total.root"; rm -f "$FINAL"
 
 if [[ $SUBMODE == condor ]]; then
-    SUB="$TMP_LIST_DIR/final_merge.sub"; : >"$SUB"
-    cat >>"$SUB" <<EOT
+  SUB="$TMP_LIST_DIR/final_merge.sub"; : >"$SUB"
+  cat >>"$SUB" <<EOT
 universe = vanilla
 executable = $HADD_WRAPPER
 output  = $CONDOR_STDOUT/final.\$(Cluster).\$(Process).out
@@ -258,11 +307,11 @@ when_to_transfer_output = ON_EXIT
 arguments = $LIST_ALL $FINAL
 queue 1
 EOT
-    (( DEBUG )) && { say "Submitting grand‑total job (DEBUG preview):"; cat "$SUB" | sed 's/^/    /'; }
-    condor_submit "$SUB"
-    good "Grand‑total Condor job submitted"
+  (( DEBUG )) && { say "Submitting grand‑total job (DEBUG preview):"; sed 's/^/    /' "$SUB"; }
+  condor_submit "$SUB"
+  good "Grand‑total Condor job submitted"
 else
-    say "Running grand‑total merge locally → $(basename "$FINAL")"
-    hadd -v 3 -f "$FINAL" @"$LIST_ALL"
-    good "DONE – $(ls -lh "$FINAL")"
+  say "Running grand‑total merge locally → $(basename "$FINAL")"
+  hadd -v 3 -f "$FINAL" @"$LIST_ALL"
+  good "DONE – $(ls -lh "$FINAL")"
 fi
