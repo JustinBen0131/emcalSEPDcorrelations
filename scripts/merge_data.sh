@@ -132,7 +132,10 @@ safe_find() {                                  # noisy, fault‑tolerant “find
     find "$dir" -type f -name '*.root' -print 2> >(while read -r l; do warn "    find: $l"; done) |
       sort > "$list"
   )
-  (( $? == 0 && -s $list )) || { warn "    ➜ no ROOT files"; return 1; }
+  if [[ $? -ne 0 || ! -s "$list" ]]; then
+      warn "    ➜ no ROOT files"
+      return 1
+  fi
   (( DEBUG )) && { say "    first 10 entries:"; head -n 10 "$list" | sed 's/^/      /'; }
 }
 
@@ -169,10 +172,17 @@ purge_busy_jobs() {
   # 2) remove partial output ROOTs --------------------------------------------
   say "  • cleaning per‑run output directories"
   for run in "${!busySet[@]}"; do
-      outDir="$CONDOR_OUT_BASE/$run"
-      [[ -d $outDir ]] || continue
-      n=$(find "$outDir" -type f -name '*.root' | wc -l)
-      [[ $n -gt 0 ]] && { find "$outDir" -type f -name '*.root' -delete; say "      – run $run  ($n file(s) purged)"; }
+      # build the list of ROOT files that the *still‑running* job(s) would create
+      mapfile -t toDelete < <(
+          condor_q "$USER" -af Args 2>/dev/null |
+          awk -v r="$run" -v base="$CONDOR_OUT_BASE" '$1==r {printf "%s/%s/%s.root\n", base, $1, $3}'
+      )
+      (( ${#toDelete[@]} )) || { say "      – run $run  (no matching partial outputs)"; continue; }
+
+      for f in "${toDelete[@]}"; do
+          [[ -f $f ]] && rm -f "$f"
+      done
+      say "      – run $run  (${#toDelete[@]} file(s) purged)"
   done
 
   # 3) remove Condor jobs ------------------------------------------------------
@@ -187,8 +197,13 @@ purge_busy_jobs() {
 ###############################################################################
 # ---- 7. Optional pre‑merge purge -------------------------------------------
 ###############################################################################
-if (( PURGE )); then purge_busy_jobs; fi
-refresh_busy_runs                     # always refresh cache afterwards
+# ---- 7. Optional pre‑merge purge -------------------------------------------
+if (( PURGE )); then          # -- purge requested
+    purge_busy_jobs           #    ① delete tmp files + condor_rm
+    busySet=()                #    ② pretend no runs are “busy” any more
+else                          # -- normal path
+    refresh_busy_runs         #    rebuild busySet from condor_q
+fi
 
 ###############################################################################
 # ---- 8.  PER‑RUN MERGE (MODE = condor) --------------------------------------

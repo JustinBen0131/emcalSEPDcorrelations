@@ -16,6 +16,7 @@
 #include <TLine.h>
 #include <TLatex.h>
 #include <TF1.h>
+#include <random>
 #include <thread>
 #include <stdexcept>
 #include <sstream>
@@ -2393,7 +2394,7 @@ public:
         if (s_centHists.size() > 1)
         {
             TCanvas c("c_cent_overlay","Centrality – all runs",900,600);
-            TLegend leg(0.68,0.57,0.88,0.88); leg.SetBorderSize(0);
+            TLegend leg(0.5,0.45,0.75,0.65); leg.SetBorderSize(0);
 
             bool first = true;
             for (auto& [run,h] : s_centHists)
@@ -3225,20 +3226,27 @@ void runOneQaPass(const std::string& inFile,
 /*  MAIN wrapper – fan-out over all runs with a preforked pool        */
 /*    optional ‘runFilter’ → process just that one run         */
 /* ------------------------------------------------------------------ */
-void analyzeRun24or25auau(bool testRun = false)
+void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
 {
     using fs::path;
 
     /* 0. discover input ROOT files --------------------------------- */
-    std::vector<path> runFiles = listRunFiles(kInputDir);
+    std::vector<fs::path> runFiles = listRunFiles(kInputDir);
     if (runFiles.empty()) {
         log::err("No input files found in " + kInputDir.string());
         return;
     }
 
-    /* NEW: in test mode keep only the first file ------------------- */
+    if (nSample > 0 && static_cast<std::size_t>(nSample) < runFiles.size()) {
+        std::mt19937 rng( static_cast<unsigned>(
+            std::chrono::steady_clock::now().time_since_epoch().count()) );
+        std::shuffle(runFiles.begin(), runFiles.end(), rng);
+        runFiles.resize(nSample);
+    }
+
     if (testRun && runFiles.size() > 1)
-        runFiles.resize(1);          // process exactly one run
+        runFiles.resize(1);            // old behaviour
+
 
 //    /* 1. decide pool size (≤ physical cores, ≥ 1) ------------------ */
 //    const std::size_t nWorkers =

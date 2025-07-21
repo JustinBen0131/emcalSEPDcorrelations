@@ -387,7 +387,6 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
                                  nE, 0, eMax,   nE, 0, eMax);
     
     
-  /* ---------- NEW ► Δη, Δφ between EMCal and IHCAL towers (one‑dim. histos) ---------- */
   H["h_dEta_CEMC_IHCAL"] = new TH1F(("h_dEta_CEMC_IHCAL_" + trig).c_str(),
                                       "#Delta#eta (IHCAL – CEMC);#Delta#eta;Events",
                                       120, -6.0, 6.0);     // 0.1‑wide bins
