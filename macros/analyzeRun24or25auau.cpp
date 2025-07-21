@@ -1312,7 +1312,18 @@ class CorrQA : public QA
 
         const std::string hName = o->GetName();
 
-        /* keep if it is either “…_vs_…”   or   starts with “h_dEta_ / h_dPhi_” */
+        /* Reject Jet‑QA and event‑plane families – they are handled elsewhere */
+        static const std::vector<std::string> skipPrefixes = {
+            "h_leadEt_",          // jet leading/subleading E_T maps
+            "h_maxJetEt_",        // jet spectra
+            "h_jetEt_",           // 3‑D jet histos
+            "h_Psi",              // event‑plane Ψₙ histos
+            "p_R2_",              // resolution proxies
+        };
+        for (const auto& p : skipPrefixes)
+            if (hName.rfind(p, 0) == 0)
+                return false;                          // delegate to the right QA class
+
         const bool is2D = (hName.find("_vs_") != std::string::npos);
         const bool is1D = (hName.rfind("h_dEta_",0)==0) || (hName.rfind("h_dPhi_",0)==0);
         if (!(is2D || is1D)) return false;

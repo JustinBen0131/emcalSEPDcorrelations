@@ -936,66 +936,64 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   }
 
   /* ------------------------------------------------------------------ */
-  /* 5.  Detector‑level QA                                              */
-  /* ------------------------------------------------------------------ */
-  LOG(5, CLR_BLUE, "    running detector‑level QA");
-  doCaloQA(activeTrig);   // towers  + vn accumulators
-  doSepdQA(activeTrig);   // SEPD charge maps & ψn
-
-  /* guard: vz must be reasonable for centrality calibration ---------- */
-  if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
-  {
-    LOG(4, CLR_YELLOW,
-        "    Vertex‑z (" << m_vz
-        << " cm) outside calibration bounds – skip event");
-    return Fun4AllReturnCodes::ABORTEVENT;
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* 6.  Centrality lookup & diagnostics                                */
+  /* 5.  Centrality lookup & diagnostics                                */
+  /*      (must precede detector‑level QA so centrality clones fill)    */
   /* ------------------------------------------------------------------ */
   CentralityInfo*  central =
-      findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
+        findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
   MinimumBiasInfo* mbInfo  =
-      findNode::getClass<MinimumBiasInfo>(topNode, "MinimumBiasInfo");
+        findNode::getClass<MinimumBiasInfo>(topNode, "MinimumBiasInfo");
 
   if (!central || !mbInfo)
   {
-    LOG(4, CLR_YELLOW,
-        "    CentralityInfo or MinimumBiasInfo node missing – skip");
-    return Fun4AllReturnCodes::ABORTEVENT;
+      LOG(4, CLR_YELLOW,
+          "    CentralityInfo or MinimumBiasInfo node missing – skip");
+      return Fun4AllReturnCodes::ABORTEVENT;
   }
   if (!central->has_centrality_bin(CentralityInfo::PROP::mbd_NS))
   {
-    LOG(4, CLR_YELLOW,
-        "    CentralityInfo::mbd_NS not filled yet – skip");
-    return Fun4AllReturnCodes::ABORTEVENT;
+      LOG(4, CLR_YELLOW,
+          "    CentralityInfo::mbd_NS not filled yet – skip");
+      return Fun4AllReturnCodes::ABORTEVENT;
   }
 
   const float centile =
-      central->get_centrality_bin(CentralityInfo::PROP::mbd_NS);
+        central->get_centrality_bin(CentralityInfo::PROP::mbd_NS);
 
   if (!std::isfinite(centile) || centile < 0.f)
   {
-    LOG(4, CLR_YELLOW,
-        "    mbd_NS centile invalid – treating as minimum‑bias (0–100 %)");
-    m_centBin = -1;       // minimum‑bias
+      LOG(4, CLR_YELLOW,
+          "    mbd_NS centile invalid – treating as minimum‑bias (0 – 100 %)");
+      m_centBin = -1;                          // minimum‑bias
   }
   else
   {
-    m_centBin = static_cast<int>(centile);
-    LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
+      m_centBin = static_cast<int>(centile);
+      LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
   }
 
   /* centrality histogram (filled once the value is validated) -------- */
   if (centile >= 0.f && centile <= 100.f)
-    for (const auto& t : activeTrig)
-      static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
-          ->Fill(centile);
+      for (const auto& t : activeTrig)
+        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
+            ->Fill(centile);
+
+  /* guard: vz must be reasonable for centrality calibration ---------- */
+  if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
+  {
+      LOG(4, CLR_YELLOW,
+          "    Vertex‑z (" << m_vz
+          << " cm) outside calibration bounds – skip event");
+      return Fun4AllReturnCodes::ABORTEVENT;
+  }
 
   /* ------------------------------------------------------------------ */
-  /* 7.  Sub‑detector QA that needs centrality                          */
+  /* 6.  Detector‑level QA                                              */
   /* ------------------------------------------------------------------ */
+  LOG(5, CLR_BLUE, "    running detector‑level QA");
+  doCaloQA(activeTrig);      // towers  + v_n accumulators  (now cent‑aware)
+  doSepdQA(activeTrig);      // SEPD charge maps & ψ_n
+
   doMbdQA(activeTrig);
   doPi0QA(activeTrig);
   fillCorrelations(activeTrig);
