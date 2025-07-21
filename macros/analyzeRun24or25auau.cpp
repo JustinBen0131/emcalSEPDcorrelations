@@ -594,36 +594,44 @@ class Pi0QA : public QA
     //----------------------------------------------------------------
     // 6.  Pretty plot of this single spectrum -----------------------
     //----------------------------------------------------------------
-    {
-      TCanvas c; h->SetStats(0); h->Draw();
-      poly.Draw("SAME"); total.Draw("SAME");
-      if(_storedEtaFit.count(slice)) _storedEtaFit[slice]->Draw("SAME");
+      {
+        TCanvas c; h->SetStats(0); h->Draw();
+        poly.Draw("SAME"); total.Draw("SAME");
+        if(_storedEtaFit.count(slice)) _storedEtaFit[slice]->Draw("SAME");
 
-      TLegend leg(0.55,0.64,0.88,0.88);
-      leg.SetBorderSize(0);
-      leg.SetTextAlign(12);                         // left‑align text
+        /* ── one‑line cut‑combination label ─────────────────────────────── */
+        {
+            TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.038);  tl.SetTextAlign(13);
+            tl.DrawLatex(0.14, 0.89,
+                         Form("E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
+                              ck.E, ck.asy, ck.chi));
+        }
 
-      /* #pi0: write #mu‑line and #sigma‑line underneath one another */
-      leg.AddEntry((TObject*)nullptr,
+        TLegend leg(0.55,0.64,0.88,0.88);
+        leg.SetBorderSize(0);
+        leg.SetTextAlign(12);
+
+        /* #pi0: write #mu‑line and #sigma‑line underneath one another */
+        leg.AddEntry((TObject*)nullptr,
                      Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV", piMu, piMuErr),
                      "");
-      leg.AddEntry((TObject*)nullptr,
+        leg.AddEntry((TObject*)nullptr,
                      Form("          #sigma = %.3f #pm %.3f GeV", piSig, piSigErr),
                      "");
 
-      /* η: do the same, but only if a peak was found */
-      if (etaMu > 0) {
-          leg.AddEntry((TObject*)nullptr,
-                       Form("#eta:    #mu = %.3f #pm %.3f GeV", etaMu, etaMuErr),
-                       "");
-          leg.AddEntry((TObject*)nullptr,
-                       Form("          #sigma = %.3f #pm %.3f GeV", etaSig, etaSigErr),
-                       "");
-      }
+        /* η: do the same, but only if a peak was found */
+        if (etaMu > 0) {
+            leg.AddEntry((TObject*)nullptr,
+                         Form("#eta:    #mu = %.3f #pm %.3f GeV", etaMu, etaMuErr),
+                         "");
+            leg.AddEntry((TObject*)nullptr,
+                         Form("          #sigma = %.3f #pm %.3f GeV", etaSig, etaSigErr),
+                         "");
+        }
 
-      leg.Draw();
-      c.SaveAs(outPng.string().c_str());
-    }
+        leg.Draw();
+        c.SaveAs(outPng.string().c_str());
+      }
 
     //----------------------------------------------------------------
     // 7.  CSV & stored‑fit bookkeeping ------------------------------
@@ -857,20 +865,48 @@ class Pi0QA : public QA
       gSi->Draw("AP");
 
       /* ---------- axis fonts & ticks – scaled for the small pad ----------------- */
-      gSi->GetXaxis()->SetNdivisions(506);                      // 0,10,20 …
+      gSi->GetXaxis()->SetNdivisions(506);
       gSi->GetXaxis()->SetTitleSize(0.09);
       gSi->GetXaxis()->SetLabelSize(0.07);
 
       gSi->GetYaxis()->SetTitleSize(0.09);
       gSi->GetYaxis()->SetLabelSize(0.07);
-      gSi->GetYaxis()->SetTitleOffset(0.90);                    // centred in margin
-      gSi->GetYaxis()->SetTickLength(0.035);                    // visual match to m_{π0}
-        
+      gSi->GetYaxis()->SetTitleOffset(0.90);
+      gSi->GetYaxis()->SetTickLength(0.035);
+
+      /* ---------- run‑number + cut‑combination label ---------------------------- */
+      {
+            /* ---- (1) shorten run ID (strip leading zeros) ---- */
+            std::string runShort = runID;
+            if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+                runShort = std::to_string(std::stoi(runID));
+
+            /* ---- (2) parse the three cut values back from cutTag ---- */
+            double eCut = 0, chiCut = 0, asyCut = 0;
+            std::smatch m;
+            if (std::regex_match(cutTag, m,
+                    std::regex(R"(E([0-9]+p[0-9]+)_Chi([0-9]+p[0-9]+)_Asym([0-9]+p[0-9]+))"))) {
+                auto p2d = [](const std::string& s){
+                    std::string t = std::regex_replace(s, std::regex("p"), ".");
+                    return std::stod(t);
+                };
+                eCut   = p2d(m[1].str());
+                chiCut = p2d(m[2].str());
+                asyCut = p2d(m[3].str());
+            }
+
+            /* ---- (3) draw label ---- */
+            TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.04);  tl.SetTextAlign(13);
+            tl.DrawLatex(0.14, 0.93,
+                         Form("Run: %s   E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
+                              runShort.c_str(), eCut, asyCut, chiCut));
+        }
+                
         fs::path pngGraph = root/"EMCal"/"invMassQA"/cutTag
                              /"CentralitySummaryHistograms"
                              /"Pi0Mass_Sigma_vs_Centrality.png";
 
-      cGS.SaveAs(pngGraph.string().c_str());
+        cGS.SaveAs(pngGraph.string().c_str());
         
         /* ---------- (C1) 2×3 grid of first six pT‑bin spectra (one canvas per centrality) --- */
         for (const auto& sl : slices)
@@ -942,7 +978,7 @@ class Pi0QA : public QA
             p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
             p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
             p1->Draw(); p1->cd();
-            gMu->SetTitle("; ;m_{#pi^{0}}  (GeV/#it{c}^{2})"); gMu->Draw("AP");
+            gMu->SetTitle("; ;m_{#pi^{0}}  (GeV)"); gMu->Draw("AP");
             gMu->GetXaxis()->SetLabelOffset(999); gMu->GetXaxis()->SetTitleOffset(999);
 
             cPT.cd();
@@ -950,7 +986,7 @@ class Pi0QA : public QA
             p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
             p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
             p2->Draw(); p2->cd();
-            gSi->SetTitle(";p_{T}  [GeV/#it{c}];#sigma_{#pi^{0}}  (GeV/#it{c}^{2})");
+            gSi->SetTitle(";p_{T}  [GeV/#it{c}];#sigma_{#pi^{0}}  (GeV)");
             gSi->Draw("AP");
             gSi->GetXaxis()->SetNdivisions(506);
             gSi->GetXaxis()->SetTitleSize(0.09); gSi->GetXaxis()->SetLabelSize(0.07);
@@ -1067,7 +1103,7 @@ class Pi0QA : public QA
         // ---- μ pad --------------------------------------------------
         TPad *p1 = new TPad("p1","", 0, 0.35, 1, 1);
         p1->SetBottomMargin(0.02);  p1->Draw();  p1->cd();
-        gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV/#it{c}^{2})");
+        gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
 
         for (std::size_t i = 0; i < gMuList.size(); ++i)
             gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
@@ -1079,7 +1115,7 @@ class Pi0QA : public QA
         p2->SetTopMargin(0.02);  p2->SetBottomMargin(0.30);
         p2->Draw();  p2->cd();
 
-        gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV/#it{c}^{2})");
+        gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
         for (std::size_t i = 0; i < gSiList.size(); ++i)
             gSiList[i]->Draw(i == 0 ? "AP" : "P SAME");
 
@@ -1155,6 +1191,48 @@ inline void setupPad(TVirtualPad* p)
     p->SetTopMargin  (0.08);
 }
 
+
+/* ==================================================================== *
+ * §‑1  Helpers added for run‑label and “auto‑tight” axis scaling       *
+ * ==================================================================== */
+
+/* Strip leading zeroes from a run‑directory name like “00044777” → “44777”.
+   If the directory contains non‑digits (e.g. “Run_00044777”), the numeric
+   suffix is preserved but zeroes are still removed.                     */
+static std::string stripLeadingZeros(const std::string& runDir)
+{
+    std::smatch m;
+    if (std::regex_search(runDir, m, std::regex(R"((\d+)$)")))
+        return std::to_string(std::stoul(m[1].str()));   // 44777
+    return runDir;                                       // fallback
+}
+
+/* Tighten the displayed X/Y range so that the upper edge coincides with
+   the last *non‑empty* bin, keeping the lower edge fixed at zero.       */
+static void tightenAxes(TH2* h)
+{
+    auto* axX = h->GetXaxis();
+    auto* axY = h->GetYaxis();
+
+    const int lastX = h->GetNbinsX();
+    const int lastY = h->GetNbinsY();
+
+    int hiX = lastX;
+    while (hiX > 1 && h->Integral(hiX, lastX, 1, lastY) == 0) --hiX;
+
+    int hiY = lastY;
+    while (hiY > 1 && h->Integral(1, lastX, hiY, lastY) == 0) --hiY;
+
+    axX->SetRangeUser(0., axX->GetBinUpEdge(hiX));
+    axY->SetRangeUser(0., axY->GetBinUpEdge(hiY));
+}
+
+/* Draw run‑number (without leading zeroes) in the upper‑left corner.    */
+static void drawRunLabel(const std::string& runID)
+{
+    TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.035);
+    tl.DrawLatex(0.04, 0.94, ("Run " + runID).c_str());
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
  *  Correlation QA
@@ -1253,9 +1331,17 @@ class CorrQA : public QA
         ensure_dir(outDir);
 
         fs::path pngFile = outDir / (h2->GetName() + std::string(".png"));
-        {   TCanvas c("c_corr","",1100,800); setupPad(&c);
-            c.SetLogz();                     // << always use log‑Z
+        {
+            TCanvas c("c_corr","",1100,800); setupPad(&c);
+            c.SetLogz();
+
+            /* NEW: tighten axes before drawing */
+            tightenAxes(h2);
+
+            /* draw and add run label */
             h2->Draw("COLZ");
+            drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
+            
             c.SaveAs(pngFile.string().c_str());
         }
 
@@ -1343,8 +1429,15 @@ class CorrQA : public QA
             pair.n->SetMinimum(1);     pair.s->SetMinimum(1);
 
             TCanvas c("c_ns","",1200,600); c.Divide(2,1,0.01,0.01);
-            c.cd(1); setupPad(gPad); gPad->SetLogz(); pair.s->Draw("COLZ");
-            c.cd(2); setupPad(gPad); gPad->SetLogz(); pair.n->Draw("COLZ");
+            c.cd(1); setupPad(gPad); gPad->SetLogz();
+            tightenAxes(pair.s.get());
+            pair.s->Draw("COLZ");
+            drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
+
+            c.cd(2); setupPad(gPad); gPad->SetLogz();
+            tightenAxes(pair.n.get());
+            pair.n->Draw("COLZ");
+            drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
             c.SaveAs(png.string().c_str());
 
             g_nsCache.erase(cacheKey);
@@ -1411,7 +1504,9 @@ class CorrQA : public QA
         fs::path png = dir / (canonName + ".png");
         TCanvas cTot(("c_"+canonName).c_str(),"",1100,800); setupPad(&cTot);
         cTot.SetLogz();
+        tightenAxes(a.h.get());
         a.h->Draw("COLZ");
+        drawRunLabel( stripLeadingZeros(runID) );
         cTot.SaveAs(png.string().c_str());
 
         if (runID != "Combined") {
@@ -1461,8 +1556,9 @@ class CorrQA : public QA
             for (int i = 0; i < n; ++i) {
                 c.cd(i+1);  setupPad(gPad);
                 gPad->SetLogz();
+                tightenAxes(vec[i].second.get());
                 vec[i].second->Draw("COLZ");
-
+                drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
                 TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
 
                 /* build human‑readable label  “low %  ≤ centrality < high %” */

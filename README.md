@@ -91,7 +91,7 @@ Result: `output/output_total.root`
 ## 6 · Offline analysis & plotting
 
 ```bash
-chmod +x runAuAu.sh then ./runAuAu.sh     # writes PNG + CSV
+chmod +x runAuAu.sh then ./runAuAu.sh     # writes PNG + CSV (this runs the analyzeAuAu cpp macro in root compiler mode to increase re runnning speed)
 ```
 
 Key outputs:
