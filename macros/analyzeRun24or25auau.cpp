@@ -1254,11 +1254,7 @@ class CorrQA : public QA
 
         fs::path pngFile = outDir / (h2->GetName() + std::string(".png"));
         {   TCanvas c("c_corr","",1100,800); setupPad(&c);
-
-            /*  Log‑scale the colour (Z) axis for correlation plots that do NOT
-                carry a centrality tag (“Inclusive” slice)                      */
-            if (!hasCent) c.SetLogz();
-
+            c.SetLogz();                     // << always use log‑Z
             h2->Draw("COLZ");
             c.SaveAs(pngFile.string().c_str());
         }
@@ -1347,8 +1343,8 @@ class CorrQA : public QA
             pair.n->SetMinimum(1);     pair.s->SetMinimum(1);
 
             TCanvas c("c_ns","",1200,600); c.Divide(2,1,0.01,0.01);
-            c.cd(1); setupPad(gPad); pair.s->Draw("COLZ");
-            c.cd(2); setupPad(gPad); pair.n->Draw("COLZ");
+            c.cd(1); setupPad(gPad); gPad->SetLogz(); pair.s->Draw("COLZ");
+            c.cd(2); setupPad(gPad); gPad->SetLogz(); pair.n->Draw("COLZ");
             c.SaveAs(png.string().c_str());
 
             g_nsCache.erase(cacheKey);
@@ -1414,6 +1410,7 @@ class CorrQA : public QA
 
         fs::path png = dir / (canonName + ".png");
         TCanvas cTot(("c_"+canonName).c_str(),"",1100,800); setupPad(&cTot);
+        cTot.SetLogz();
         a.h->Draw("COLZ");
         cTot.SaveAs(png.string().c_str());
 
@@ -1463,9 +1460,10 @@ class CorrQA : public QA
 
             for (int i = 0; i < n; ++i) {
                 c.cd(i+1);  setupPad(gPad);
+                gPad->SetLogz();
                 vec[i].second->Draw("COLZ");
 
-                TLatex tl; tl.SetNDC(); tl.SetTextSize(0.06);
+                TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
 
                 /* build human‑readable label  “low %  ≤ centrality < high %” */
                 std::string label;
@@ -1477,13 +1475,13 @@ class CorrQA : public QA
                         const int lo = std::stoi(m[1].str());
                         const int hi = std::stoi(m[2].str());
                         std::ostringstream oss;
-                        oss << lo << "\\%  #leq  centrality  <  " << hi << "\\%";
+                        oss << lo << "\\%\\;#leq\\;centrality\\;<\\;" << hi << "\\%";
                         label = oss.str();
                     } else {
                         label = vec[i].first;            // fallback – unexpected slice key
                     }
                 }
-                tl.DrawLatex(0.042, 0.85, label.c_str());
+                tl.DrawLatex(0.05, 0.85, label.c_str());
             }
 
             fs::path dir = root / "correlations" / groupDir;
@@ -1866,9 +1864,9 @@ class HcalQA : public QA
                        cloneDetach(p.i.get(),
                                    (std::string(p.i->GetName())+"_tot").c_str()));
         tot->Add(p.o.get());
-
-        fs::path outTot = cPath(root, slice, fs::path("HCal") / "totalHCal")
-                            / (baseName + "_total.png");
+        tot->SetTitle("totalHcal");
+        fs::path outTot = cPath(root, slice, fs::path("HCal") / "totalHcal")
+                              / (baseName + "_total.png");
         makePanel(tot.get(), outTot);
 
         cache.erase(key);                     // free – Pair dtor detaches dirs

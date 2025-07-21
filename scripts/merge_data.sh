@@ -53,6 +53,7 @@ usage() {
 Usage:
   $0 condor [test|firstHalf]   # one Condor job per run
   $0 addRuns [condor]          # hadd run‑level outputs → total
+  $0 local     <runNumber>       # merge a single run locally
 Environment:
   DEBUG=1   enable shell trace & extra logging
 EOF
@@ -60,7 +61,7 @@ EOF
 }
 [[ $# -lt 1 || $# -gt 2 ]] && usage
 MODE=$1; SUBMODE=${2:-}
-[[ $MODE != condor && $MODE != addRuns ]] && usage
+[[ $MODE != condor && $MODE != addRuns && $MODE != local ]] && usage
 
 ###############################################################################
 # ---- 5. Build the tiny wrapper executed inside each Condor slot ------------
@@ -197,6 +198,38 @@ EOT
   good "Condor submission finished"
   exit 0
 fi
+
+
+###############################################################################
+# ---- 7b.  SINGLE‑RUN LOCAL MERGE -------------------------------------------
+###############################################################################
+if [[ $MODE == local ]]; then
+    [[ -z $SUBMODE ]] && fatal "local mode requires a <runNumber>"
+    run="$SUBMODE"
+
+    say "Local merge for run ${run}"
+
+    inDir=$CONDOR_OUT_BASE/$run
+    list=$TMP_LIST_DIR/in_${run}.txt
+    outFile=$OUTPUT_DIR/${RUN_MERGED_PREFIX}_${run}.root
+
+    # 1) collect inputs
+    if ! safe_find "$inDir" "$list"; then
+        fatal "No ROOT files found for run ${run}"
+    fi
+    nFiles=$(wc -l <"$list")
+    say "  • will merge $nFiles file(s)"
+
+    # 2) clean previous artefacts
+    [[ -f $outFile ]] && { say "  • removing old $outFile"; rm -f "$outFile"; }
+
+    # 3) environment + hadd  (reuse the same wrapper logic)
+    "$HADD_WRAPPER" "$list" "$outFile"
+
+    good "Merge finished – $(ls -lh "$outFile")"
+    exit 0
+fi
+
 
 ###############################################################################
 # ---- 8.  GRAND‑TOTAL MERGE --------------------------------------------------
