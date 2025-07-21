@@ -345,10 +345,11 @@ if [[ $extra == caloFitting ]]; then
       # 4B. STANDARD PATH – use CreateDstList.pl exactly as before
       # ----------------------------------------------------------------------
       for run in "${golden[@]}"; do
-        out_list="${list_dir}/${calo_prefix}-${run}.list"
-        CreateDstList.pl --tag "$tag" --list "$run3_list" "$calo_prefix" --run "$run" \
-                         >"$out_list"
-        good "  ${run}: $(wc -l <"$out_list") path(s)"
+          out_list="${list_dir}/${calo_prefix}-${run}.list"
+          CreateDstList.pl --tag "$tag" --dataset "$dataset" \
+                           --list "$run3_list" --run "$run" \
+                           "$calo_prefix" >"$out_list"
+          good "  ${run}: $(wc -l <"$out_list") path(s)"
       done
   fi
 

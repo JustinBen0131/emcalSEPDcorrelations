@@ -1049,7 +1049,7 @@ TH2F*
 emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
                                     EpdGeom* /*geom*/, int /*arm*/)
 {
-    static const Double_t rEdge[17] =   w// cm – inner radius of each ring
+    static const Double_t rEdge[17] =   // cm – inner radius of each ring
       { 0.15, 0.35, 0.55, 0.75, 0.95, 1.15, 1.35, 1.55,
         1.75, 1.95, 2.15, 2.35, 2.55, 2.75, 2.95, 3.15, 3.55 };
 
@@ -1161,64 +1161,93 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
                                std::to_string(hi);
 
   /* ------------------------------------------------------------------ */
-  /* 3. Channel loop                                                    */
+  /* 3. Channel loop  +  radial QA counters                              */
   /* ------------------------------------------------------------------ */
+  int radialCnt[2][16] = {};          // [arm][ring]
+
   for (unsigned ch = 0, nChan = m_sepd->size(); ch < nChan; ++ch)
   {
-    if (ch >= 744) continue;                         // hardware guard
+      if (ch >= 744) continue;                         // hardware guard
 
-    auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
-    const double w = ti->get_energy();              if (w <= 0.) continue;
+      auto* ti = m_sepd->get_tower_at_channel(ch); if (!ti) continue;
+      const double w = ti->get_energy();
+      if (w <= 0.) continue;
 
-    const unsigned key = m_epdKey[ch];
-    if (key == std::numeric_limits<unsigned>::max()) continue;
+      const unsigned key = m_epdKey[ch];
+      if (key == std::numeric_limits<unsigned>::max()) continue;
 
-    const int    arm  = TowerInfoDefs::get_epd_arm(key); // 0=S,1=N
-    const double phi  = m_epdgeom->get_phi(key);
-    const double r    = m_epdgeom->get_r  (key);
-    const double phiPlot = (phi < 0) ? phi + 2*M_PI : phi;  // [0,2π)
+      const int    arm  = TowerInfoDefs::get_epd_arm(key);   // 0=S,1=N
+      const double phi  = m_epdgeom->get_phi(key);
+      const int    ring = TowerInfoDefs::get_epd_rbin(key);  // 0 … 15
+      const double r    = 0.25 + 0.20 * ring;               // centre of radial bin
+      const double phiPlot = (phi < 0) ? phi + 2*M_PI : phi; // [0,2π)
 
-    /* ---- 3a. Hit‑maps (global + slice) ---------------------------- */
-    const std::string baseKey = (arm == 0)
-                              ? "h_sEPD_Hitmap_South_"
-                              : "h_sEPD_Hitmap_North_";
+      ++radialCnt[arm][ring];                               // QA counter
 
-    for (const std::string& t : trig)
+      /* ---- 3a. Hit‑maps (global + slice) ---------------------------- */
+      const std::string baseKey = (arm == 0)
+                                ? "h_sEPD_Hitmap_South_"
+                                : "h_sEPD_Hitmap_North_";
+
+      for (const std::string& t : trig)
+      {
+        auto& H = qaHistogramsByTrigger[t];
+
+        // ---------- global hit‑map ------------------------------------
+        if (auto* h = dynamic_cast<TH2*>(H[baseKey + t]))
+          fillPolar(h, phiPlot, r, 1.0, key);
+        else
+          warnOnce(baseKey + t);
+
+        // ---------- centrality slice ----------------------------------
+        const std::string keyC = baseKey.substr(0, baseKey.size() - 1)
+                               + sliceTag + '_' + t;
+        auto itC = H.find(keyC);
+        if (itC != H.end())
+          if (auto* hC = dynamic_cast<TH2*>(itC->second))
+            fillPolar(hC, phiPlot, r, 1.0, key);
+      }
+
+      /* ---- 3b. Q‑vector sums (n = 1,2,3) ---------------------------- */
+      const double c1 = std::cos(phi),       s1 = std::sin(phi);
+      const double c2 = std::cos(2*phi),     s2 = std::sin(2*phi);
+      const double c3 = std::cos(3*phi),     s3 = std::sin(3*phi);
+
+      float* qx = (arm==0) ? qxS : qxN;
+      float* qy = (arm==0) ? qyS : qyN;
+
+      qx[1]+=w*c1; qy[1]+=w*s1;
+      qx[2]+=w*c2; qy[2]+=w*s2;
+      qx[3]+=w*c3; qy[3]+=w*s3;
+      (arm==0 ? ++nFiredS : ++nFiredN);
+
+      /* ---- 3c. ΣQ bookkeeping --------------------------------------- */
+      m_sepdQ          += w;
+      m_sepdQ_arm[arm] += w;
+    } // end channel loop
+
+    /* ------------------------------------------------------------------ */
+    /* 3d.  RADIAL QA print‑out  (requires Verbosity() ≥ 1)               */
+    /* ------------------------------------------------------------------ */
+    if (Verbosity() > 0)
     {
-      auto& H = qaHistogramsByTrigger[t];
+      auto printArm = [&](int arm, const char* lbl)
+      {
+        std::ostringstream os;
+        os << lbl << " : [";
+        int tot = 0;
+        for (int r = 0; r < 16; ++r)
+        {
+          os << std::setw(4) << radialCnt[arm][r] << (r==15?"]":" ");
+          tot += radialCnt[arm][r];
+        }
+        os << "  (sum = " << tot << ")";
+        LOG(1, CLR_BLUE, os.str());
+      };
+      printArm(0, "SEPD South");
+      printArm(1, "SEPD North");
+  }
 
-      // ---------- global hit‑map ------------------------------------
-      if (auto* h = dynamic_cast<TH2*>(H[baseKey + t]))                      // <<< NEW / CHANGED >>>
-        fillPolar(h, phiPlot, r, 1.0, key);                                  // <<< NEW / CHANGED >>>
-      else
-        warnOnce(baseKey + t);
-
-      // ---------- centrality slice ----------------------------------
-      const std::string keyC = baseKey.substr(0, baseKey.size() - 1)
-                             + sliceTag + '_' + t;
-      auto itC = H.find(keyC);
-      if (itC != H.end())
-        if (auto* hC = dynamic_cast<TH2*>(itC->second))                      // <<< NEW / CHANGED >>>
-          fillPolar(hC, phiPlot, r, 1.0, key);                               // <<< NEW / CHANGED >>>
-    }
-
-    /* ---- 3b. Q‑vector sums (n = 1,2,3) ---------------------------- */
-    const double c1 = std::cos(phi),       s1 = std::sin(phi);
-    const double c2 = std::cos(2*phi),     s2 = std::sin(2*phi);
-    const double c3 = std::cos(3*phi),     s3 = std::sin(3*phi);
-
-    float* qx = (arm==0) ? qxS : qxN;
-    float* qy = (arm==0) ? qyS : qyN;
-
-    qx[1]+=w*c1; qy[1]+=w*s1;
-    qx[2]+=w*c2; qy[2]+=w*s2;
-    qx[3]+=w*c3; qy[3]+=w*s3;
-    (arm==0 ? ++nFiredS : ++nFiredN);
-
-    /* ---- 3c. ΣQ bookkeeping --------------------------------------- */
-    m_sepdQ          += w;
-    m_sepdQ_arm[arm] += w;
-  } // end channel loop
 
   /* ------------------------------------------------------------------ */
   /* 4. ΣQ spectrum (per‑event)                                         */

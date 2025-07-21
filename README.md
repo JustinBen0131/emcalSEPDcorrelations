@@ -42,7 +42,7 @@ make -j8 && make install
 
 ```bash
 cd "$PROJECT_BASE"                       # e.g. /sphenix/u/$USER/scratch/emcalSEPDcorrelations
-./makeDstLists.sh run25auau caloFitting
+./makeDstLists.sh run25auau caloFitting forceFileList (having issues with createDSTList this works)
 ```
 
 Results → `dst_list/DST_CALOFITTING_…-<run>.list`  
@@ -91,7 +91,7 @@ Result: `output/output_total.root`
 ## 6 · Offline analysis & plotting
 
 ```bash
-root -b -q -l analyzeRun24or25auau.cpp     # writes PNG + CSV
+chmod +x runAuAu.sh then ./runAuAu.sh     # writes PNG + CSV
 ```
 
 Key outputs:
