@@ -318,6 +318,32 @@ class Pi0QA : public QA
   {
     if (!o->InheritsFrom(TH1::Class())) return false;
     std::string n = o->GetName();
+      
+    /* =============================================================== *
+     * (A)  UNCUT 2‑D maps  –  handled here once and returned          *
+     *      Histogram names:  Minv_vs_Asym_… , Minv_vs_chi2_… , …      *
+     * =============================================================== */
+   if (o->InheritsFrom(TH2::Class()) &&         // TH2F only
+          n.rfind("Minv_vs_", 0) == 0)             // quick prefix test
+   {
+          /* optional safety: skip empty plots produced by empty events  */
+          auto* h2 = static_cast<TH2*>(o);
+          if (h2->GetEntries() <= 0 || h2->Integral() <= 0) return false;
+
+          const std::string slice = sliceKey(n);            // "Inclusive" or "lo_hi"
+          fs::path subDir = "EMCal/invMassQA/cutQA";        // new folder
+          fs::path outPng = cPath(root, slice, subDir) / (n + ".png");
+          ensure_dir(outPng.parent_path());
+
+          TCanvas c;
+          h2->SetStats(0);
+          h2->Draw("COLZ");
+          c.SaveAs(outPng.string().c_str());
+
+          return true;                                      // ← histogram consumed
+    }
+
+      
     if (n.rfind("mInv_",0)!=0) return false;
 
     CutKey ck;              // parse name
@@ -340,7 +366,7 @@ class Pi0QA : public QA
           cutTag = combDir;                          // ➌ start the next cut
     }
 
-    fs::path subDir = "EMCal/pi0QA";
+    fs::path subDir = "EMCal/invMassQA";
     subDir /= combDir;
     if(!pTInt) subDir/=("pT_"+sf3(ck.pLo)+"_to_"+sf3(ck.pHi));
     fs::path outPng = cPath(root,slice,subDir)/(n+".png");
@@ -586,8 +612,14 @@ class Pi0QA : public QA
     auto* cl = static_cast<TH1*>(src->Clone());
     cl->SetDirectory(nullptr);
 
-    if(pTIntegrated)
-      _centralHists.emplace(slice,cl);
+    if (pTIntegrated)                                    // centrality‑summary
+    {
+        _centralHists.emplace(slice, cl);
+    }
+    else                                                  // pT‑binned summary
+    {
+        _ptHists[slice].push_back(cl);                      // ← new cache
+    }
   }
 
   //---------------- write 2 × 3 overview + #mu,#sigma vs centrality ---------
@@ -710,9 +742,10 @@ class Pi0QA : public QA
           vSi.push_back(si); vSiErr.push_back(esi);
       }
     }
-
-    fs::path pngGrid = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_AllCentrality.png";
-    ensure_dir(pngGrid.parent_path()); cGrid.SaveAs(pngGrid.string().c_str());
+    fs::path pngGrid = root/"summary/pi0"/cutTag
+                        /"CentralitySummaryHistograms"/"Pi0Mass_AllCentrality.png";
+    ensure_dir(pngGrid.parent_path());
+    cGrid.SaveAs(pngGrid.string().c_str());
 
     /* ---------- (B) #mu,#sigma versus centrality (#pi0 only, unchanged) --- */
     if(!vC.empty()){
@@ -779,9 +812,77 @@ class Pi0QA : public QA
       gSi->GetYaxis()->SetTitleOffset(0.90);                    // centred in margin
       gSi->GetYaxis()->SetTickLength(0.035);                    // visual match to m_{π0}
         
-      fs::path pngGraph = root/"EMCal/pi0QA"/cutTag/"Pi0Mass_Sigma_vs_Centrality.png";
+      fs::path pngGraph = root/"summary/pi0"/cutTag
+                           /"CentralitySummaryHistograms"/"Pi0Mass_Sigma_vs_Centrality.png";
 
       cGS.SaveAs(pngGraph.string().c_str());
+        
+      /* ---------- (C)  μ,σ  versus  pT   (one canvas per centrality) ---------- */
+      for (const auto& sl : slices)
+      {
+          if (sl == "Inclusive") continue;                     // skip inclusive slice
+          auto it = _ptHists.find(sl);
+          if (it == _ptHists.end()) continue;                  // nothing cached
+
+          /* ----  collect μ,σ and errors ordered by pT centre ---- */
+          std::map<double, FitInfo> byPt;
+          for (const auto& [hName, fi] : _fitSummary)
+            if (fi.slice == sl && fi.pLo >= 0 && fi.pHi >= 0)
+              byPt[ 0.5*(fi.pLo + fi.pHi) ] = fi;              // key = pT centre
+
+          if (byPt.size() < 2) continue;                       // need ≥ 2 points
+
+          const int n = byPt.size();
+          std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
+          int k = 0;
+          for (const auto& [pt, fi] : byPt)
+          {
+            x[k]   = pt;
+            yMu[k] = fi.mean;    eMu[k] = 0;                   // pT has no error bar
+            ySi[k] = fi.sigma;   eSi[k] = 0;
+            ++k;
+          }
+
+          auto gMu = std::make_unique<TGraphErrors>(n, x.data(), yMu.data(),
+                                                    nullptr, eMu.data());
+          auto gSi = std::make_unique<TGraphErrors>(n, x.data(), ySi.data(),
+                                                    nullptr, eSi.data());
+
+          gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+          gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+
+          /* ---- 2‑pad canvas -------------------------------------------------- */
+          TCanvas cPT(Form("c_mu_sigma_vs_pt_%s", sl.c_str()),
+                      "#pi^{0} peak position / width vs p_{T}", 800, 800);
+
+          const double padLeft  = 0.18, padRight = 0.04, gap = 0.02, fracBot = 0.30;
+
+          TPad *p1 = new TPad("p1","",0, gap+fracBot, 1, 1);
+          p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
+          p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
+          p1->Draw(); p1->cd();
+          gMu->SetTitle("; ;m_{#pi^{0}}  (GeV/#it{c}^{2})"); gMu->Draw("AP");
+          gMu->GetXaxis()->SetLabelOffset(999); gMu->GetXaxis()->SetTitleOffset(999);
+
+          cPT.cd();
+          TPad *p2 = new TPad("p2","",0,0,1,fracBot);
+          p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
+          p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
+          p2->Draw(); p2->cd();
+          gSi->SetTitle(";p_{T}  [GeV/#it{c}];#sigma_{#pi^{0}}  (GeV/#it{c}^{2})");
+          gSi->Draw("AP");
+          gSi->GetXaxis()->SetNdivisions(506);
+          gSi->GetXaxis()->SetTitleSize(0.09); gSi->GetXaxis()->SetLabelSize(0.07);
+          gSi->GetYaxis()->SetTitleSize(0.09); gSi->GetYaxis()->SetLabelSize(0.07);
+          gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
+
+          /* ----  output path  ------------------------------------------------- */
+          fs::path pngPT = root / "summary/pi0" / cutTag / sl
+                             / "pTsummarizedMeanSigmaDistribtuions"
+                             / "Pi0Mass_Sigma_vs_pT.png";
+          ensure_dir(pngPT.parent_path());
+          cPT.SaveAs(pngPT.string().c_str());
+      }
     }
   }
 
@@ -905,8 +1006,9 @@ class Pi0QA : public QA
         /* -------------------------------------------------------------
          * 5)  Save PNG – catch I/O problems
          * ----------------------------------------------------------- */
-        fs::path pngRun = root / "EMCal" / "pi0QA" / cutTag /
-                          "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
+        fs::path pngRun = root/"summary/pi0"/cutTag
+                       /"CentralitySummaryHistograms"/"Pi0Mass_Sigma_vs_Run_AllCentrality.png";
+
         ensure_dir(pngRun.parent_path());
 
         try {
@@ -954,193 +1056,302 @@ class Pi0QA : public QA
 
 
 
-// ——— Detector–detector correlations ————————————
+/* helper to keep North / South maps until both are present */
+struct NSPair { std::unique_ptr<TH2> n, s; };
+static inline std::unordered_map<std::string, NSPair> g_nsCache;
+
 class CorrQA : public QA
 {
-public:
-    using QA::QA;                               // inherit ctors
+ public:
+    using QA::QA;                                             // inherit ctors
+    ~CorrQA() override { writeRunSummaries(); }
 
-    // =====================   one histogram   ==========================
+    // ──────────────────────────────── 1. per‑histogram ──────────────────────
     bool process(TObject* o) override
     {
         if (!o->InheritsFrom(TH2::Class()))          return false;
-        const std::string hName = o->GetName();
-        if (hName.find("_vs_") == std::string::npos) return false;   // not a correlation
 
-        const std::string slice   = sliceKey(hName);                 // Inclusive / Cent_…
-        const bool        isSEPD  = (hName.find("SEPD") != std::string::npos ||
-                                     hName.find("sEPD") != std::string::npos);
-        const std::string subDir  = isSEPD ? "sEPD" : "Correlations";
+        /* ------------------------------------------------------------------ */
+        /*  A)  basic identifier parsing                                      */
+        /* ------------------------------------------------------------------ */
+        const std::string hName  = o->GetName();                 // raw TH2 name
+        if (hName.find("_vs_") == std::string::npos) return false;
 
-        // ───────────────── tidy ranges & apply consistent style ─────────────────
-        TH2* h2 = static_cast<TH2*>(o);
-        tidyAxes (h2);
-        styleAxes(h2, /*smallPad=*/false);
+        const std::string slice  = sliceKey(hName);              // Inclusive / 0_10 …
+        const bool        hasCent= (slice != "Inclusive");
 
-        // ───────────────── per‑run PNG  ───────────────────────────────
+        /* full tokens – detector strings incl. potential “_North” / “_South” */
+        const std::string tokA = hName.substr(2, hName.find("_vs_") - 2);
+        const std::string tokB = hName.substr(hName.find("_vs_") + 4);
+
+        const bool isNorth = (tokA.find("_North")!=std::string::npos ||
+                              tokB.find("_North")!=std::string::npos);
+        const bool isSouth = (tokA.find("_South")!=std::string::npos ||
+                              tokB.find("_South")!=std::string::npos);
+
+        auto shortName = [](std::string s)->std::string{
+            for (auto r : {"IHCAL","OHCAL","CEMC","SEPD","sEPD"})
+                if (s.find(r)!=std::string::npos) { s = r; break; }
+            if (s=="CEMC") s="EMCal";
+            if (s=="SEPD"||s=="sEPD") s="sEPD";
+            if (s=="IHCAL") return "IHCal";
+            if (s=="OHCAL") return "OHCal";
+            return s;
+        };
+
+        const std::string detA = shortName(tokA);
+        const std::string detB = shortName(tokB);
+
+        /* ------------------------------------------------------------------ */
+        /*  B)  establish directory group names                               */
+        /* ------------------------------------------------------------------ */
+        bool   hasIH = (detA=="IHCal" || detB=="IHCal");
+        bool   hasOH = (detA=="OHCal" || detB=="OHCal");
+
+        std::string otherDet = (hasIH||hasOH) ? (hasIH ? (detA!="IHCal"?detA:detB)
+                                                       : (detA!="OHCal"?detA:detB))
+                                              : "";
+        std::string groupDir;
+        std::string hcalMode;                     // "", "IHCal", "OHCal", "totalHCal"
+
+        if (hasIH ^ hasOH)                        // exactly one of them
         {
-            fs::path out = cPath(root, slice, subDir) / (h2->GetName() + std::string(".png"));
-            ensure_dir(out.parent_path());
-
-            TCanvas c("c_corr", "", 1100, 800);
-            setupPad(&c);
-            h2->Draw("COLZ");
-            c.SaveAs(out.string().c_str());
+            hcalMode = hasIH ? "IHCal" : "OHCal";
+            groupDir = hcalMode + "_" + otherDet;
+        }
+        else if (hasIH && hasOH)                  // rare: both names contain IH/ OH
+        {
+            hcalMode = "totalHCal";
+            groupDir = hcalMode + "_" + otherDet;
+        }
+        else                                      // no HCal involved – alphabetical
+        {
+            groupDir = (detA < detB) ? (detA + "_" + detB)
+                                     : (detB + "_" + detA);
         }
 
-        // ───────────────── cache clone for summary sheet ──────────────
+        /* ------------------------------------------------------------------ */
+        /*  C)  tidy & style                                                  */
+        /* ------------------------------------------------------------------ */
+        auto* h2 = static_cast<TH2*>(o);
+        tidyAxes(h2);   styleAxes(h2,false);
+
+        /* ------------------------------------------------------------------ */
+        /*  D)  output path                                                   */
+        /* ------------------------------------------------------------------ */
+        fs::path outDir = root / "correlations" / groupDir;
+        if (hasCent) outDir /= ("Cent_" + slice);
+        ensure_dir(outDir);
+
+        fs::path pngFile = outDir / (h2->GetName() + std::string(".png"));
+        {   TCanvas c("c_corr","",1100,800);   setupPad(&c);
+            h2->Draw("COLZ");
+            c.SaveAs(pngFile.string().c_str());
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  E)  NORTH / SOUTH combined canvas (only for SEPD‑style maps)      */
+        /* ------------------------------------------------------------------ */
+        const bool isNScandidate =
+            (hName.find("SEPD")!=std::string::npos || hName.find("sEPD")!=std::string::npos) &&
+            (isNorth ^ isSouth);                       // exactly one of them
+
+        if (isNScandidate)
+        {
+            /* canonical key = base hist name with _North/_South stripped      */
+            std::string baseKey = std::regex_replace(hName,
+                                                     std::regex("(_North|_South)"),
+                                                     "");
+            const std::string cacheKey = groupDir + "|" + baseKey + "|" + slice;
+
+            auto& pair = g_nsCache[cacheKey];
+            auto* cl   = static_cast<TH2*>(o->Clone());
+            cl->SetDirectory(nullptr);  tidyAxes(cl);  styleAxes(cl,false);
+
+            (isSouth ? pair.s : pair.n).reset(cl);
+
+            if (pair.n && pair.s)                      // both halves present
+            {
+                fs::path nsDir = root / "correlations" / groupDir;
+                if (hasCent) nsDir /= ("Cent_" + slice);
+                ensure_dir(nsDir);
+
+                fs::path nsPng = nsDir / (baseKey + std::string("_NS.png"));
+
+                const double zMax = std::max(pair.n->GetMaximum(),
+                                              pair.s->GetMaximum());
+                pair.n->SetMaximum(zMax);  pair.s->SetMaximum(zMax);
+                pair.n->SetMinimum(1);     pair.s->SetMinimum(1);
+
+                TCanvas c("c_ns","",1200,600);
+                c.Divide(2,1,0.01,0.01);
+
+                c.cd(1); setupPad(gPad); pair.s->Draw("COLZ");
+                c.cd(2); setupPad(gPad); pair.n->Draw("COLZ");
+
+                c.SaveAs(nsPng.string().c_str());
+
+                g_nsCache.erase(cacheKey);             // free memory
+            }
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  F)  cache for run‑by‑run summary pages (except Combined itself)    */
+        /* ------------------------------------------------------------------ */
         const std::string runID = root.parent_path().filename().string();
         if (runID != "Combined")
         {
-            auto* clone = static_cast<TH2*>(o->Clone());
-            clone->SetDirectory(nullptr);
-            tidyAxes (clone);
-            styleAxes(clone, /*smallPad=*/true);   // default for summary grid
-            s_cache[subDir][hName][runID].reset(clone);
+            auto* cl = static_cast<TH2*>(o->Clone());
+            cl->SetDirectory(nullptr); tidyAxes(cl); styleAxes(cl,true);
+
+            s_cache[groupDir][hName][runID].reset(cl);
         }
+
+        /* ------------------------------------------------------------------ */
+        /*  G)  totalHCal aggregation                                         */
+        /* ------------------------------------------------------------------ */
+        if (hasIH ^ hasOH)                           // still missing the other half
+        {
+            const std::string totGroup = "totalHCal_" + otherDet;
+            const std::string canonName =
+                  std::regex_replace(hName,
+                                     std::regex("(IHCAL|IHCal|OHCAL|OHCal)"),
+                                     "HCal");
+
+            const std::string aggKey  = totGroup + "|" + canonName
+                                       + "|" + slice + "|" + runID;
+
+            struct Agg { std::unique_ptr<TH2> h; int parts=0; };
+            static std::unordered_map<std::string,Agg> agg;
+
+            Agg& a = agg[aggKey];
+            if (!a.h) {
+                a.h.reset(static_cast<TH2*>(o->Clone()));
+                a.h->SetDirectory(nullptr);
+                a.h->SetName(canonName.c_str());
+            } else {
+                a.h->Add(static_cast<TH2*>(o));
+            }
+
+            if (++a.parts == 2)                      // now we have IH+OH
+            {
+                tidyAxes(a.h.get());  styleAxes(a.h.get(),false);
+
+                fs::path tDir = root / "correlations" / totGroup;
+                if (hasCent) tDir /= ("Cent_" + slice);
+                ensure_dir(tDir);
+
+                fs::path tPng = tDir / (canonName + std::string(".png"));
+                TCanvas cTot(("c_"+canonName).c_str(),"",1100,800); setupPad(&cTot);
+                a.h->Draw("COLZ");
+                cTot.SaveAs(tPng.string().c_str());
+
+                if (runID != "Combined") {
+                    auto* cl = static_cast<TH2*>(a.h->Clone());
+                    cl->SetDirectory(nullptr); styleAxes(cl,true);
+                    s_cache[totGroup][canonName][runID].reset(cl);
+                }
+            }
+        }
+
         return true;
     }
 
-    // =====================   final summary   ==========================
-    ~CorrQA() override
+ private:
+    // ───────────────────────────── 2. run‑summary pages ────────────────────
+    void writeRunSummaries()
     {
-        /* --------------------------------------------
-           0)  Guard: Only once per trigger / subDir
-           ------------------------------------------ */
-        const std::string runID   = root.parent_path().filename().string();
-        const std::string trigKey = root.filename().string();           //!  trigger folder name
+        const std::string runID = root.parent_path().filename().string();
         if (runID != "Combined") return;
 
-        /* one summary *per trigger* → keep a set ‑ not one global bool */
-        static std::unordered_set<std::string> done;                    //! NEW
-        if (done.count(trigKey)) return;                                //! NEW
-        done.insert(trigKey);                                           //! NEW
+        const fs::path baseOut = root;                 // “…/Combined/<trigger>”
 
-        std::cout << "[CorrQA] Building summary for trigger \""         //! LOG
-                  << trigKey << "\"  …\n";
-
-        /* --------------------------------------------
-           1)  Output root = “…/Combined/<trigger>”
-           ------------------------------------------ */
-        const fs::path baseOut = root;                                  //! FIX (was parent_path)
-
-        /* --------------------------------------------
-           2)  Traverse the cached maps
-           ------------------------------------------ */
-        for (const auto& [subDir, byName] : s_cache)
-            for (const auto& [hNameRaw, byRun] : byName)
+        for (const auto& [group, byName] : s_cache)
+            for (const auto& [hRaw, byRun] : byName)
             {
                 if (byRun.empty()) continue;
 
-                /* ---- sanitise hName for the filesystem ----------------- */
-                std::string hName = hNameRaw;                            //! NEW
-                for (char& ch : hName)
-                    if (ch == ' ' || ch == ':' || ch == '<' || ch == '>' ||
-                        ch == '"' || ch == '\\' || ch == '/' || ch == '|')
-                        ch = '_';                                        //! replace illegal chars
+                /* ----- sanitise file‑name part -------------------------------- */
+                std::string hSafe = hRaw;
+                for (char& ch : hSafe)
+                    if (ch==' '||ch==':'||ch=='<'||ch=='>'||ch=='"'||
+                        ch=='\\'||ch=='/'||ch=='|') ch='_';
 
-                /* ---- gather <run,hist> sorted by run number ------------ */
-                std::vector<std::pair<std::string,TH2*>> runs;
-                runs.reserve(byRun.size());
-                for (const auto& [r,h] : byRun) runs.emplace_back(r, h.get());
-                std::sort(runs.begin(), runs.end(),
-                           [](auto& a, auto& b){ return a.first < b.first; });
+                /* ----- runs ordered numerically (alph. fallback) -------------- */
+                std::map<long long,TH2*> ordered;
+                long long idxNonNum = 9'000'000'000LL;
+                for (auto& [runStr,h] : byRun) {
+                    long long key;
+                    if (std::all_of(runStr.begin(),runStr.end(),::isdigit))
+                        key = std::stoll(runStr);
+                    else
+                        key = idxNonNum++;
+                    ordered[key] = h.get();
+                }
 
-                if (runs.empty()) continue;
-
-                /* ---- common colour scale ------------------------------- */
-                double zMax = 0;
-                for (auto& [_,h] : runs) zMax = std::max(zMax, h->GetMaximum());
-                for (auto& [_,h] : runs) { h->SetMinimum(1); h->SetMaximum(zMax); }
-
-                /* ---- pagination (100 pads per page) -------------------- */
-                const int perPage = 100;
-                const int nPages  = (runs.size() + perPage - 1) / perPage;
-
-                fs::path outDir = baseOut / subDir / ("summary_" + hName);
+                const int perPage = 100, nPages = (ordered.size()+perPage-1)/perPage;
+                fs::path outDir = baseOut / "correlations" / group
+                                             / "runSummary" / hSafe;
                 ensure_dir(outDir);
 
-                for (int pg = 0; pg < nPages; ++pg)
+                int cnt = 0, pg = 0;
+                TCanvas* c = nullptr;
+
+                for (auto& [k,h] : ordered)
                 {
-                    const int lo =  pg      * perPage;
-                    const int hi = (pg + 1) * perPage;
+                    if (cnt % perPage == 0) {               // new canvas
+                        if (c) delete c;
+                        c = new TCanvas(Form("c_%s_pg%02d", hSafe.c_str(), pg+1),
+                                        "", 3000, 3000);
+                        c->Divide(10,10,0.000,0.000);
+                        ++pg;
+                    }
+                    c->cd((cnt % perPage)+1);   setupPad(gPad);
+                    h->Draw("COLZ");
 
-                    TCanvas c(Form("c_%s_pg%02d", hName.c_str(), pg+1), "", 3000, 3000);
-                    c.Divide(10, 10, 0.000, 0.000);
+                    TLatex tl; tl.SetNDC(); tl.SetTextSize(0.06);
+                    tl.DrawLatex(0.02,0.90, std::to_string(k).c_str());
+                    ++cnt;
 
-                    for (int i = lo; i < hi && i < (int)runs.size(); ++i)
+                    if (cnt % perPage == 0 || (cnt== (int)ordered.size()))
                     {
-                        c.cd(i - lo + 1);
-                        setupPad(gPad);
-                        runs[i].second->Draw("COLZ");
-
-                        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.06);
-                        tl.DrawLatex(0.02, 0.90, runs[i].first.c_str());
+                        fs::path png = outDir / Form("page%02d.png", pg);
+                        c->SaveAs(png.string().c_str());
                     }
-
-                    const fs::path png = outDir / Form("page%02d.png", pg+1);
-                    try {                                                     //! TRY/CATCH
-                        c.SaveAs(png.string().c_str());
-                        std::cout << "   ↳  " << png.string() << '\n';       //! LOG
-                    }
-                    catch (const std::exception& ex) {
-                        std::cerr << "[CorrQA] ERROR writing \""
-                                  << png.string() << "\": " << ex.what() << '\n';
-                  }
-              }
-         }
+                }
+                if (c) delete c;
+            }
     }
 
-    // =====================   helpers   ================================
+    // ───────────────────────────── helper ► tidy range ─────────────────────
     static void tidyAxes(TH2* h)
     {
         int fx = 1, lx = h->GetNbinsX();
-        while (fx <= lx && h->Integral(fx,fx,1,h->GetNbinsY()) == 0) ++fx;
-        while (lx >= fx && h->Integral(lx,lx,1,h->GetNbinsY()) == 0) --lx;
-        if (fx < lx) h->GetXaxis()->SetRange(fx,lx);
+        while (fx<=lx && h->Integral(fx,fx,1,h->GetNbinsY())==0) ++fx;
+        while (lx>=fx && h->Integral(lx,lx,1,h->GetNbinsY())==0) --lx;
+        if (fx<lx) h->GetXaxis()->SetRange(fx,lx);
 
         int fy = 1, ly = h->GetNbinsY();
-        while (fy <= ly && h->Integral(1,h->GetNbinsX(),fy,fy) == 0) ++fy;
-        while (ly >= fy && h->Integral(1,h->GetNbinsX(),ly,ly) == 0) --ly;
-        if (fy < ly) h->GetYaxis()->SetRange(fy,ly);
+        while (fy<=ly && h->Integral(1,h->GetNbinsX(),fy,fy)==0) ++fy;
+        while (ly>=fy && h->Integral(1,h->GetNbinsX(),ly,ly)==0) --ly;
+        if (fy<ly) h->GetYaxis()->SetRange(fy,ly);
     }
-
-    static void styleAxes(TH2* h, bool smallPad)
+    static void styleAxes(TH2* h,bool small)
     {
-        const double labSize = smallPad ? 0.028 : 0.030;
-        const double titSize = smallPad ? 0.034 : 0.037;
-
-        h->GetXaxis()->SetLabelSize(labSize);
-        h->GetYaxis()->SetLabelSize(labSize);
-        h->GetZaxis()->SetLabelSize(labSize);
-
-        h->GetXaxis()->SetTitleSize(titSize);
-        h->GetYaxis()->SetTitleSize(titSize);
-        h->GetZaxis()->SetTitleSize(titSize);
-
-        h->GetXaxis()->SetTitleOffset(1.15);
-        h->GetYaxis()->SetTitleOffset(1.50);
-        h->GetZaxis()->SetTitleOffset(1.20);
-
-        // a subtle grid can be helpful but is optional:
-        // h->SetContour(99);  // already default in many setups
+        const double lab = small ? 0.028 : 0.030;
+        const double tit = small ? 0.034 : 0.037;
+        h->GetXaxis()->SetLabelSize(lab); h->GetYaxis()->SetLabelSize(lab); h->GetZaxis()->SetLabelSize(lab);
+        h->GetXaxis()->SetTitleSize(tit); h->GetYaxis()->SetTitleSize(tit); h->GetZaxis()->SetTitleSize(tit);
+        h->GetXaxis()->SetTitleOffset(1.15); h->GetYaxis()->SetTitleOffset(1.50); h->GetZaxis()->SetTitleOffset(1.20);
     }
+    static void setupPad(TVirtualPad* p)
+    { p->SetLogz(); p->SetRightMargin(0.16); p->SetLeftMargin(0.12);
+      p->SetBottomMargin(0.12); p->SetTopMargin(0.06); }
 
-    /** common pad cosmetics: margins + log‑Z **/
-    static void setupPad(TVirtualPad* pad)
-    {
-        pad->SetLogz();
-        pad->SetRightMargin(0.16);
-        pad->SetLeftMargin (0.12);
-        pad->SetBottomMargin(0.12);
-        pad->SetTopMargin  (0.06);
-    }
-
-    /* subDir → histName → runID → TH2 clone */
+    /*                   groupDir → histName → runID → TH2 clone           */
     using RunMap  = std::unordered_map<std::string,std::unique_ptr<TH2>>;
     using NameMap = std::unordered_map<std::string,RunMap>;
     static inline std::unordered_map<std::string,NameMap> s_cache;
-    static inline bool s_done = false;
 };
 
 
@@ -1275,8 +1486,8 @@ public:
       const int cw = (kEMCalCanvasW > 0) ? kEMCalCanvasW : nEta * px;
       const int ch = (kEMCalCanvasH > 0) ? kEMCalCanvasH : nPhi * px;
 
-      fs::path outPng = cPath(root, slice, "EMCal")
-                      / (src->GetName() + std::string(".png"));
+      fs::path outPng = cPath(root, slice, "EMCal/otherQA")
+                        / (src->GetName() + std::string(".png"));
       ensure_dir(outPng.parent_path());
 
       TCanvas c("c_emcal", "", cw, ch);
@@ -1454,18 +1665,44 @@ class HcalQA : public QA
     };
     /* ----------------------------------------------------------------- */
 
-    // ---------- write outputs -----------------------------------------
-    fs::path subDir = isI ? "IHCal" : "OHCal";
-    fs::path out    = cPath(root, slice, subDir) / (n + ".png");
+      // ---------- write outputs (IHCal / OHCal) ---------------------------
+      fs::path subDir = fs::path("HCal") / (isI ? "IHCal" : "OHCal");
+      fs::path out    = cPath(root, slice, subDir) / (n + ".png");
 
-    if (isMap && o->InheritsFrom(TH2::Class()))
-      makePanel(static_cast<TH2*>(o), out);
-    else if (o->InheritsFrom(TH2::Class()))
-      save2D(static_cast<TH2*>(o), out);
-    else
-      save1D(static_cast<TH1*>(o), out);
+      if (isMap && o->InheritsFrom(TH2::Class()))
+          makePanel(static_cast<TH2*>(o), out);
+      else if (o->InheritsFrom(TH2::Class()))
+          save2D(static_cast<TH2*>(o), out);
+      else
+          save1D(static_cast<TH1*>(o), out);
 
-    return true;
+      // ---------- additionally build /HCal/totalHCal ----------------------
+      if (isMap && o->InheritsFrom(TH2::Class()))
+      {
+          /* accumulate IHCal + OHCal → totalHCal */
+          struct Pair { std::unique_ptr<TH2> i, o; };
+          static std::unordered_map<std::string, Pair> totalCache;   // key = slice|name
+
+          const std::string key = slice + "|" + n;                   // unique per map
+
+          Pair &p = totalCache[key];
+          if (isI)  p.i.reset(static_cast<TH2*>(o->Clone()));
+          if (isO)  p.o.reset(static_cast<TH2*>(o->Clone()));
+
+        /* once both hemispheres are present → sum and write */
+        if (p.i && p.o)
+        {
+              std::unique_ptr<TH2> tot(static_cast<TH2*>(p.i->Clone()));
+              tot->Add(p.o.get());
+
+              fs::path outTot = cPath(root, slice,
+                                      fs::path("HCal") / "totalHCal")
+                                 / (n + std::string("_total.png"));
+              makePanel(tot.get(), outTot);
+
+              totalCache.erase(key);                 // free memory
+        }
+     }
   }
 };
 
@@ -1733,271 +1970,249 @@ class JetQA : public QA
 class VnPlotQA : public QA
 {
  public:
-  /* ctor – inherits QA constructor and auto‑creates “…/<trigger>/vn” */
-  VnPlotQA(std::string           trig,
-           std::filesystem::path base,
-           const CentList&       slices)
-  : QA(std::move(trig), base, slices)
-  , _outDir(base / "vn")
+  VnPlotQA(std::string trig, std::filesystem::path base,
+           const CentList& slices) :
+      QA(std::move(trig), base, slices),
+      _outDir(base / "vNana")
   {
-    if (!std::filesystem::exists(_outDir))
-      std::filesystem::create_directories(_outDir);
+    std::filesystem::create_directories(_outDir);
   }
 
-  /* ------------------------------------------------------------------ *
-   *  process(): cache every TProfile that matches                      *
-   * ------------------------------------------------------------------ */
+  // ─────────────────────────────── 1. cache every TProfile ──────────
   bool process(TObject* o) override
   {
     if (!o->InheritsFrom(TProfile::Class())) return false;
 
-    const std::string hname = o->GetName();
-    std::smatch m;
+    /* expected name: p_v<n>_<DET>_<lo>_<hi>_<trigger>                  */
     static const std::regex re(
-        R"(p_v([123])_([A-Za-z0-9_]+)_([0-9]+)_([0-9]+)_(.+))");
+          R"(p_v([123])_([A-Za-z0-9]+_[NS])_([0-9]+)_([0-9]+)_(.+))");
+    std::smatch m;
+    const std::string h = o->GetName();
+    if (!std::regex_match(h, m, re)) return false;
 
-    if (!std::regex_match(hname, m, re)) return false;
+    const int  nHarm = std::stoi(m[1]);                  // 1 / 2 / 3
+    const std::string detTag = m[2];                     // e.g. CEMC_S
+    const std::string cent   = m[3].str() + '_' + m[4].str();
+    const std::string trigLab= m[5];
 
-    const int    nHarm = std::stoi(m[1]);               // 1,2,3
-    const string det   = m[2];                          // CEMC_S, …
-    const string cent  = m[3].str() + '_' + m[4].str(); // "20_40"
-    const string trig  = m[5];                          // trigger label
-
-    _cache[trig][det][nHarm][cent]
+    _raw[trigLab][detTag][nHarm][cent]
         .push_back(static_cast<TProfile*>(o));
     return true;
   }
 
-  /* ------------------------------------------------------------------ *
-   *  destructor = single, final plotting pass                          *
-   * ------------------------------------------------------------------ */
+  // ─────────────────────────────── 2. heavy lifting on exit ─────────
   ~VnPlotQA() override { writeCanvases(); }
 
  private:
-  /* ------------------------------------------------------------------ *
-   *  helper: produce a TGraphErrors from a TProfile (no x‑errors)      *
-   * ------------------------------------------------------------------ */
-  static std::unique_ptr<TGraphErrors> makeGraph(const TProfile* p,
-                                                 bool withXerr = false)
+  // ---------- helpers ------------------------------------------------
+  static std::string detBase(const std::string& tag)    // CEMC_S → EMCal
   {
-    const int nb = p->GetNbinsX();
-    auto g = std::make_unique<TGraphErrors>(nb);
+      if (tag.find("CEMC") != std::string::npos)  return "EMCal";
+      if (tag.find("IHCAL")!= std::string::npos)  return "IHCal";
+      if (tag.find("OHCAL")!= std::string::npos)  return "OHCal";
+      if (tag.find("HCAL") != std::string::npos)  return "HCal";
+      if (tag.find("ALL")  != std::string::npos)  return "AllCalo";
+      return tag;
+  }
+  static std::string regionOf(const std::string& tag)   // *_S / *_N
+  { return (tag.back()=='S') ? "South" : "North"; }
 
-    for (int i = 1; i <= nb; ++i)
-    {
-      const double xLo = p->GetXaxis()->GetBinLowEdge(i);
-      const double xHi = p->GetXaxis()->GetBinUpEdge (i);
-      const double x   = 0.5 * (xLo + xHi);
-      const double ex  = withXerr ? 0.5 * (xHi - xLo) : 0.0;
-
-      const double y   = p->GetBinContent(i);
-      const double ey  = p->GetBinError  (i);
-
-      g->SetPoint     (i - 1, x,  y);
-      g->SetPointError(i - 1, ex, ey);
-    }
-    g->SetLineWidth(2);
-    g->SetMarkerStyle(kFullCircle);
-    return g;
+  static std::unique_ptr<TGraphErrors> graphFromProf(const TProfile* p,
+                                                     bool xErr=false)
+  {
+      const int nb = p->GetNbinsX();
+      auto g = std::make_unique<TGraphErrors>(nb);
+      for (int i=1;i<=nb;++i)
+      {
+          const double xLo=p->GetXaxis()->GetBinLowEdge(i);
+          const double xHi=p->GetXaxis()->GetBinUpEdge (i);
+          const double x  =0.5*(xLo+xHi);
+          const double ex = xErr ? 0.5*(xHi-xLo) : 0.;
+          g->SetPoint     (i-1, x, p->GetBinContent(i));
+          g->SetPointError(i-1, ex, p->GetBinError(i));
+      }
+      g->SetLineWidth(2); g->SetMarkerStyle(kFullCircle);
+      return g;
   }
 
-  /* ------------------------------------------------------------------ *
-   *  helper: integrate a TProfile over pT → one value per centrality   *
-   * ------------------------------------------------------------------ */
-  static std::pair<double,double> meanOfProfile(const TProfile* p)
+  static std::pair<double,double> meanProf(const TProfile* p)
   {
-    double num = 0., den = 0., err2 = 0.;
-    const int nb = p->GetNbinsX();
-
-    for (int i = 1; i <= nb; ++i)
-    {
-      const double   y  = p->GetBinContent (i);
-      const double   e  = p->GetBinError   (i);
-      const double   w  = p->GetBinEntries(i);     // TProfile weight
-      if (w <= 0) continue;
-
-      num  += w * y;
-      den  += w;
-      err2 += (w * e) * (w * e);
-    }
-    const double mean = (den > 0) ? num / den : 0.;
-    const double err  = (den > 0) ? std::sqrt(err2) / den : 0.;
-    return {mean, err};
+      double num=0,den=0,err2=0;
+      for (int i=1;i<=p->GetNbinsX();++i)
+      {
+          const double y=p->GetBinContent(i);
+          const double e=p->GetBinError(i);
+          const double w=p->GetBinEntries(i);
+          if (w<=0) continue;
+          num+=w*y; den+=w; err2+=(w*e)*(w*e);
+      }
+      const double m=(den>0)?num/den:0;
+      const double er=(den>0)?std::sqrt(err2)/den:0;
+      return {m,er};
   }
 
-  /* ------------------------------------------------------------------ *
-   *  heavy part: generate canvases and write PNGs                      *
-   * ------------------------------------------------------------------ */
+  // ---------- write everything ---------------------------------------
   void writeCanvases()
   {
-    /* loop hierarchy: trigger → detector → harmonic → centrality */
-    for (const auto& [trig, detMap] : _cache)
-      for (const auto& [det, harmMap] : detMap)
-        for (const auto& [n,  centMap] : harmMap)
-        {
-          //----------------------------------------------------------------
-          // (A)  vₙ(pT) – all centralities, fixed detector & harmonic
-          //----------------------------------------------------------------
+    /* reorganise raw cache: merge N+S into Total and split tokens ----- */
+    using ProfVec = std::vector<TProfile*>;
+    using CentMap = std::map<std::string,ProfVec>;
+    using HarmMap = std::map<int,CentMap>;
+    using RegMap  = std::unordered_map<std::string,HarmMap>;  // North/South/Total
+    using DetMap  = std::unordered_map<std::string,RegMap>;   // EMCal/IHCal/…
+
+    std::unordered_map<std::string,DetMap> regroup;           // by trigger
+
+    for (auto& [trig, detMap] : _raw)
+      for (auto& [detTag, hMap] : detMap)
+      {
+          const std::string base = detBase(detTag);           // EMCal etc.
+          const std::string reg  = regionOf(detTag);          // North / South
+          RegMap& rmap = regroup[trig][base];
+
+          for (auto& [n, cMap] : hMap)
+              for (auto& [cent, v] : cMap)
+                  rmap[reg][n][cent].insert(rmap[reg][n][cent].end(),
+                                            v.begin(), v.end());
+      }
+
+    /* build “Total” = North+South where both present ------------------ */
+    for (auto& [trig, detMap] : regroup)
+      for (auto& [det, regMap] : detMap)
+      {
+          if (regMap.count("North")==0 || regMap.count("South")==0) continue;
+
+          RegMap::mapped_type total;                   // empty
+          for (auto& [n, cMap] : regMap["North"])
+            for (auto& [cent, vecN] : cMap)
+            {
+              auto& vecS = regMap["South"][n][cent];
+              if (vecS.empty() || vecN.empty()) continue;
+
+              /* clone North profile and add South → Total               */
+              auto* pTot = static_cast<TProfile*>(vecN.front()->Clone());
+              pTot->Add(vecS.front(), 1);
+              total[n][cent].push_back(pTot);
+              _ownedProfiles.emplace_back(pTot);       // own memory
+            }
+          if (!total.empty()) regMap["Total"]=std::move(total);
+      }
+
+    /* ------------------------------------------------------------ */
+    /*  plotting loops – detector → region → harmonic → centrality  */
+    /* ------------------------------------------------------------ */
+    int colourTbl[]{kRed+1,kBlue+2,kGreen+2,kMagenta+2,kCyan+2,kOrange+1};
+    const int nCol = sizeof(colourTbl)/sizeof(int);
+
+    for (const auto& [trig, detMap] : regroup)
+      for (const auto& [det, regMap] : detMap)
+        for (const auto& [reg, harmMap] : regMap)
+          for (const auto& [n, centMap] : harmMap)
           {
-            const std::string ttl =
-              Form("v_{%d}(p_{T}) – %s (%s trigger)",
-                   n, det.c_str(), trig.c_str());
+              /* -------- (1) v_n(pT) – each centrality, one PNG per cent ---- */
+              for (const auto& [cent, vec] : centMap)
+              {
+                  if (vec.empty()) continue;
+                  TCanvas c("c","",1100,850); c.SetGrid();
+                  auto g = graphFromProf(vec.front());
+                  g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (Cent %s %%)",
+                                   n, det.c_str(), reg.c_str(), cent.c_str()));
+                  g->Draw("AP");
 
-            TCanvas c(Form("c_v%d_%s_allCent_%s", n, det.c_str(), trig.c_str()),
-                      "", 1200, 900);
-            c.SetGrid();
+                  saveCanvas(c,{det,reg,Form("v%d",n),
+                                 "Cent_"+cent},
+                             Form("v%d_%s_%s_cent%s.png",
+                                  n,det.c_str(),reg.c_str(),cent.c_str()));
+              }
 
-            TLegend leg(0.15, 0.70, 0.45, 0.88); leg.SetBorderSize(0);
-            int    col  = 1;
-            double yMax = 0.;
+              /* -------- (2) v_n(pT) – all centralities on one canvas ------- */
+              {
+                  TCanvas c("c_all","",1100,850); c.SetGrid();
+                  TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
 
-            for (const auto& [cent, profList] : centMap)
-            {
-              if (profList.empty()) continue;
-              auto g = makeGraph(profList.front());          // no x‑error
-              g->SetLineColor  (col);
-              g->SetMarkerColor(col);
-              g->SetTitle(ttl.c_str());
+                  int colIdx=0;
+                  double yMax=0;
+                  for (const auto& [cent, vec] : centMap)
+                  {
+                      if (vec.empty()) continue;
+                      auto g = graphFromProf(vec.front());
+                      int col=colourTbl[colIdx++%nCol];
+                      g->SetLineColor(col); g->SetMarkerColor(col);
+                      g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (all cent)",
+                                       n,det.c_str(),reg.c_str()));
+                      g->Draw(colIdx==1?"APL":"PL SAME");
+                      leg.AddEntry(g.get(),Form("Cent %s %%",cent.c_str()),"pl");
+                      yMax = std::max(yMax, *std::max_element(g->GetY(), g->GetY()+g->GetN()));
+                      _ownedGraphs.push_back(std::move(g));
+                  }
+                  if (yMax>0){ c.Update();
+                      auto* fr=static_cast<TH1*>(c.GetPrimitive("htemp"));
+                      if(fr) fr->SetMaximum(1.15*yMax);}
+                  leg.Draw();
+                  saveCanvas(c,{det,reg,Form("v%d",n),"summaryPlots"},
+                             Form("v%d_%s_%s_allCent.png",
+                                  n,det.c_str(),reg.c_str()));
+              }
 
-              g->Draw(col == 1 ? "APL" : "PL SAME");
-              leg.AddEntry(g.get(), Form("Cent %s %%", cent.c_str()), "pl");
+              /* -------- (3) v̅_n vs centrality (pT‑integrated) ------------- */
+              {
+                  auto gCent = std::make_unique<TGraphErrors>();
+                  int ip=0;
+                  for (const auto& [cent, vec] : centMap)
+                  {
+                      if (vec.empty()) continue;
+                      const auto [mu,er]=meanProf(vec.front());
 
-              const int npts = g->GetN();
-              yMax = std::max(yMax, TMath::MaxElement(npts, g->GetY()));
+                      const auto p=cent.find('_');
+                      double lo=std::stod(cent.substr(0,p));
+                      double hi=std::stod(cent.substr(p+1));
+                      gCent->SetPoint(ip,0.5*(lo+hi),mu);
+                      gCent->SetPointError(ip,0.5*(hi-lo),er);
+                      ++ip;
+                  }
+                  if (gCent->GetN()>0)
+                  {
+                      TCanvas c("c_cent","",1000,800); c.SetGrid();
+                      gCent->SetTitle(Form("v_{%d} vs centrality – %s %s",
+                                           n,det.c_str(),reg.c_str()));
+                      gCent->SetMarkerStyle(kFullCircle); gCent->SetLineWidth(2);
+                      gCent->Draw("AP");
+                      _ownedGraphs.push_back(std::move(gCent));
 
-              _ownedGraphs.push_back(std::move(g));
-              ++col;
-            }
-            if (yMax > 0.) {
-              c.Update();
-              auto *frame = static_cast<TH1*>(c.GetPrimitive("htemp"));
-              if (frame) frame->SetMaximum(1.15 * yMax);
-            }
-            leg.Draw();
-            saveCanvas(c, det,
-                       Form("v%d_%s_allCent_%s.png", n, det.c_str(), trig.c_str()));
+                      saveCanvas(c,{det,reg,Form("v%d",n),"summaryPlots"},
+                                 Form("vbar%d_%s_%s_vsCent.png",
+                                      n,det.c_str(),reg.c_str()));
+                  }
+              }
           }
-
-          //----------------------------------------------------------------
-          // (B)  vₙ(pT) – one canvas per centrality, compare detectors
-          //----------------------------------------------------------------
-          for (const auto& [centWanted, _] : centMap)
-          {
-            const std::string ttl =
-              Form("v_{%d}(p_{T}) – Cent %s %% (%s trigger)",
-                   n, centWanted.c_str(), trig.c_str());
-
-            TCanvas c(Form("c_v%d_cent%s_%s", n,
-                           centWanted.c_str(), trig.c_str()),
-                      "", 1200, 900);
-            c.SetGrid();
-
-            TLegend leg(0.15, 0.70, 0.45, 0.88); leg.SetBorderSize(0);
-            int col = 1;
-
-            for (const auto& [det2, harmMap2] : detMap)
-            {
-              auto itH = harmMap2.find(n);
-              if (itH == harmMap2.end()) continue;
-
-              auto itC = itH->second.find(centWanted);
-              if (itC == itH->second.end() || itC->second.empty()) continue;
-
-              auto g = makeGraph(itC->second.front());       // no x‑error
-              g->SetLineColor  (col);
-              g->SetMarkerColor(col);
-              g->SetTitle(ttl.c_str());
-
-              g->Draw(col == 1 ? "APL" : "PL SAME");
-              leg.AddEntry(g.get(), det2.c_str(), "pl");
-
-              _ownedGraphs.push_back(std::move(g));
-              ++col;
-            }
-            leg.Draw();
-            saveCanvas(c, "centrality",
-                       Form("v%d_cent%s_%s.png",
-                            n, centWanted.c_str(), trig.c_str()));
-          }
-
-          //----------------------------------------------------------------
-          // (C)  NEW:  v̄ₙ(cent) – pT‑integrated, one detector & harmonic
-          //----------------------------------------------------------------
-          {
-            auto gCent = std::make_unique<TGraphErrors>();
-            int   ip   = 0;
-
-            for (const auto& [cent, profList] : centMap)
-            {
-              if (profList.empty()) continue;
-              const TProfile* p = profList.front();
-
-              /* parse "lo_hi" → numeric centre of bin                      */
-              const auto pos = cent.find('_');
-              const double lo = std::stod(cent.substr(0, pos));
-              const double hi = std::stod(cent.substr(pos + 1));
-              const double x  = 0.5 * (lo + hi);
-              const double ex = 0.5 * (hi - lo);
-
-              const auto [vbar, vErr] = meanOfProfile(p);
-
-              gCent->SetPoint     (ip, x,  vbar);
-              gCent->SetPointError(ip, ex, vErr);
-              ++ip;
-            }
-
-            if (gCent->GetN() > 0)
-            {
-              const std::string ttl =
-                Form("v_{%d} vs centrality – %s (%s trigger)",
-                     n, det.c_str(), trig.c_str());
-
-              TCanvas c(Form("c_vbar%d_%s_%s", n, det.c_str(), trig.c_str()),
-                        "", 1200, 900);
-              c.SetGrid();
-              gCent->SetTitle(ttl.c_str());
-              gCent->SetMarkerStyle(kFullCircle);
-              gCent->SetLineWidth(2);
-              gCent->Draw("AP");
-              _ownedGraphs.push_back(std::move(gCent));
-
-              saveCanvas(c, det,
-                         Form("vbar%d_%s_vsCent_%s.png",
-                              n, det.c_str(), trig.c_str()));
-            }
-          }
-        } // harmonic loop
   }
 
-  /* ------------------------------------------------------------------ *
-   *  helper: save canvas under …/<trigger>/vn/FlowQA/<subDir>/         *
-   * ------------------------------------------------------------------ */
+  // ---------- save: assemble directory tree --------------------------
   void saveCanvas(TCanvas& c,
-                  const std::string& subDir,
-                  const std::string& fileName) const
+                  std::initializer_list<std::string> pathParts,
+                  const std::string& file) const
   {
-    const std::filesystem::path dir = _outDir / "FlowQA" / subDir;
-    if (!std::filesystem::exists(dir))
+      std::filesystem::path dir = _outDir;
+      for (const auto& p : pathParts) dir /= p;
       std::filesystem::create_directories(dir);
-
-    c.SaveAs((dir / fileName).string().c_str());
+      c.SaveAs((dir/file).c_str());
   }
 
-  /* data members */
+  // ---------- data ----------------------------------------------------
   std::filesystem::path _outDir;
 
-  /* trigger → detector → n → centrality tag → list<TProfile*> */
-  using ProfileVec = std::vector<TProfile*>;
+  /*  raw cache: trigger → detTag → n → cent → vector<TProfile*> */
+  using ProfVec = std::vector<TProfile*>;
   std::unordered_map<
       std::string,
       std::unordered_map<
           std::string,
-          std::map<
-              int,
-              std::map<std::string, ProfileVec>>>> _cache;
+          std::map<int,std::map<std::string,ProfVec>>>> _raw;
 
-  std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs; // keep alive
+  std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs;   // keep alive
+  std::vector<std::unique_ptr<TProfile>>     _ownedProfiles; // totals
 };
+
 
 
 class EventQA : public QA
@@ -2021,8 +2236,9 @@ public:
          *   directory  “…/output/<RUN>/<trigger>/EventQA/…”               *
          *   (always Inclusive, no centrality slicing here)                *
          *-----------------------------------------------------------------*/
-        const fs::path outPng =
-            root / "EventQA" / (isVz ? "VertexZ.png" : "Centrality.png");
+        const fs::path outPng = isVz
+            ? root / "MBD" / "zVertex" / "VertexZ.png"      // vertex‑Z
+            : root / "centrality" / "Centrality.png";       // centrality
         ensure_dir(outPng.parent_path());
 
         std::unique_ptr<TH1> h(static_cast<TH1*>(o->Clone()));
@@ -2159,7 +2375,9 @@ public:
                 first = false;
             }
             leg.Draw();
-            c.SaveAs((outDir/"VertexZ_AllRuns.png").string().c_str());
+            fs::path vzOverlay  = root / "MBD" / "zVertex" / "VertexZ_AllRuns.png";
+            ensure_dir(vzOverlay.parent_path());
+            c.SaveAs(vzOverlay.string().c_str());
         }
 
         /*  (B) centrality overlay   -------------------------------- */
@@ -2177,7 +2395,9 @@ public:
                 first = false;
             }
             leg.Draw();
-            c.SaveAs((outDir/"Centrality_AllRuns.png").string().c_str());
+            fs::path centOverlay = root / "centrality" / "Centrality_AllRuns.png";
+            ensure_dir(centOverlay.parent_path());
+            c.SaveAs(centOverlay.string().c_str());
         }
 
         /*  (C) #mu,#sigma versus run number  ------------------------------ */
@@ -2234,7 +2454,7 @@ public:
             gSi->Draw("AP");
 
             /* ---- export --------------------------------------------------------- */
-            fs::path pngRun = root / "EventQA" / "VertexZ_MeanSigma_vs_Run.png";
+            fs::path pngRun = root / "MBD" / "zVertex" / "VertexZ_MeanSigma_vs_Run.png";
             ensure_dir(pngRun.parent_path());
             c.SaveAs(pngRun.string().c_str());
         }
@@ -2364,9 +2584,12 @@ void runOneQaPass(const std::string& inFile,
     for (auto& s : slices) {
       fs::path b = fs::path(kOutputBase) / trg;
       if (s != "Inclusive") b /= ("Cent_" + s);
-      for (auto sub : { "Correlations", "EMCal/pi0QA", "IHCal", "OHCal",
-                        "MBD", "sEPD", "jetQA", "EventQA" })
-        ensure_dir(b / sub);
+        for (auto sub : { "correlations", "vNana", "centrality",
+                          "EMCal/otherQA", "EMCal/invMassQA", "EMCal/invMassQA/cutQA",
+                          "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
+                          "MBD", "MBD/zVertex",
+                          "sEPD", "jetQA"})
+            ensure_dir(b / sub);
     }
 
     /* QA modules ---------------------------------------------------- */
@@ -2413,6 +2636,46 @@ void runOneQaPass(const std::string& inFile,
               << std::setw(12)               << c.used << "\n";
 
   log::ok("All outputs under " + kOutputBase);
+    
+    /* ------------------------------------------------------------------ *
+     *  RUN‑BY‑RUN EVENT SUMMARY  (vertex‑Z entries as proxy for events)   *
+     * ------------------------------------------------------------------ */
+    {
+        using term::CLR_BOLD; using term::CLR_RST;
+        const auto& ev = EventQA::eventCounts();
+        if (!ev.empty())
+        {
+            std::vector<std::pair<int,long long>> rows;
+            rows.reserve(ev.size());
+
+            for (const auto& [runStr,n] : ev)
+                if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
+                    rows.emplace_back(std::stoi(runStr), n);
+
+            std::sort(rows.begin(), rows.end(),
+                      [](auto a, auto b){ return a.first < b.first; });
+
+            log::banner("Run‑by‑run event statistics");
+            std::cout << CLR_BOLD
+                      << std::left  << std::setw(12) << "Run"
+                      << std::right << std::setw(15) << "Events"
+                      << CLR_RST << "\n";
+
+            long long totalEv = 0;
+            for (auto [run,n] : rows) {
+                totalEv += n;
+                std::cout << std::left  << std::setw(12) << run
+                          << std::right << std::setw(15) << n   << "\n";
+            }
+            std::cout << CLR_BOLD
+                      << std::left  << std::setw(12) << "TOTAL"
+                      << std::right << std::setw(15) << totalEv
+                      << CLR_RST << "\n\n";
+
+            log::ok("Runs analysed : " + std::to_string(rows.size()) +
+                    "   |   Total events : " + std::to_string(totalEv));
+        }
+    }
 }
 
 

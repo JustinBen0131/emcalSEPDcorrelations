@@ -439,7 +439,7 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
 
 
 /* ----------------------------------------------------------------------
- * bookPi0MassSpectra – π0 invariant–mass spectra
+ * bookPi0MassSpectra – π0 invariant‑mass spectra
  *                      (global  +  centrality‑tagged clones)
  * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
@@ -448,15 +448,16 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
   const int    nM   = 150;
   const double mMax = 1.5;    // [GeV/c²]
 
-  auto addHist = [&](const std::string& baseKey)
+  /* ---- helper for the existing 1‑D spectra ------------------------------ */
+  auto addHist1D = [&](const std::string& baseKey)
   {
-    /* 1) always keep the original (centrality‑independent) spectrum */
+    /* 1) centrality‑independent */
     const std::string hNameGlobal = baseKey + "_" + trig;
     H[hNameGlobal] = new TH1F(hNameGlobal.c_str(),
                               "m_{#gamma#gamma};GeV/c^{2}",
                               nM, 0., mMax);
 
-    /* 2) add one clone for every user‑defined {lo,hi} percentile bin */
+    /* 2) centrality‑tagged clones */
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
     {
       const int lo = m_centEdges[i];
@@ -471,18 +472,68 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
     }
   };
 
-  /* ---- pT‑binned spectra ----------------------------------------------- */
+  /* ---------- NEW ► helper for the three 2‑D correlation plots ---------- */
+  auto addHist2D = [&](const std::string& baseKey,
+                       int    nx, double xmin, double xmax,
+                       int    ny, double ymin, double ymax,
+                       const  char* xTitle,
+                       const  char* yTitle)
+  {
+    /* global */
+    const std::string gName = baseKey + "_" + trig;
+    H[gName] = new TH2F(gName.c_str(),
+                        (std::string(xTitle) + ";" + yTitle).c_str(),
+                        nx, xmin, xmax,
+                        ny, ymin, ymax);
+
+    /* centrality‑tagged */
+    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+    {
+      const int lo = m_centEdges[i];
+      const int hi = m_centEdges[i + 1];
+
+      std::ostringstream name;
+      name << baseKey << '_' << lo << '_' << hi << '_' << trig;
+
+      H[name.str()] = new TH2F(name.str().c_str(),
+                               (std::string(xTitle) + ";" + yTitle).c_str(),
+                               nx, xmin, xmax,
+                               ny, ymin, ymax);
+    }
+  };
+  /* --------------------------------------------------------------------- */
+
+  /* ---- pT‑binned 1‑D spectra ------------------------------------------ */
   for (auto pt : m_ptBins)
     for (float Emin : m_minClusE)
       for (float chi : m_chi2Cuts)
         for (float a : m_asymCuts)
-          addHist(invKey(pt.first, pt.second, Emin, chi, a));
+          addHist1D(invKey(pt.first, pt.second, Emin, chi, a));
 
-  /* ---- inclusive (all‑pT) spectra -------------------------------------- */
+  /* ---- inclusive 1‑D spectra ------------------------------------------ */
   for (float Emin : m_minClusE)
     for (float chi : m_chi2Cuts)
       for (float a : m_asymCuts)
-        addHist(invKey(-1, -1, Emin, chi, a));      // pT = −1 sentinel
+        addHist1D(invKey(-1, -1, Emin, chi, a));      // pT = −1 sentinel
+
+  /* ---------- NEW ► un‑cut 2‑D correlation plots (once per trigger) ---- */
+  addHist2D("Minv_vs_Asym",
+            50,  0.0, 1.0,     // |E1−E2|/(E1+E2)
+            120, 0.0, 0.6,     // mInv
+            "|E_{1}-E_{2}|/(E_{1}+E_{2})",
+            "m_{#gamma#gamma} (GeV/c^{2})");
+
+  addHist2D("Minv_vs_chi2",
+            60,  0.0, 6.0,     // (χ²₁+χ²₂)/2
+            120, 0.0, 0.6,
+            "(#chi^{2}_{1}+ #chi^{2}_{2})/2",
+            "m_{#gamma#gamma} (GeV/c^{2})");
+
+  addHist2D("Minv_vs_Eavg",
+            120, 0.0, 20.0,    // (E1+E2)/2
+            120, 0.0, 0.6,
+            "(E_{1}+E_{2})/2  (GeV)",
+            "m_{#gamma#gamma} (GeV/c^{2})");
 }
 
 
@@ -994,113 +1045,11 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
   return true;
 }
 
-TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
-                                             const MbdGeom*    geom,
-                                             int               arm)   // 0 = S, 1 = N
-{
-  LOG(4, CLR_BLUE, "[makeMbdHitmap] =================================================");
-  LOG(4, CLR_BLUE, "[makeMbdHitmap] name=\"" << name << "\"  arm=" << arm);
-
-  /* ------------------------------------------------------------------ */
-  /* 0. Create empty container                                          */
-  /* ------------------------------------------------------------------ */
-  auto *h = new TH2Poly(name.c_str(), ";x (cm);y (cm)", 0, 0, 0, 0);
-  if (!geom)
-  {
-    LOG(4, CLR_YELLOW, "[makeMbdHitmap] geom==nullptr → return empty TH2Poly");
-    return h;
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* 1. Collect PMT centres for the requested arm                       */
-  /* ------------------------------------------------------------------ */
-  std::vector<std::pair<double,double>> pos;  pos.reserve(64);
-
-  const unsigned totPmt = 128;             // 64 PMTs per arm
-  for (unsigned ip = 0; ip < totPmt; ++ip)
-  {
-    if (geom->get_arm(ip) != arm)
-    {
-      LOG(6, CLR_YELLOW, "  ip=" << ip << " → other arm – skip");
-      continue;
-    }
-
-    const double cx = geom->get_x(ip);
-    const double cy = geom->get_y(ip);
-    if (std::isnan(cx) || std::isnan(cy))
-    {
-      LOG(6, CLR_YELLOW, "  ip=" << ip << " → NaN centre – skip");
-      continue;
-    }
-
-    pos.emplace_back(cx, cy);
-    LOG(6, CLR_GREEN, "  ip=" << ip << " centre=(" << cx << "," << cy << ")");
-  }
-
-  LOG(5, CLR_CYAN, "[makeMbdHitmap] collected " << pos.size()
-                   << " centres for arm " << arm);
-  if (pos.empty())
-  {
-    LOG(4, CLR_YELLOW, "[makeMbdHitmap] no valid PMTs – return empty TH2Poly");
-    return h;
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* 2. Derive safe hexagon radius (flat-to-flat = √3·r)                */
-  /* ------------------------------------------------------------------ */
-  double dMin = std::numeric_limits<double>::max();
-  for (std::size_t i = 0; i < pos.size(); ++i)
-    for (std::size_t j = i + 1; j < pos.size(); ++j)
-      dMin = std::min(
-        dMin,
-        std::hypot(pos[i].first  - pos[j].first,
-                   pos[i].second - pos[j].second));
-
-  if (!std::isfinite(dMin) || dMin <= 0.)
-  {
-    LOG(4, CLR_YELLOW,
-        "[makeMbdHitmap] failed to compute dMin (dMin=" << dMin
-        << ") – return empty TH2Poly");
-    return h;
-  }
-
-  const double r = 0.97 * dMin / std::sqrt(3.0);   // 3 % safety margin
-  LOG(5, CLR_CYAN, "[makeMbdHitmap] dMin="<<dMin<<"  → hex-r="<<r);
-
-  /* ------------------------------------------------------------------ */
-  /* 3. Create one regular flat-top hexagon per PMT centre              */
-  /* ------------------------------------------------------------------ */
-  h->SetFloat();                                    // allow bin touch summing
-  double x[6], y[6];
-
-  std::size_t hexCnt = 0;
-  for (const auto& [cx, cy] : pos)
-  {
-    for (int k = 0; k < 6; ++k)
-    {
-      const double ang = k * M_PI / 3.0;            // 0°,60°,120°…
-      x[k] = cx + r * std::cos(ang);
-      y[k] = cy + r * std::sin(ang);
-    }
-    h->AddBin(6, x, y);
-    ++hexCnt;
-
-    LOG(6, CLR_GREEN,
-        "  hex#" << hexCnt << " centre=(" << cx << "," << cy << ") added");
-  }
-
-  LOG(4, CLR_GREEN, "[makeMbdHitmap] completed – " << hexCnt
-                    << " hexagons booked for arm " << arm);
-  LOG(4, CLR_BLUE,  "[makeMbdHitmap] =================================================");
-  return h;
-}
-
-
 TH2F*
 emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
                                     EpdGeom* /*geom*/, int /*arm*/)
 {
-    static const Double_t rEdge[17] =   // cm – inner radius of each ring
+    static const Double_t rEdge[17] =   w// cm – inner radius of each ring
       { 0.15, 0.35, 0.55, 0.75, 0.95, 1.15, 1.35, 1.55,
         1.75, 1.95, 2.15, 2.35, 2.55, 2.75, 2.95, 3.15, 3.55 };
 
@@ -1343,6 +1292,107 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
         << (usedMap ? "  (Ψ2 from EventplaneinfoMap)" : "  (Ψ2 from towers)"));
 }
 
+
+TH2Poly* emcal_sepdCorrelator::makeMbdHitmap(const std::string& name,
+                                             const MbdGeom*    geom,
+                                             int               arm)   // 0 = S, 1 = N
+{
+  LOG(4, CLR_BLUE, "[makeMbdHitmap] =================================================");
+  LOG(4, CLR_BLUE, "[makeMbdHitmap] name=\"" << name << "\"  arm=" << arm);
+
+  /* ------------------------------------------------------------------ */
+  /* 0. Create empty container                                          */
+  /* ------------------------------------------------------------------ */
+  auto *h = new TH2Poly(name.c_str(), ";x (cm);y (cm)", 0, 0, 0, 0);
+  if (!geom)
+  {
+    LOG(4, CLR_YELLOW, "[makeMbdHitmap] geom==nullptr → return empty TH2Poly");
+    return h;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Collect PMT centres for the requested arm                       */
+  /* ------------------------------------------------------------------ */
+  std::vector<std::pair<double,double>> pos;  pos.reserve(64);
+
+  const unsigned totPmt = 128;             // 64 PMTs per arm
+  for (unsigned ip = 0; ip < totPmt; ++ip)
+  {
+    if (geom->get_arm(ip) != arm)
+    {
+      LOG(6, CLR_YELLOW, "  ip=" << ip << " → other arm – skip");
+      continue;
+    }
+
+    const double cx = geom->get_x(ip);
+    const double cy = geom->get_y(ip);
+    if (std::isnan(cx) || std::isnan(cy))
+    {
+      LOG(6, CLR_YELLOW, "  ip=" << ip << " → NaN centre – skip");
+      continue;
+    }
+
+    pos.emplace_back(cx, cy);
+    LOG(6, CLR_GREEN, "  ip=" << ip << " centre=(" << cx << "," << cy << ")");
+  }
+
+  LOG(5, CLR_CYAN, "[makeMbdHitmap] collected " << pos.size()
+                   << " centres for arm " << arm);
+  if (pos.empty())
+  {
+    LOG(4, CLR_YELLOW, "[makeMbdHitmap] no valid PMTs – return empty TH2Poly");
+    return h;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Derive safe hexagon radius (flat-to-flat = √3·r)                */
+  /* ------------------------------------------------------------------ */
+  double dMin = std::numeric_limits<double>::max();
+  for (std::size_t i = 0; i < pos.size(); ++i)
+    for (std::size_t j = i + 1; j < pos.size(); ++j)
+      dMin = std::min(
+        dMin,
+        std::hypot(pos[i].first  - pos[j].first,
+                   pos[i].second - pos[j].second));
+
+  if (!std::isfinite(dMin) || dMin <= 0.)
+  {
+    LOG(4, CLR_YELLOW,
+        "[makeMbdHitmap] failed to compute dMin (dMin=" << dMin
+        << ") – return empty TH2Poly");
+    return h;
+  }
+
+  const double r = 0.97 * dMin / std::sqrt(3.0);   // 3 % safety margin
+  LOG(5, CLR_CYAN, "[makeMbdHitmap] dMin="<<dMin<<"  → hex-r="<<r);
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Create one regular flat-top hexagon per PMT centre              */
+  /* ------------------------------------------------------------------ */
+  h->SetFloat();                                    // allow bin touch summing
+  double x[6], y[6];
+
+  std::size_t hexCnt = 0;
+  for (const auto& [cx, cy] : pos)
+  {
+    for (int k = 0; k < 6; ++k)
+    {
+      const double ang = k * M_PI / 3.0;            // 0°,60°,120°…
+      x[k] = cx + r * std::cos(ang);
+      y[k] = cy + r * std::sin(ang);
+    }
+    h->AddBin(6, x, y);
+    ++hexCnt;
+
+    LOG(6, CLR_GREEN,
+        "  hex#" << hexCnt << " centre=(" << cx << "," << cy << ") added");
+  }
+
+  LOG(4, CLR_GREEN, "[makeMbdHitmap] completed – " << hexCnt
+                    << " hexagons booked for arm " << arm);
+  LOG(4, CLR_BLUE,  "[makeMbdHitmap] =================================================");
+  return h;
+}
 
 
 
@@ -1651,36 +1701,29 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
 
 
 /* ----------------------------------------------------------------------
- * doPi0QA – γγ invariant‑mass spectra (global + centrality‑tagged)
- *            (improved verbosity)
+ * doPi0QA – γγ invariant‑mass spectra (global + centrality‑tagged)
  * -------------------------------------------------------------------- */
 void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 {
-  /* ------------------------------------------------------------------ */
-  /* 0)  Entrance message                                               */
-  /* ------------------------------------------------------------------ */
+  /* 0)  Entrance message ------------------------------------------------ */
   LOG(3, CLR_BLUE,
-      "[doPi0QA] entered  – "
+      "[doPi0QA] entered  – "
       << (m_clus ? m_clus->size() : 0)
       << " EMC clusters available in this event");
 
-  /* ---------- early exits ------------------------------------------- */
+  /* early exits --------------------------------------------------------- */
   if (!m_clus || m_clus->size() < 2)
-  {
-    LOG(4, CLR_YELLOW, "    [doPi0QA] < 2 clusters – nothing to do");
-    return;
-  }
+  { LOG(4, CLR_YELLOW, "    [doPi0QA] < 2 clusters – nothing to do"); return; }
 
-  /* ---------- build a filtered cluster cache ------------------------ */
+  /* build filtered cluster cache --------------------------------------- */
   const float EminMin = *std::min_element(m_minClusE.begin(), m_minClusE.end());
   const float chi2Max = *std::max_element(m_chi2Cuts.begin(), m_chi2Cuts.end());
   const float asymMax = *std::max_element(m_asymCuts.begin(), m_asymCuts.end());
 
   struct Clu { TLorentzVector v; float E, pt, chi; };
-  std::vector<Clu> cl; cl.reserve(m_clus->size());
+  std::vector<Clu> cl;  cl.reserve(m_clus->size());
 
-  std::size_t nRejectedE   = 0;
-  std::size_t nRejectedChi = 0;
+  std::size_t nRejectedE = 0, nRejectedChi = 0;
 
   for (auto [it, end] = m_clus->getClusters(); it != end; ++it)
   {
@@ -1713,7 +1756,7 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
       << nRejectedE << " rejected by E, "
       << nRejectedChi << " rejected by χ²)");
 
-  /* ---------- determine centrality slice ---------------------------- */
+  /* determine centrality slice ----------------------------------------- */
   int lo = 0, hi = 100;
   if (m_centBin >= 0)
     for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
@@ -1721,14 +1764,14 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
           m_centBin <  m_centEdges[i + 1])
       { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
 
-  std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;   // "_20_40"
+  std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;
   const std::string centTag = tagSS.str();
 
   LOG(4, CLR_CYAN,
       "    [doPi0QA] centrality = " << m_centBin
       << "%  → slice " << lo << "–" << hi << '%');
 
-  /* ---------- loop over cluster pairs ------------------------------- */
+  /* loop over cluster pairs -------------------------------------------- */
   const std::size_t totalPairs = cl.size() * (cl.size() - 1) / 2;
   std::atomic<std::size_t> pairCnt{0};
   constexpr std::size_t reportEvery = 50'000;
@@ -1750,7 +1793,41 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
 
       const Clu &c1 = cl[i], &c2 = cl[j];
       const float asym = std::fabs(c1.E - c2.E) / (c1.E + c2.E);
-      if (asym > asymMax) { ++pairCnt; continue; }            // global veto
+      if (asym > asymMax) { ++pairCnt; continue; }      // global veto
+
+      /* ---------- unconditional 2‑D correlation fills (leading‑cluster vars) ---- */
+      {
+          const float mInvPair = (c1.v + c2.v).M();
+
+          /* --- pick the leading‑E cluster and its χ² --------------------------- */
+          const bool  leadIsC1 = (c1.E >= c2.E);
+          const float eLead    = leadIsC1 ? c1.E   : c2.E;   // leading‑cluster energy
+          const float chiLead  = leadIsC1 ? c1.chi : c2.chi; // χ² of that same cluster
+
+          /* helper lambda – unchanged ------------------------------------------ */
+          auto fill2D = [&](const std::string& prefix,
+                            float x, float y,
+                            const std::string& trg)
+          {
+            auto& H = qaHistogramsByTrigger[trg];
+
+            const std::string gKey = prefix + "_" + trg;
+            if (auto it = H.find(gKey); it != H.end())
+              static_cast<TH2F*>(it->second)->Fill(x, y);
+
+            const std::string cKey = prefix + centTag + "_" + trg;
+            if (auto it = H.find(cKey); it != H.end())
+              static_cast<TH2F*>(it->second)->Fill(x, y);
+          };
+
+          for (const auto& t : trig)
+          {
+            fill2D("Minv_vs_Asym", asym,    mInvPair, t); // unchanged
+            fill2D("Minv_vs_chi2", chiLead, mInvPair, t); // now leading‑cluster χ²
+            fill2D("Minv_vs_Eavg", eLead,   mInvPair, t); // now leading‑cluster E
+          }
+      }
+      /* ---------- NEW ◄ end 2‑D fills -------------------------------- */
 
       /* ---- helper that fills both histogram flavours ---------------- */
       auto fillBoth = [&](const std::string& baseKey,
@@ -1862,14 +1939,14 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
     }
   } // end parallel region
 
-  /* ---------- summary & exit ---------------------------------------- */
+  /* summary & exit ---------------------------------------------------- */
   const std::size_t processedPairs = pairCnt.load();
   LOG(3, CLR_GREEN,
-      "    [doPi0QA] completed – "
+      "    [doPi0QA] completed – "
       << processedPairs << " / " << totalPairs
       << " pairs processed (" << std::fixed << std::setprecision(1)
       << (100.0 * processedPairs / totalPairs) << "%)"
-      << " – centrality slice " << lo << "–" << hi << '%');
+      << " – centrality slice " << lo << "–" << hi << '%');
 }
 
 
