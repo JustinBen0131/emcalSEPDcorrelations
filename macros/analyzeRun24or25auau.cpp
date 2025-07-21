@@ -27,6 +27,9 @@
 #include <fstream>
 #include <iomanip>
 #include <ROOT/TProcessExecutor.hxx>
+#include <ROOT/TSequentialExecutor.hxx>    // defines ROOT::TSequentialExecutor
+#include <Math/MinimizerOptions.h>         // defines ROOT::Math::MinimizerOptions
+#include <TLegend.h>                       // full definition of TLegend
 #include <iostream>
 #include <TGraphErrors.h>
 #include <memory>
@@ -240,8 +243,12 @@ public:
   MPair& operator[](const string& k){ return _c[k]; }
   bool ready(const string& k){ return _c[k].n && _c[k].s; }
   MPair pop(const string& k){ MPair p=_c[k]; _c.erase(k); return p; }
+  struct H {
+        size_t operator()(const string& s) const noexcept {
+            return std::hash<string>{}(s);
+        }
+  };
 private:
-  struct H{ size_t operator()(const string& s)const noexcept{ return std::hash<string>{}(s);} };
   std::unordered_map<string,MPair,H> _c;
 };
 struct MapPair{ TH2* n=nullptr,*s=nullptr; };
@@ -282,6 +289,13 @@ class Pi0QA : public QA
     std::string slice;  double pLo, pHi;
     double mean, sigma, chi2;  int ndf;
   };
+    
+    
+  struct FitPair {
+        std::unique_ptr<TF1> total;
+        std::unique_ptr<TF1> poly;
+  };
+
 
   /* ------------------------------------------------------------------ *
    *  ctor – figure out the run label from the base directory            *
@@ -1029,10 +1043,6 @@ class Pi0QA : public QA
 
   std::unordered_map<std::string, TH1*>            _centralHists;
 
-  struct FitPair {
-      std::unique_ptr<TF1> total;
-      std::unique_ptr<TF1> poly;
-  };
   std::unordered_map<std::string, FitPair>         _storedFit;
   std::unordered_map<std::string, std::unique_ptr<TF1>> _storedEtaFit;
 
@@ -1556,15 +1566,26 @@ private:
 };
 
 
-// ─── HCal QA – proportional η–φ hit-maps (IHCal / OHCal) ─────────────
+// ─── HCal QA – proportional η–φ hit‑maps (IHCal / OHCal) ─────────────
 class HcalQA : public QA
 {
  public:
   using QA::QA;
 
-  // ================================================================
-  //  per-object entry point
-  // ================================================================
+  // ==================================================================
+  //  helper: safe‑clone (detaches from any directory immediately)
+  // ==================================================================
+  static TH2* cloneDetach(const TH2* src, const char* newName = nullptr)
+  {
+      auto* c = static_cast<TH2*>(src->Clone(newName ? newName : src->GetName()));
+      if (!c) throw std::runtime_error("TH2::Clone() returned nullptr!");
+      c->SetDirectory(nullptr);          // *** critical: break ownership ***
+      return c;
+  }
+
+  // ==================================================================
+  //  per‑object processing entry point
+  // ==================================================================
   bool process(TObject* o) override
   {
     /* -------------------------------------------------------------- *
@@ -1572,148 +1593,136 @@ class HcalQA : public QA
      * -------------------------------------------------------------- */
     if (!o->InheritsFrom(TH1::Class())) return false;
 
-    const std::string n   = o->GetName();          // histogram name
+    const std::string n   = o->GetName();
     const bool isI        = n.rfind("h_IHCAL_", 0) == 0;
     const bool isO        = n.rfind("h_OHCAL_", 0) == 0;
-    if (!isI && !isO) return false;                // neither IHCal nor OHCal
+    if (!isI && !isO) return false;
 
-    const std::string slice = sliceKey(n);         // Inclusive / Cent_x_y
+    const std::string slice = sliceKey(n);                 // Inclusive / Cent_x_y
     const bool isMap        = n.find("_EtaPhiMap_") != std::string::npos;
 
+    log::trace("HcalQA  → processing \"" + n +
+               "\"  slice=" + slice +
+               (isMap ? "  (map)" : "  (scalar)"));
+
     /* -------------------------------------------------------------- *
-     *  1.  Lambda to render one η–φ map panel                        *
+     *  1.  Lambda that renders one η–φ map panel                     *
      * -------------------------------------------------------------- */
     auto makePanel = [&](TH2* src, const fs::path& outPng)
     {
-      // ---------- 1.1 constants ------------------------------------
-      constexpr int nPhi = 64;                      // rows     (Y)
-      constexpr int nEta = 24;                      // columns  (X)
-      constexpr int px   = 18;                      // pixel-size (PNG)
+      try {
+          constexpr int nPhi = 64, nEta = 24, px = 18;
 
-      // ---------- 1.2 working clone & bad-plate masking ------------
-      std::unique_ptr<TH2> h(static_cast<TH2*>(src->Clone()));
-      h->SetDirectory(nullptr);
-      h->SetStats(0);
-      h->SetContour(99);
+          // 1.1 working clone & bad‑plate masking --------------------
+          std::unique_ptr<TH2> h( cloneDetach(src) );
+          h->SetStats(0); h->SetContour(99);
 
-      for (int ip = 0; ip < nPhi; ++ip)
-        for (int ie = 0; ie < nEta; ++ie)
-          if (isBadHcalPlate(hcal_sector_from_idx(ie, ip),
-                             hcal_plate_from_idx (ie, ip)))
-            h->SetBinContent(h->FindBin(ip, ie), -9999.);   // white holes
+          for (int ip = 0; ip < nPhi; ++ip)
+            for (int ie = 0; ie < nEta; ++ie)
+              if (isBadHcalPlate(hcal_sector_from_idx(ie, ip),
+                                 hcal_plate_from_idx (ie, ip)))
+                h->SetBinContent(h->FindBin(ip, ie), -9999.);
 
-      // ---------- 1.3 rotate  (η → X,  φ → Y) ----------------------
-      TH2F* rot = new TH2F(
-            ("hRot_" + std::string(src->GetName())).c_str(),
-            h->GetTitle(),
-            nEta, 0, nEta,      // X-bins (η index → X)
-            nPhi, 0, nPhi);     // Y-bins (φ index → Y)
+          // 1.2 rotate  (η → X, φ → Y) ------------------------------
+          std::unique_ptr<TH2F> rot(
+              static_cast<TH2F*>(cloneDetach(h.get(),
+                                             ("hRot_" + std::string(src->GetName())).c_str())));
+          rot->SetBins(nEta, 0, nEta, nPhi, 0, nPhi);
 
-      for (int ip = 1; ip <= nPhi; ++ip)
-          for (int ie = 1; ie <= nEta; ++ie)
-            rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
+          for (int ip = 1; ip <= nPhi; ++ip)
+            for (int ie = 1; ie <= nEta; ++ie)
+              rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
 
-      rot->SetDirectory(nullptr);   // detach from any TFile
-      rot->SetMinimum(1.);          // Z-axis lower bound
+          // cosmetics …
+          rot->SetMinimum(1.);
+          rot->GetXaxis()->SetTitle("#eta index");
+          rot->GetYaxis()->SetTitle("#phi index");
 
-      rot->GetXaxis()->SetTitle("#eta index");
-      rot->GetYaxis()->SetTitle("#phi index");
+          // 1.3 canvas & save ---------------------------------------
+          const int cw = (kHCalCanvasW > 0) ? kHCalCanvasW : nEta * px;
+          const int ch = (kHCalCanvasH > 0) ? kHCalCanvasH : nPhi * px;
 
-      // ---------- 1.4 nice title incl. run number ------------------
-      std::string runLabel = root.parent_path().filename().string();
-      if (std::all_of(runLabel.begin(), runLabel.end(), ::isdigit))
-        runLabel = std::to_string(std::stoi(runLabel));     // strip leading 0s
+          TCanvas c("c_hcal", "", cw, ch);
+          c.SetRightMargin(0.16);  c.SetLeftMargin(0.08);
+          c.SetBottomMargin(0.08); c.SetTopMargin(0.055);
+          c.SetFixedAspectRatio();
 
-      std::string baseTitle = src->GetTitle();
-      if (baseTitle.empty()) baseTitle = src->GetName();
-      rot->SetTitle((baseTitle + " (" + runLabel + ')').c_str());
+          rot->Draw("COLZ");
 
-      // ---------- 1.5 cosmetic tweaks ------------------------------
-      const double kLab = 0.025, kTit = 0.030;
-      rot->GetXaxis()->SetLabelSize(kLab);
-      rot->GetYaxis()->SetLabelSize(kLab);
-      rot->GetZaxis()->SetLabelSize(kLab);
-      rot->GetXaxis()->SetTitleSize(kTit);
-      rot->GetYaxis()->SetTitleSize(kTit);
-      rot->GetZaxis()->SetTitleSize(kTit);
-      rot->GetXaxis()->SetNdivisions(nEta, kFALSE);
-      rot->GetYaxis()->SetNdivisions(nPhi, kFALSE);
+          // light grid
+          TLine l; l.SetLineColor(kBlack); l.SetLineWidth(1);
+          for (int x = 1; x < nEta; ++x) l.DrawLine(x, 0, x, nPhi);
+          for (int y = 1; y < nPhi; ++y) l.DrawLine(0, y, nEta, y);
 
-      // ---------- 1.6 canvas size ----------------------------------
-      const int cw = (kHCalCanvasW > 0) ? kHCalCanvasW : nEta * px;
-      const int ch = (kHCalCanvasH > 0) ? kHCalCanvasH : nPhi * px;
-
-      TCanvas c("c_hcal", "", cw, ch);
-      c.SetRightMargin(0.16);
-      c.SetLeftMargin (0.08);
-      c.SetBottomMargin(0.08);
-      c.SetTopMargin(0.055);
-      c.SetFixedAspectRatio();                       // 1 bin ⇒ 1 pixel
-
-      rot->Draw("COLZ");
-
-      // ---------- 1.7 grid overlay ---------------------------------
-      TLine l; l.SetLineColor(kBlack);
-
-      l.SetLineWidth(1);                              // fine grid
-      for (int x = 1; x < nEta; ++x) l.DrawLine(x, 0, x, nPhi);
-      for (int y = 1; y < nPhi; ++y) l.DrawLine(0, y, nEta, y);
-
-      l.SetLineWidth(4);                              // sector / plate grid
-      for (int y = 0; y <= nPhi; y += 2) l.DrawLine(0, y, nEta, y);
-      l.DrawLine( 8, 0,  8, nPhi);
-      l.DrawLine(16, 0, 16, nPhi);
-
-      // ---------- 1.8 export ---------------------------------------
-      ensure_dir(outPng.parent_path());
-      c.SaveAs(outPng.string().c_str());
+          ensure_dir(outPng.parent_path());
+          c.SaveAs(outPng.string().c_str());
+          log::trace("HcalQA  → wrote " + outPng.string());
+      }
+      catch (const std::exception& ex) {
+          log::warn(std::string("HcalQA  WARN  failed to save panel for \"")
+                    + src->GetName() + "\": " + ex.what());
+      }
     };
-    /* ---------- end makePanel lambda ------------------------------ */
+    /* ---------- end makePanel ------------------------------------ */
 
     /* -------------------------------------------------------------- *
-     *  2.  Write standard per-arm outputs                            *
+     *  2.  Per‑arm outputs                                           *
      * -------------------------------------------------------------- */
     fs::path subDir = fs::path("HCal") / (isI ? "IHCal" : "OHCal");
     fs::path out    = cPath(root, slice, subDir) / (n + ".png");
 
     if (isMap && o->InheritsFrom(TH2::Class()))
-      makePanel(static_cast<TH2*>(o), out);
+        makePanel(static_cast<TH2*>(o), out);
     else if (o->InheritsFrom(TH2::Class()))
-      save2D(static_cast<TH2*>(o), out);
+        save2D(static_cast<TH2*>(o), out);
     else
-      save1D(static_cast<TH1*>(o), out);
+        save1D(static_cast<TH1*>(o), out);
 
     /* -------------------------------------------------------------- *
      *  3.  Build totalHCal maps once both IHCal & OHCal are present  *
      * -------------------------------------------------------------- */
     if (isMap && o->InheritsFrom(TH2::Class()))
     {
-      struct Pair { std::unique_ptr<TH2> i, o; };
+      struct Pair {
+          std::unique_ptr<TH2> i, o;
+          ~Pair() {               // safety: make sure no directory owns us
+              if (i) i->SetDirectory(nullptr);
+              if (o) o->SetDirectory(nullptr);
+          }
+      };
       static std::unordered_map<std::string, Pair> cache;   // key = slice|name
 
-      const std::string key = slice + "|" + n;              // unique per slice
+      const std::string key = slice + "|" + n;
       Pair& p = cache[key];
 
-      if (isI) p.i.reset(static_cast<TH2*>(o->Clone()));
-      if (isO) p.o.reset(static_cast<TH2*>(o->Clone()));
+      try {
+          if (isI) p.i.reset( cloneDetach(static_cast<TH2*>(o)) );
+          if (isO) p.o.reset( cloneDetach(static_cast<TH2*>(o)) );
+      }
+      catch (const std::exception& ex) {
+          log::warn("HcalQA  WARN  clone failed for \"" + n + "\": " + ex.what());
+          return true;   // skip – don’t kill the job
+      }
 
-      if (p.i && p.o)                                       // have both arms
+      if (p.i && p.o)                         // have both arms – combine now
       {
-        auto tot = std::unique_ptr<TH2>(static_cast<TH2*>(p.i->Clone()));
+        auto tot = std::unique_ptr<TH2>(
+                       cloneDetach(p.i.get(),
+                                   (std::string(p.i->GetName())+"_tot").c_str()));
         tot->Add(p.o.get());
 
-        fs::path outTot = cPath(root, slice,
-                                fs::path("HCal") / "totalHCal")
+        fs::path outTot = cPath(root, slice, fs::path("HCal")/"totalHCal")
                          / (n + "_total.png");
         makePanel(tot.get(), outTot);
 
-        cache.erase(key);                                   // free memory
+        cache.erase(key);                     // free – Pair dtor detaches dirs
       }
     }
 
-    return true;   // <-- explicit return fixes the compiler warning
+    return true;
   }
 };
+
 
 
 // ───────────────── Event‑plane observables (sEPD) ──────────────────────
@@ -2719,6 +2728,10 @@ void runOneQaPass(const std::string& inFile,
   // ------------------------------------------------------------------
 
   CentList slices = discoverSlices(in.get());
+  slices.erase(
+        std::remove_if(slices.begin(), slices.end(),
+                       [](const std::string& s){ return s=="0_100"; }),
+        slices.end());
   {
     std::ostringstream o; o << "Centrality slices: ";
     for (auto& s : slices) o << s << "  ";
