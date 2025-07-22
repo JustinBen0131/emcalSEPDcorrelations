@@ -50,6 +50,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <regex>
 #include <tuple>
 
 
@@ -262,7 +263,15 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
-
+// Return the vertex‑cut contained in “…_vtx_lt_<N>”
+// ‑1  ➜  no explicit cut in the name.
+static int
+extractVtxCut(const std::string& trigName)
+{
+  static const std::regex re(R"(vtx_lt_(\d+))");
+  std::smatch m;
+  return std::regex_search(trigName, m, re) ? std::stoi(m[1]) : -1;
+}
 
 void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
 {
@@ -876,6 +885,19 @@ void emcal_sepdCorrelator::createHistos_Data()
           new TH1I(("cnt_"+trig+"_scaled").c_str(),
                    (trig+" – scaled bit fired;flag;Events").c_str(),
                    1, 0.5, 1.5);
+      
+      /* ── vertex‑cut compliance histogram ─────────────────────────────── */
+    if (int vCut = extractVtxCut(trig); vCut > 0)
+    {
+        auto* h = new TH1I(Form("h_vtxRelToCut_%s", trig.c_str()),
+                           Form("|z_{vtx}| vs trigger‑cut = %d cm;relation;Events", vCut),
+                           3, 0.5, 3.5);
+        h->GetXaxis()->SetBinLabel(1, "< cut");
+        h->GetXaxis()->SetBinLabel(2, "= cut");
+        h->GetXaxis()->SetBinLabel(3, "> cut");
+        H[h->GetName()] = h;
+    }
+      
     out->cd();
   }
 }
@@ -908,22 +930,27 @@ void emcal_sepdCorrelator::buildSepdChannelMap()
 }
 
 // ------------------------------------------------------------------
-//  firstEventCuts – logic only, fills counters + h_MBTrigCorr,
-//                 returns true if (MB  &&  ≥1 scaled bit fired)
+//  firstEventCuts – returns true iff
+//     (Minimum‑bias  &&  ≥1 scaled bit fired  &&  |vz| < m_vzCut)
+//
+//  Additionally:
+//   • fills the usual bookkeeping histograms
+//   • for every trigger whose name contains “…_vtx_lt_<N>” fills
+//     h_vtxRelToCut_<trigger>  with  (< , = , >) relative to <N>
 // ------------------------------------------------------------------
 bool
-emcal_sepdCorrelator::firstEventCuts(PHCompositeNode* topNode,
-                                   std::vector<std::string>& activeTrig)
+emcal_sepdCorrelator::firstEventCuts(PHCompositeNode*   topNode,
+                                     std::vector<std::string>& activeTrig)
 {
-  /* 0. clear output vector (safety when called more than once) */
+  /* 0. clear output vector ----------------------------------------- */
   activeTrig.clear();
 
-  /* 1.  Minimum‑bias flag (cached in fetchNodes) -------------------- */
+  /* 1. minimum‑bias flag (cached in fetchNodes) -------------------- */
   const bool isMB = m_isMinBias;
   LOG(2, CLR_BLUE, "[firstEventCuts] event " << event_count
          << "  –  isMB = " << std::boolalpha << isMB);
 
-  /* 2.  Fetch GL1 trigger words ------------------------------------- */
+  /* 2. Fetch GL1 trigger words ------------------------------------- */
   uint64_t wScaled = 0, wLive = 0, wRaw = 0;
   if (auto* gl1 = findNode::getClass<Gl1Packet>(topNode, "GL1Packet"))
   {
@@ -938,24 +965,12 @@ emcal_sepdCorrelator::firstEventCuts(PHCompositeNode* topNode,
   else
     LOG(1, CLR_YELLOW, "  GL1Packet node missing – assuming all bits = 0");
 
-  /* 3.  Decode once per event --------------------------------------- */
+  /* 3. Decode once per event --------------------------------------- */
   const auto bitsScaled = extractTriggerBits(wScaled, event_count);
   const auto bitsLive   = extractTriggerBits(wLive  , event_count);
   const auto bitsRaw    = extractTriggerBits(wRaw   , event_count);
 
-  if (Verbosity() >= 4)
-  {
-    auto dump = [&](const char* tag, const std::vector<int>& v)
-    {
-      std::ostringstream os; os << "    " << tag << ":";
-      for (int b : v) os << ' ' << b;   LOG(4, CLR_CYAN, os.str());
-    };
-    dump("scaled", bitsScaled);
-    dump("live  ", bitsLive);
-    dump("raw   ", bitsRaw);
-  }
-
-  /* 4.  Per‑trigger loop ------------------------------------------- */
+  /* 4. Per‑trigger loop -------------------------------------------- */
   for (const auto& [bitIdx, key] : triggerNameMap)
   {
     ++m_trigStat[key].tested;
@@ -964,48 +979,54 @@ emcal_sepdCorrelator::firstEventCuts(PHCompositeNode* topNode,
     const bool firedLive   = checkTriggerCondition(bitsLive  , bitIdx);
     const bool firedRaw    = checkTriggerCondition(bitsRaw   , bitIdx);
 
-    if (Verbosity() >= 3)
-      LOG(3, CLR_GREEN, "    bit " << std::setw(2) << bitIdx
-          << " (" << std::left << std::setw(30) << key << ") "
-          << "raw=" << firedRaw << " live=" << firedLive
-          << " scaled=" << firedScaled);
-
-    /* 4a.  populate counters (TH1I – one bin, value = 1) */
+    /* 4a. scalar counters ------------------------------------------ */
     auto safeFill = [&](const std::string& hname)
     {
       auto& H  = qaHistogramsByTrigger[key];
       auto  it = H.find(hname);
-      if (it != H.end())
-        static_cast<TH1I*>(it->second)->Fill(1.);
-      else
-        LOG(2, CLR_YELLOW, "      missing histogram \"" << hname << '"');
+      if (it != H.end()) static_cast<TH1I*>(it->second)->Fill(1.);
     };
     if (firedRaw   ) safeFill("cnt_" + key + "_raw");
     if (firedLive  ) safeFill("cnt_" + key + "_live");
     if (firedScaled) safeFill("cnt_" + key + "_scaled");
 
-    /* 4b.  MB×Trigger correlation map (always filled) */
+    /* 4b. MB×Trigger correlation map ------------------------------- */
     if (h_MBTrigCorr)
     {
       const int cat  = isMB ? (firedScaled ? 4 : 3)
-                            : (firedScaled ? 2 : 1);          // see Init()
-      const int xbin = m_trigBin[key];                        // cached
-      h_MBTrigCorr->Fill(xbin, cat);
+                            : (firedScaled ? 2 : 1);
+      h_MBTrigCorr->Fill(m_trigBin[key], cat);
     }
 
-    /* 4c.  Gate decision – keep only *scaled* bit */
-    if (firedScaled)
+    /* 4c.  Fire decision & vertex‑cut diagnostics ------------------ */
+    if (!firedScaled) continue;
+
+    activeTrig.push_back(key);
+    ++m_trigStat[key].fired;
+
+    /* record |vz| relative to trigger‑specific cut, if any ---------- */
+    if (int vCut = extractVtxCut(key); vCut > 0)
     {
-      activeTrig.push_back(key);
-      ++m_trigStat[key].fired;
+      const double vzAbs = std::fabs(m_vz);
+      int bin = (vzAbs <  vCut) ? 1
+              : (vzAbs == vCut) ? 2
+                                : 3;
+      auto& H = qaHistogramsByTrigger[key];
+      std::string hname = "h_vtxRelToCut_" + key;
+      if (auto it = H.find(hname); it != H.end())
+        static_cast<TH1I*>(it->second)->Fill(bin);
     }
   } // trigger loop
 
-  /* 5.  Final decision --------------------------------------------- */
-  const bool pass = isMB && !activeTrig.empty();
+  /* 5. Global vertex‑z veto (after QA fills) ----------------------- */
+  bool pass = isMB && !activeTrig.empty();
+  if (pass && m_useVzCut && std::fabs(m_vz) >= m_vzCut)
+    pass = false;
+
   LOG(2, CLR_BLUE, "  → firstEventCuts(): " << (pass ? "PASS" : "FAIL"));
   return pass;
 }
+
 
 
 
@@ -1069,77 +1090,70 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   for (const auto& t : activeTrig)
     static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])->Fill(m_vz);
 
-  if (m_useVzCut && std::fabs(m_vz) >= m_vzCut)
-  {
-    LOG(4, CLR_YELLOW,
-        "    |vz| = " << std::fabs(m_vz) << " cm  ≥ cut (" << m_vzCut
-        << ") – skip");
-    return Fun4AllReturnCodes::ABORTEVENT;
-  }
 
-  /* ------------------------------------------------------------------ */
-  /* 5.  Centrality lookup & diagnostics                                */
-  /*      (must precede detector‑level QA so centrality clones fill)    */
-  /* ------------------------------------------------------------------ */
-  CentralityInfo* central =
+    /* ------------------------------------------------------------------ */
+    /* 5.  Centrality lookup & diagnostics                                */
+    /*      (must precede detector‑level QA so centrality clones fill)    */
+    /* ------------------------------------------------------------------ */
+    CentralityInfo* central =
           findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
 
-  if (!central)
-  {
+    if (!central)
+    {
         LOG(4, CLR_YELLOW,
             "    CentralityInfo node missing – skip");
         return Fun4AllReturnCodes::ABORTEVENT;
-  }
+    }
 
-  const float centile =
+    const float centile =
         central->get_centrality_bin(CentralityInfo::PROP::mbd_NS);
 
-  if (!std::isfinite(centile) || centile < 0.f)
-  {
-      LOG(4, CLR_YELLOW,
+    if (!std::isfinite(centile) || centile < 0.f)
+    {
+        LOG(4, CLR_YELLOW,
           "    mbd_NS centile invalid – treating as minimum‑bias (0 – 100 %)");
-      m_centBin = -1;                          // minimum‑bias
-  }
-  else
-  {
-      m_centBin = static_cast<int>(centile);
-      LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
-  }
+        m_centBin = -1;                          // minimum‑bias
+    }
+    else
+    {
+        m_centBin = static_cast<int>(centile);
+        LOG(5, CLR_GREEN, "    centrality bin = " << m_centBin << '%');
+    }
 
-  /* centrality histogram (filled once the value is validated) -------- */
-  if (centile >= 0.f && centile <= 100.f)
-      for (const auto& t : activeTrig)
-        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
+    /* centrality histogram (filled once the value is validated) -------- */
+    if (centile >= 0.f && centile <= 100.f)
+        for (const auto& t : activeTrig)
+          static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
             ->Fill(centile);
 
-  /* guard: vz must be reasonable for centrality calibration ---------- */
-  if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
-  {
-      LOG(4, CLR_YELLOW,
-          "    Vertex‑z (" << m_vz
-          << " cm) outside calibration bounds – skip event");
-      return Fun4AllReturnCodes::ABORTEVENT;
-  }
+    /* guard: vz must be reasonable for centrality calibration ---------- */
+    if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
+    {
+        LOG(4, CLR_YELLOW,
+            "    Vertex‑z (" << m_vz
+            << " cm) outside calibration bounds – skip event");
+        return Fun4AllReturnCodes::ABORTEVENT;
+    }
 
-  /* ------------------------------------------------------------------ */
-  /* 6.  Detector‑level QA                                              */
-  /* ------------------------------------------------------------------ */
-  LOG(5, CLR_BLUE, "    running detector‑level QA");
-  doCaloQA(activeTrig);      // towers  + v_n accumulators
-  doSepdQA(activeTrig);      // SEPD charge maps & ψ_n
-  doMbdQA(activeTrig);
-  doPi0QA(activeTrig);
-  fillCorrelations(activeTrig);
-  fillFlowHists(activeTrig);
+    /* ------------------------------------------------------------------ */
+    /* 6.  Detector‑level QA                                              */
+    /* ------------------------------------------------------------------ */
+    LOG(5, CLR_BLUE, "    running detector‑level QA");
+    doCaloQA(activeTrig);      // towers  + v_n accumulators
+    doSepdQA(activeTrig);      // SEPD charge maps & ψ_n
+    doMbdQA(activeTrig);
+    doPi0QA(activeTrig);
+    fillCorrelations(activeTrig);
+    fillFlowHists(activeTrig);
 
-  if (doJetQA(topNode, activeTrig) == Fun4AllReturnCodes::ABORTRUN)
-  {
-    LOG(2, CLR_YELLOW, "    doJetQA requested ABORTRUN");
-    return Fun4AllReturnCodes::ABORTRUN;
-  }
+    if (doJetQA(topNode, activeTrig) == Fun4AllReturnCodes::ABORTRUN)
+    {
+      LOG(2, CLR_YELLOW, "    doJetQA requested ABORTRUN");
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
 
-  LOG(4, CLR_GREEN, "  [process_event] – completed OK");
-  return Fun4AllReturnCodes::EVENT_OK;
+    LOG(4, CLR_GREEN, "  [process_event] – completed OK");
+    return Fun4AllReturnCodes::EVENT_OK;
 }
 
 
