@@ -930,29 +930,99 @@ void emcal_sepdCorrelator::buildSepdChannelMap()
 }
 
 // ------------------------------------------------------------------
+//  Turn a 64‑bit word into “{ 10,11,14 }” for human‑friendly printout
+// ------------------------------------------------------------------
+std::string
+emcal_sepdCorrelator::bitsetToList(uint64_t word) const
+{
+  std::ostringstream os;
+  os << '{';
+  bool first = true;
+  for (unsigned b = 0; b < 64; ++b)
+    if ((word >> b) & 1U)
+    {
+      if (!first) os << ',';
+      os << ' ' << b;
+      first = false;
+    }
+  if (!first) os << ' ';
+  os << '}';
+  return os.str();
+}
+
+// ------------------------------------------------------------------
+//  One‑line + (optionally) detailed trigger summary per event
+// ------------------------------------------------------------------
+void
+emcal_sepdCorrelator::printTriggerSummary(const std::vector<std::string>& active,
+                                          uint64_t wRaw, uint64_t wLive, uint64_t wScaled) const
+{
+  if (Verbosity() < 3) return;                  // show only when asked for it
+
+  std::cout << CLR_CYAN
+            << "Evt " << event_count
+            << " | vtx = (" << std::fixed << std::setprecision(2)
+            << m_vx << ',' << m_vy << ',' << m_vz << ") cm"
+            << " | MB=" << (m_isMinBias ? "✓" : "✗")
+            << " | scaled bits = " << bitsetToList(wScaled) << '\n';
+
+  /* list accepted vs. rejected trigger keys -------------------------- */
+  std::ostringstream acc, rej;
+  for (auto& [bit, key] : triggerNameMap)
+    ((std::find(active.begin(), active.end(), key) != active.end())
+        ? acc : rej) << ' ' << key;
+
+  std::cout << "        | accepted triggers:"
+            << (acc.str().empty() ? " –" : acc.str()) << '\n'
+            << "        | rejected triggers:"
+            << (rej.str().empty() ? " –" : rej.str()) << CLR_RESET << std::endl;
+
+  /* full decision table for heavy‑debugging -------------------------- */
+  if (Verbosity() >= 6)
+  {
+    std::cout << "bit │ key                                   │ raw live scaled  decision\n"
+                 "────┼───────────────────────────────────────┼────────────────────────\n";
+    for (auto& [bit, key] : triggerNameMap)
+    {
+      const bool r = (wRaw    >> bit) & 1U;
+      const bool l = (wLive   >> bit) & 1U;
+      const bool s = (wScaled >> bit) & 1U;
+      std::cout << std::setw(3) << bit << " │ "
+                << std::left  << std::setw(31) << key << " │ "
+                << (r ? "✓" : "✗") << "    "
+                << (l ? "✓" : "✗") << "    "
+                << (s ? "✓" : "✗") << "      "
+                << (s ? "ACCEPT" : "reject") << '\n';
+    }
+    std::cout << std::endl;
+  }
+}
+
+// ------------------------------------------------------------------
 //  firstEventCuts – returns true iff
-//     (Minimum‑bias  &&  ≥1 scaled bit fired  &&  |vz| < m_vzCut)
-//
-//  Additionally:
-//   • fills the usual bookkeeping histograms
-//   • for every trigger whose name contains “…_vtx_lt_<N>” fills
-//     h_vtxRelToCut_<trigger>  with  (< , = , >) relative to <N>
+//        (Minimum‑bias  &&  ≥1 scaled bit fired  &&  |vz| < m_vzCut)
+//  Also fills bookkeeping histograms and the per‑trigger vertex QA.
 // ------------------------------------------------------------------
 bool
-emcal_sepdCorrelator::firstEventCuts(PHCompositeNode*   topNode,
+emcal_sepdCorrelator::firstEventCuts(PHCompositeNode* topNode,
                                      std::vector<std::string>& activeTrig)
 {
   /* 0. clear output vector ----------------------------------------- */
   activeTrig.clear();
 
-  /* 1. minimum‑bias flag (cached in fetchNodes) -------------------- */
+  /* 1. minimum‑bias flag (cached earlier in fetchNodes) ------------ */
   const bool isMB = m_isMinBias;
   LOG(2, CLR_BLUE, "[firstEventCuts] event " << event_count
          << "  –  isMB = " << std::boolalpha << isMB);
 
-  /* 2. Fetch GL1 trigger words ------------------------------------- */
+  /* 2. obtain GL1 trigger packet ----------------------------------- */
   uint64_t wScaled = 0, wLive = 0, wRaw = 0;
-  if (auto* gl1 = findNode::getClass<Gl1Packet>(topNode, "14001"))
+
+  auto* gl1 = findNode::getClass<Gl1Packet>(topNode, "GL1Packet");
+  if (!gl1)                     // fallback: DST name “14001”
+      gl1 = findNode::getClass<Gl1Packet>(topNode, "14001");
+
+  if (gl1)
   {
     wScaled = gl1->lValue(0, "ScaledVector");
     wLive   = gl1->lValue(0, "LiveVector");
@@ -963,14 +1033,15 @@ emcal_sepdCorrelator::firstEventCuts(PHCompositeNode*   topNode,
                      << "  scaled=0x" << wScaled << std::dec);
   }
   else
-    LOG(1, CLR_YELLOW, "  GL1Packet node missing – assuming all bits = 0");
+    LOG(1, CLR_YELLOW,
+        "  GL1Packet node missing – assuming all trigger bits = 0");
 
-  /* 3. Decode once per event --------------------------------------- */
+  /* 3. decode **once** per word – reuse inside the loop ------------ */
   const auto bitsScaled = extractTriggerBits(wScaled, event_count);
   const auto bitsLive   = extractTriggerBits(wLive  , event_count);
   const auto bitsRaw    = extractTriggerBits(wRaw   , event_count);
 
-  /* 4. Per‑trigger loop -------------------------------------------- */
+  /* 4. per‑trigger loop -------------------------------------------- */
   for (const auto& [bitIdx, key] : triggerNameMap)
   {
     ++m_trigStat[key].tested;
@@ -982,51 +1053,49 @@ emcal_sepdCorrelator::firstEventCuts(PHCompositeNode*   topNode,
     /* 4a. scalar counters ------------------------------------------ */
     auto safeFill = [&](const std::string& hname)
     {
-      auto& H  = qaHistogramsByTrigger[key];
-      auto  it = H.find(hname);
-      if (it != H.end()) static_cast<TH1I*>(it->second)->Fill(1.);
+      auto& H = qaHistogramsByTrigger[key];
+      if (auto it = H.find(hname); it != H.end())
+          static_cast<TH1I*>(it->second)->Fill(1);
     };
     if (firedRaw   ) safeFill("cnt_" + key + "_raw");
     if (firedLive  ) safeFill("cnt_" + key + "_live");
     if (firedScaled) safeFill("cnt_" + key + "_scaled");
 
-    /* 4b. MB×Trigger correlation map ------------------------------- */
+    /* 4b. MB × Trigger correlation map ----------------------------- */
     if (h_MBTrigCorr)
     {
-      const int cat  = isMB ? (firedScaled ? 4 : 3)
-                            : (firedScaled ? 2 : 1);
+      const int cat = isMB ? (firedScaled ? 4 : 3)
+                           : (firedScaled ? 2 : 1);
       h_MBTrigCorr->Fill(m_trigBin[key], cat);
     }
 
-    /* 4c.  Fire decision & vertex‑cut diagnostics ------------------ */
+    /* 4c. accept trigger, do vertex‑cut QA ------------------------- */
     if (!firedScaled) continue;
 
     activeTrig.push_back(key);
     ++m_trigStat[key].fired;
 
-    /* record |vz| relative to trigger‑specific cut, if any ---------- */
     if (int vCut = extractVtxCut(key); vCut > 0)
     {
       const double vzAbs = std::fabs(m_vz);
-      int bin = (vzAbs <  vCut) ? 1
-              : (vzAbs == vCut) ? 2
-                                : 3;
+      const int bin = (vzAbs < vCut) ? 1 : ((vzAbs == vCut) ? 2 : 3);
+
       auto& H = qaHistogramsByTrigger[key];
-      std::string hname = "h_vtxRelToCut_" + key;
-      if (auto it = H.find(hname); it != H.end())
+      if (auto it = H.find("h_vtxRelToCut_" + key); it != H.end())
         static_cast<TH1I*>(it->second)->Fill(bin);
     }
-  } // trigger loop
+  } /* trigger loop */
 
-  /* 5. Global vertex‑z veto (after QA fills) ----------------------- */
+  /* 4d. human‑readable summary ------------------------------------ */
+  printTriggerSummary(activeTrig, wRaw, wLive, wScaled);
+
+  /* 5. global vertex‑z veto --------------------------------------- */
   bool pass = isMB && !activeTrig.empty();
-  if (pass && m_useVzCut && std::fabs(m_vz) >= m_vzCut)
-    pass = false;
+  if (pass && m_useVzCut && std::fabs(m_vz) >= m_vzCut) pass = false;
 
   LOG(2, CLR_BLUE, "  → firstEventCuts(): " << (pass ? "PASS" : "FAIL"));
   return pass;
 }
-
 
 
 

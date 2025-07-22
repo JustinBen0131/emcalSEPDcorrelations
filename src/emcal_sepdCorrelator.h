@@ -264,17 +264,22 @@ class emcal_sepdCorrelator : public SubsysReco
 
   inline bool isSouthHCal(unsigned ieta) { return ieta < 12; }   // IHCAL & OHCAL
   inline bool isNorthHCal(unsigned ieta) { return ieta >= 12; }
+  // emcal_sepdCorrelator.h  (private section)
+  void  printTriggerSummary(const std::vector<std::string>& active,
+                               uint64_t wRaw,uint64_t wLive,uint64_t wScaled) const;
+  std::string bitsetToList(uint64_t word) const;
+
     
     /*
      following two functions are for seperate raw trigger bit QA not using triggerAnalyzer
      */
-  inline std::vector<int> extractTriggerBits(uint64_t b_gl1_scaledvec, int entry) {
+  inline std::vector<int> extractTriggerBits(uint64_t b_gl1_scaledvec, [[maybe_unused]]int entry) {
         std::vector<int> trig_bits;
         std::bitset<64> bits(b_gl1_scaledvec);
-        if (verbose) {
-            std::cout << "Processing entry " << entry << ", gl1_scaledvec (bits): " << bits.to_string() << std::endl;
-        }
-        
+//        if (verbose) {
+//            std::cout << "Processing entry " << entry << ", gl1_scaledvec (bits): " << bits.to_string() << std::endl;
+//        }
+//        
         for (unsigned int bit = 0; bit < 64; bit++) {
             if (((b_gl1_scaledvec >> bit) & 0x1U) == 0x1U) {
                 trig_bits.push_back(bit);
@@ -287,16 +292,16 @@ class emcal_sepdCorrelator : public SubsysReco
   inline bool checkTriggerCondition(const std::vector<int> &trig_bits, int inputBit) {
         for (const int &bit : trig_bits) {
             if (bit == inputBit) {
-                if (verbose) {
-                    std::cout << "  Trigger condition met with bit: " << bit << std::endl;
-                }
+//                if (verbose) {
+//                    std::cout << "  Trigger condition met with bit: " << bit << std::endl;
+//                }
                 
                 return true;
             }
         }
-        if (verbose) {
-            std::cout << "  No relevant trigger conditions met." << std::endl;
-        }
+//        if (verbose) {
+//            std::cout << "  No relevant trigger conditions met." << std::endl;
+//        }
         
         return false;
   }

@@ -197,7 +197,7 @@ if [[ $extra == caloFitting ]]; then
 
   hdr=$'Run\trt[s]\tGL1ev\tTrigON\tTrigOFF\tFail\tNote'
   rows=(); golden=(); tot_rt=0; tot_ev=0; fail_cnt=0
-  declare -A trig_run trig_sum
+  declare -A trig_run trig_sum trig_sd_sum trig_sd_cnt
 
   say "Querying DAQ DB …"
   for run in "${run3Runs[@]}"; do
@@ -208,29 +208,41 @@ if [[ $extra == caloFitting ]]; then
                AND filename LIKE '%GL1_physics_gl1daq%.evt';" | tr -d ' ')
     ev=$(num_or_zero "$ev")
 
-    # -- trigger scalers ------------------------------------------------------
-    # Read the two columns coming from psql:  triggername <TAB> scaled
-    # Use a dedicated while-loop with IFS set to <TAB> so that blanks inside
-    # the trigger name (if any) are *not* used for word splitting.
+    # -- trigger scalers + scaledown -----------------------------------------
+    # We now read three columns:  triggername <TAB> index <TAB> scaled
+    # and, for each index, fetch scaledownNN from gl1_scaledown.
     on=0  off=0
-    while IFS=$'\t' read -r trg scaled; do
+    while IFS=$'\t' read -r trg idx scaled; do
         [[ -z $trg ]] && continue                 # safety
 
-        scaled=$(num_or_zero "$scaled")          # normalise
+        scaled=$(num_or_zero "$scaled")           # normalise
+        idx=$(num_or_zero "$idx")                 # safety for scaledown query
+
+        # obtain the scaledown factor for this bit in the current run
+        sd=$(sql "SELECT scaledown${idx} FROM gl1_scaledown WHERE runnumber = $run;" | tr -d ' ')
+        sd=$(num_or_zero "$sd")
 
         if (( scaled > 0 )); then
             (( ++on ))
             trig_run["$trg"]=$(( ${trig_run["$trg"]:-0} + 1 ))
             trig_sum["$trg"]=$(( ${trig_sum["$trg"]:-0} + scaled ))
+
+            # only count *valid* scaledown factors ( > 0 )
+            if (( sd > 0 )); then
+                trig_sd_sum["$trg"]=$(( ${trig_sd_sum["$trg"]:-0} + sd ))
+                trig_sd_cnt["$trg"]=$(( ${trig_sd_cnt["$trg"]:-0} + 1 ))
+            fi
         else
             (( ++off ))
         fi
-    done < <(sql "SELECT t.triggername, s.scaled
+        
+    done < <(sql "SELECT t.triggername, t.index, s.scaled
                    FROM gl1_scalers  s
                    JOIN gl1_triggernames t
                      ON s.index = t.index
                     AND s.runnumber BETWEEN t.runnumber AND t.runnumber_last
                   WHERE s.runnumber = $run;")
+
 
 
     note="GOOD"
@@ -287,12 +299,20 @@ if [[ $extra == caloFitting ]]; then
   done
   (( maxlen += 2 ))
 
-  hdr_fmt="%-${maxlen}s %8s %15s\n"
-  printf "$hdr_fmt" "Trigger" "ONruns" "ΣScaled"
+  hdr_fmt="%-${maxlen}s %8s %15s %10s\n"
+  printf "$hdr_fmt" "Trigger" "ONruns" "ΣScaled" "AvgSD"
 
   for trg in "${!trig_run[@]}"; do
-      printf "$hdr_fmt" "$trg" "${trig_run[$trg]}" "${trig_sum[$trg]}"
+      cnt=${trig_sd_cnt[$trg]:-0}
+      if (( cnt )); then
+          avg=$(bc -l <<<"${trig_sd_sum[$trg]}/${cnt}")
+          avg=$(printf "%.1f" "$avg")
+      else
+          avg="–"
+      fi
+      printf "$hdr_fmt" "$trg" "${trig_run[$trg]}" "${trig_sum[$trg]}" "$avg"
   done | sort -k2 -nr | head -"$top_trig"
+
 
 
   ###########################################################################

@@ -496,12 +496,19 @@ class Pi0QA : public QA
                 cutTag = combDir;
                 log(Lvl::INFO,"cutTag initialised → " + cutTag);
             } else if (combDir != cutTag) {
-                log(Lvl::INFO,"cutTag change  " + cutTag + " → " + combDir);
-                writeSummaryPanels();               // finish previous cut
+                // ── 1. finish the combination we just completed ──────────────────
+                writeSummaryPanels();                       // existing call
+
+                if (runID == "Combined") {                  // produce run‑summary only
+                    writeRunSummary();
+                    s_runPoints.clear();                    //  (optional) keep slices separate
+                }
+
+                // ── 2. reset caches and move on to the next cut tag ───────────────
                 _centralHists.clear();
                 _storedFit.clear();
                 _storedEtaFit.clear();
-                cutTag = combDir;
+                cutTag = combDir;                           // now safe – nothing lost
             }
 
             /* destination directory ------------------------------------ */
@@ -1142,7 +1149,9 @@ class Pi0QA : public QA
                 for (int i = 0; i < n; ++i) {
                     const int       runNum = runList[i].first;    // numeric value
                     const RunPoint& p      = mp.at(runList[i].second); // exact key
-                    x[i]  = runNum;
+                    const double dx = 0.25;                       // tune if necessary
+                    const int    sliceIdx = colourIdx;            // index before colourIdx++
+                    x[i]  = runNum + dx * (sliceIdx - (int)s_runPoints.size() / 2);
                     yMu[i]= p.mu;     eMu[i]= p.muErr;
                     ySi[i]= p.sigma;  eSi[i]= p.sigmaErr;
                 }
@@ -1151,8 +1160,8 @@ class Pi0QA : public QA
                 auto gSi = new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
 
                 const int col = cols[colourIdx++ % nCols];
-                gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-                gSi->SetMarkerStyle(kFullCircle); gSi->SetLineWidth(2);
+                gMu->SetMarkerStyle(kFullCircle); gMu->SetMarkerSize(0.7); gMu->SetLineWidth(2);
+                gSi->SetMarkerStyle(kFullCircle); gSi->SetMarkerSize(0.7); gSi->SetLineWidth(2);
                 gMu->SetMarkerColor(col); gMu->SetLineColor(col);
                 gSi->SetMarkerColor(col); gSi->SetLineColor(col);
 
@@ -1187,14 +1196,43 @@ class Pi0QA : public QA
                 gMuList[i]->Draw(i==0 ? "AP" : "P SAME");
             leg.Draw();
 
-            // σ pad
+            /* ---------- auto‑range μ‑pad ---------- */
+            double yMin =  1e9, yMax = -1e9;
+            for (auto g : gMuList) {
+                const double* ey = g->GetEY();
+                for (int p = 0; p < g->GetN(); ++p) {
+                    double xx, yy; g->GetPoint(p, xx, yy);
+                    yMin = std::min(yMin, yy - ey[p]);
+                    yMax = std::max(yMax, yy + ey[p]);
+                }
+            }
+            const double margin = 0.05 * (yMax - yMin);
+            gMuList.front()->GetYaxis()->SetRangeUser(yMin - margin, yMax + margin);
+
             cR.cd();
-            TPad* p2=new TPad("p2","",0,0,1,0.32);
-            p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
-            p2->Draw(); p2->cd();
+            TPad* p2 = new TPad("p2","",0,0,1,0.32);
+            p2->SetTopMargin(0.02);
+            p2->SetBottomMargin(0.30);
+            p2->Draw();
+            p2->cd();
+
             gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
-            for (std::size_t i=0;i<gSiList.size();++i)
-                gSiList[i]->Draw(i==0 ? "AP" : "P SAME");
+            for (std::size_t i = 0; i < gSiList.size(); ++i)
+                gSiList[i]->Draw(i == 0 ? "AP" : "P SAME");
+
+            /* -------- auto‑scale y‑axis, but anchor lower edge at 0 -------- */
+            double ymax = -1e9;
+            for (auto g : gSiList) {
+                const double* ey = g->GetEY();
+                for (int p = 0; p < g->GetN(); ++p) {
+                    double xx, yy;
+                    g->GetPoint(p, xx, yy);
+                    ymax = std::max(ymax, yy + ey[p]);    // highest point + error bar
+                }
+            }
+            double margin = 0.05 * ymax;                 // 5 % head‑room
+            gSiList.front()->GetYaxis()->SetRangeUser(0.0, ymax + margin);
+
 
             /* ------------------------------------------------------------
              * 5)  Save PNG
@@ -2028,7 +2066,6 @@ class HcalQA : public QA
           std::string runID = root.parent_path().filename().string();          // "00067834" or "Combined"
           std::string runLabel;
 
-          /* ---------- NEW replacement block (build runLabel) -------------- */
           if (runID == "Combined")
           {
               std::vector<int> rNums;
@@ -2038,11 +2075,15 @@ class HcalQA : public QA
 
               if (!rNums.empty()) {
                   const auto [lo, hi] = std::minmax_element(rNums.begin(), rNums.end());
-                  runLabel = Form("runs %d \u2192 %d, %zu runs", *lo, *hi, rNums.size());
+
+                  // TLatex escape sequence: "#rightarrow"
+                  runLabel = Form("runs %d #rightarrow %d, %zu runs",
+                                  *lo, *hi, rNums.size());
               } else {
                   runLabel = "combined";
               }
           }
+
           else  /* ordinary single run */
           {
               std::string cleanID = runID;
@@ -2061,8 +2102,8 @@ class HcalQA : public QA
 
           /* draw header in the top–left corner of the pad */
           TLatex tl;
-          tl.SetNDC(); tl.SetTextSize(0.042); tl.SetTextAlign(13);
-          tl.DrawLatex(0.08, 0.97, Form("%s (%s)", mapType, runLabel.c_str()));
+          tl.SetNDC(); tl.SetTextSize(0.035); tl.SetTextAlign(13);
+          tl.DrawLatex(0.08, 0.98, Form("%s (%s)", mapType, runLabel.c_str()));
 
           gPad->Update();                 // make sure user coords are frozen
           
@@ -2376,51 +2417,73 @@ using SepdQA = NSDetectorQA<sEPDTag>;
 class EventQA : public QA
 {
 public:
-    using QA::QA;
+    using QA::QA;          // inherit all constructors
 
     // ────────────────────────────────────────────────────────────────
     // 1. Per‑histogram processing
     // ────────────────────────────────────────────────────────────────
     bool process(TObject* o) override
     {
-        if (!o->InheritsFrom(TH1::Class())) return false;
+        /* -----------------------------------------------------------
+         *  Guard clause – we only handle TH1 histograms
+         * --------------------------------------------------------- */
+        if (!o->InheritsFrom(TH1::Class()))
+            return false;
 
         const std::string n = o->GetName();
         const bool isVz   = (n.rfind("h_vertexZ_"  ,0) == 0);
         const bool isCent = (n.rfind("h_centrality_",0) == 0);
-        if (!isVz && !isCent) return false;
+        if (!isVz && !isCent)
+            return false;                       // nothing to do
 
         /* “…/output/<RUN>/<trigger>/EventQA/…”  (always Inclusive) */
         const fs::path outPng = isVz
-            ? root / "MBD" / "zVertex"   / "VertexZ.png"
-            : root / "centrality" / "Centrality.png";
+            ? root / "MBD"       / "zVertex"   / "VertexZ.png"
+            : root / "centrality"/ "Centrality.png";
         ensure_dir(outPng.parent_path());
 
+        /* clone → local ownership → detach from any directory */
         std::unique_ptr<TH1> h(static_cast<TH1*>(o->Clone()));
         h->SetDirectory(nullptr);
         h->SetStats(0);
 
         const std::string runID = root.parent_path().filename().string();
 
+        /* quick‑reject empty histograms (very low stats)  ---------- */
+        if (h->GetEntries() < 20)
+        {
+            std::cout << "[EventQA]   " << runID << "  –  histogram ‘"
+                      << n << "’ has <20 entries → skipped\n";
+            return false;
+        }
+
         // ============================================================
         // (A)  primary‑vertex z  –  robust iterative Gaussian fit
         // ============================================================
         if (isVz)
         {
-            /* --- STEP‑0 : robust seed from quantiles ---------------- */
+            std::cout << "[EventQA]   " << runID
+                      << "  –  processing vertex‑Z histogram ‘" << n << "’\n";
+
+            /* ----------------------------------------------------- *
+             * STEP‑0 : robust seed from 16‑50‑84 % quantiles        *
+             * ----------------------------------------------------- */
             double probs[3] = {0.16, 0.50, 0.84};
             double q[3];
             h->GetQuantiles(3, q, probs);
             double mu    = q[1];
-            double sigma = 0.5*(q[2]-q[0]);               // 68 % width
+            double sigma = 0.5*(q[2]-q[0]);       // 68 % inter‑quantile width
             if (sigma <= 0) sigma = h->GetRMS();
-            if (sigma <= 0) sigma = 1;
+            if (sigma <= 0) sigma = 1.0;          // hard fallback
 
             TF1 g("g","gaus", mu-3*sigma, mu+3*sigma);
-            g.SetLineColor(kRed+1); g.SetLineWidth(2);
+            g.SetLineColor(kRed+1);
+            g.SetLineWidth(2);
             g.SetParameters(h->GetMaximum(), mu, sigma);
 
-            /* --- STEP‑1 : iterative 2.5 σ shrink until convergence -- */
+            /* ----------------------------------------------------- *
+             * STEP‑1 : iterative 2.5 σ shrink until convergence     *
+             * ----------------------------------------------------- */
             constexpr int    kMaxIter   = 5;
             constexpr double kNSigmaFit = 2.5;
             constexpr double kTol       = 1e-3;
@@ -2435,7 +2498,11 @@ public:
 
                 TFitResultPtr res = h->Fit(&g,"Q0RSLL");
                 fitOK = (int)res == 0;
-                if (!fitOK) break;
+                if (!fitOK)
+                {
+                    std::cout << "    ↳ fit failed at iteration " << it << '\n';
+                    break;
+                }
 
                 const double muNew    = g.GetParameter(1);
                 const double sigmaNew = std::fabs(g.GetParameter(2));
@@ -2443,14 +2510,25 @@ public:
                 const bool conv =
                        std::fabs(muNew   - mu)    < kTol*sigma &&
                        std::fabs(sigmaNew- sigma) < kTol*sigma;
-                mu = muNew;  sigma = sigmaNew;
-                if (conv) break;
+                mu    = muNew;
+                sigma = sigmaNew;
+
+                std::cout << "    ↳ iter " << it
+                          << "   μ = " << mu << "   σ = " << sigma << '\n';
+
+                if (conv)
+                {
+                    std::cout << "      convergence reached\n";
+                    break;
+                }
             }
 
-            const double muErr  = fitOK ? g.GetParError(1) : 0;
-            const double sigErr = fitOK ? g.GetParError(2) : 0;
+            const double muErr  = fitOK ? g.GetParError(1) : 0.0;
+            const double sigErr = fitOK ? g.GetParError(2) : 0.0;
 
-            /* --- per‑run PNG --------------------------------------- */
+            /* ----------------------------------------------------- *
+             * Per‑run diagnostic PNG                               *
+             * ----------------------------------------------------- */
             {
                 TCanvas c("c_vz","", 900, 600);
                 h->Draw();
@@ -2462,33 +2540,51 @@ public:
                 c.SaveAs(outPng.string().c_str());
             }
 
-            /* --- cache for overlays & run‑summary ------------------ */
-            if (runID != "Combined")
+            /* ----------------------------------------------------- *
+             * Decide whether to cache this fit for the summary      *
+             * ----------------------------------------------------- */
+            const long long nEvt  = static_cast<long long>(h->GetEntries());
+            auto& maxEvtForRun    = s_evtCounts[runID];
+            const bool takeThis   = fitOK && nEvt > maxEvtForRun;
+
+            if (nEvt > maxEvtForRun)      // always keep the highest stat counter
+                maxEvtForRun = nEvt;
+
+            if (runID != "Combined" && takeThis)
             {
+                std::cout << "    ↳ storing fit for summary ("
+                          << nEvt << " events)\n";
+
                 VzPoint& p = s_points[runID];
-                p.mu = mu; p.muErr = muErr; p.sigma = sigma; p.sigmaErr = sigErr;
+                p.mu        = mu;
+                p.muErr     = muErr;
+                p.sigma     = sigma;
+                p.sigmaErr  = sigErr;
+                p.nEvt      = nEvt;
+
                 p.hist.reset(static_cast<TH1*>(h->Clone()));
                 p.hist->SetDirectory(nullptr);
             }
-
-            /* ---------- NEW: keep event count for final table ------ */
-            const long long nEvt = static_cast<long long>(h->GetEntries());
-            auto& slot = s_evtCounts[runID];
-            if (nEvt > slot) slot = nEvt;        // keep the largest if multiple triggers
+            else if (runID != "Combined")
+            {
+                std::cout << "    ↳ NOT stored "
+                          << (fitOK ? "(insufficient statistics)" : "(bad fit)")
+                          << '\n';
+            }
         }
 
         // ============================================================
         // (B)  centrality spectrum – plain plot, normalised
         // ============================================================
-        else
+        else   /* isCent */
         {
             TCanvas c("c_cent","",900,600);
             h->Draw();
 
             /* print the run‑number in the upper‑right corner */
             TLatex tx;
-            tx.SetNDC();           // Normalised device coordinates
-            tx.SetTextAlign(31);   // right‑aligned, top‑aligned
+            tx.SetNDC();               // Normalised device coordinates
+            tx.SetTextAlign(31);       // right‑aligned, top‑aligned
             tx.SetTextSize(0.04);
             tx.DrawLatex(0.97,0.94, runID.c_str());
 
@@ -2498,7 +2594,8 @@ public:
             {
                 std::unique_ptr<TH1> cp(static_cast<TH1*>(h->Clone()));
                 cp->SetDirectory(nullptr);
-                if (cp->GetEntries() > 0) cp->Scale(1.0 / cp->GetEntries());
+                if (cp->GetEntries() > 0)
+                    cp->Scale(1.0 / cp->GetEntries());
                 s_centHists[runID] = std::move(cp);
             }
         }
@@ -2511,10 +2608,12 @@ public:
     ~EventQA() override
     {
         const std::string runID = root.parent_path().filename().string();
-        if (runID != "Combined" || s_summaryWritten) return;
+        if (runID != "Combined" || s_summaryWritten)
+            return;                         // only once, in the Combined pass
         s_summaryWritten = true;
 
         const fs::path outDir = root.parent_path();      // “…/Combined”
+        std::cout << "\n[EventQA] ===== FINAL SUMMARY =====\n";
 
         /* ---------- helper: reproducible colour stream ------------ */
         auto nextColour = [](){
@@ -2528,6 +2627,7 @@ public:
         /* (A) vertex‑Z overlay ------------------------------------- */
         if (!s_points.empty())
         {
+            std::cout << "  – writing VertexZ_AllRuns overlay\n";
             TCanvas c("c_vz_overlay","Primary‑vertex Z – all runs",900,600);
             TLegend leg(0.68,0.57,0.88,0.88); leg.SetBorderSize(0);
 
@@ -2535,7 +2635,8 @@ public:
             for (auto& [run,p] : s_points)
             {
                 Color_t col = nextColour();
-                p.hist->SetLineColor(col); p.hist->SetLineWidth(2);
+                p.hist->SetLineColor(col);
+                p.hist->SetLineWidth(2);
                 p.hist->Draw(first ? "HIST" : "HIST SAME");
                 leg.AddEntry(p.hist.get(), run.c_str(), "l");
                 first = false;
@@ -2549,6 +2650,7 @@ public:
         /* (B) centrality overlay ----------------------------------- */
         if (s_centHists.size() > 1)
         {
+            std::cout << "  – writing Centrality_AllRuns overlay\n";
             TCanvas c("c_cent_overlay","Centrality – all runs",900,600);
             TLegend leg(0.5,0.45,0.75,0.65); leg.SetBorderSize(0);
 
@@ -2556,7 +2658,8 @@ public:
             for (auto& [run,h] : s_centHists)
             {
                 Color_t col = nextColour();
-                h->SetLineColor(col); h->SetLineWidth(2);
+                h->SetLineColor(col);
+                h->SetLineWidth(2);
                 h->Draw(first ? "HIST" : "HIST SAME");
                 leg.AddEntry(h.get(), run.c_str(), "l");
                 first = false;
@@ -2570,6 +2673,8 @@ public:
         /* (C)  μ,σ  versus run number ------------------------------ */
         if (s_points.size() > 1)
         {
+            std::cout << "  – writing μ,σ vs run summary plot\n";
+
             std::vector<int> runs;
             for (auto& [r,_] : s_points)
                 if (std::all_of(r.begin(),r.end(),::isdigit))
@@ -2581,16 +2686,21 @@ public:
             for (int i = 0; i < n; ++i)
             {
                 const auto& p = s_points[std::to_string(runs[i])];
-                x[i]=runs[i]; yMu[i]=p.mu; eMu[i]=p.muErr;
-                ySi[i]=p.sigma; eSi[i]=p.sigmaErr;
+                x[i]   = runs[i];
+                yMu[i] = p.mu;        eMu[i] = p.muErr;
+                ySi[i] = p.sigma;     eSi[i] = p.sigmaErr;
             }
 
-            auto gMu = std::make_unique<TGraphErrors>(n,x.data(),yMu.data(),nullptr,eMu.data());
-            auto gSi = std::make_unique<TGraphErrors>(n,x.data(),ySi.data(),nullptr,eSi.data());
-            gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-            gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+            auto gMu = std::make_unique<TGraphErrors>(n,x.data(),yMu.data(),
+                                                      nullptr,eMu.data());
+            auto gSi = std::make_unique<TGraphErrors>(n,x.data(),ySi.data(),
+                                                      nullptr,eSi.data());
+            gMu->SetMarkerStyle(kFullCircle);
+            gMu->SetLineWidth(2);
+            gSi->SetMarkerStyle(kOpenCircle);
+            gSi->SetLineWidth(2);
 
-            /* dynamic Y‑ranges */
+            /* dynamic Y‑ranges ------------------------------------ */
             double minMu = yMu[0] - eMu[0], maxMu = yMu[0] + eMu[0];
             double maxSig = ySi[0] + eSi[0];
             for (int i = 1; i < n; ++i)
@@ -2601,6 +2711,7 @@ public:
             }
             double absMu = std::max(std::fabs(minMu), std::fabs(maxMu));
             if (absMu <= 0.) absMu = 0.01;
+
             gMu->SetMinimum(-1.10 * absMu);
             gMu->SetMaximum( 1.10 * absMu);
             gSi->SetMinimum(0.0);
@@ -2609,14 +2720,18 @@ public:
             TCanvas c("c_mu_sigma_vs_run","vertex‑Z  #mu,#sigma  vs run",900,800);
 
             TPad* p1 = new TPad("p1","",0,0.35,1,1);
-            p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
+            p1->SetBottomMargin(0.02);
+            p1->Draw();
+            p1->cd();
             gMu->SetTitle(";Run number;#mu  [cm]");
             gMu->Draw("AP");
 
             c.cd();
             TPad* p2 = new TPad("p2","",0,0,1,0.32);
-            p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
-            p2->Draw(); p2->cd();
+            p2->SetTopMargin(0.02);
+            p2->SetBottomMargin(0.30);
+            p2->Draw();
+            p2->cd();
             gSi->SetTitle(";Run number;#sigma  [cm]");
             gSi->Draw("AP");
 
@@ -2624,6 +2739,8 @@ public:
             ensure_dir(pngRun.parent_path());
             c.SaveAs(pngRun.string().c_str());
         }
+
+        std::cout << "[EventQA] ===== summary complete =====\n";
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -2631,22 +2748,23 @@ public:
     // ────────────────────────────────────────────────────────────────
     struct VzPoint {
         double mu{}, muErr{}, sigma{}, sigmaErr{};
+        long long nEvt{};                         // statistics for bookkeeping
         std::unique_ptr<TH1> hist;
     };
 
     /* runID → fit results & histogram */
-    static inline std::unordered_map<std::string,VzPoint>         s_points;
+    static inline std::unordered_map<std::string,VzPoint>               s_points;
     /* runID → normalised centrality histogram */
-    static inline std::unordered_map<std::string,std::unique_ptr<TH1>> s_centHists;
-
-    /* ---------- runID → event count (entries in h_vertexZ_) -------- */
-    static inline std::unordered_map<std::string,long long>       s_evtCounts;
+    static inline std::unordered_map<std::string,std::unique_ptr<TH1>>  s_centHists;
+    /* runID → highest event count across triggers */
+    static inline std::unordered_map<std::string,long long>             s_evtCounts;
 
     static inline bool  s_summaryWritten = false;
 
     /* accessor for final summary in main() */
     static const auto& eventCounts() { return s_evtCounts; }
 };
+
 
 
 // ────────────────────────────────────────────────────────────────────
