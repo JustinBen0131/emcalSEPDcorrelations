@@ -816,7 +816,30 @@ class Pi0QA : public QA
 
                 h->SetMaximum(1.15*h->GetMaximum());
                 h->Draw(); fBg->Draw("SAME"); fTot->Draw("SAME");
-                if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
+                /* --- draw η‐peak components (gaussian in pink, bg‑poly in green) --- */
+                if (_storedEtaFit.count(sl))
+                {
+                    TF1 *fEta = _storedEtaFit[sl].get();              // gaus(0)+pol2(3)
+
+                    /* gaussian */
+                    auto gEta = std::make_unique<TF1>(Form("gEta_%s",sl.c_str()),"gaus",
+                                                      fEta->GetXmin(), fEta->GetXmax());
+                    for (int ip=0; ip<3; ++ip) gEta->SetParameter(ip, fEta->GetParameter(ip));
+                    gEta->SetLineColor(kPink+1); gEta->SetLineWidth(2);
+
+                    /* polynomial background */
+                    auto pEta = std::make_unique<TF1>(Form("pEta_%s",sl.c_str()),"pol2",
+                                                      fEta->GetXmin(), fEta->GetXmax());
+                    for (int ip=0; ip<3; ++ip) pEta->SetParameter(ip, fEta->GetParameter(3+ip));
+                    pEta->SetLineColor(kGreen+2); pEta->SetLineStyle(2); pEta->SetLineWidth(2);
+
+                    pEta->Draw("SAME"); gEta->Draw("SAME");
+
+                    /* keep the two new functions alive until the canvas is closed */
+                    gPad->GetListOfPrimitives()->Add(gEta.release());
+                    gPad->GetListOfPrimitives()->Add(pEta.release());
+                }
+
 
                 double mu=fTot->GetParameter(1), emu=fTot->GetParError(1);
                 double si=fTot->GetParameter(2), esi=fTot->GetParError(2);
@@ -862,12 +885,23 @@ class Pi0QA : public QA
                     tx.DrawLatex(xText,yMu ,Form("#mu = %.3f #pm %.3f GeV", mu,emu));
                     tx.DrawLatex(xText,ySig,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
                 } else {
-                    const double y1=putBottom?yAnchor+2*dy:yAnchor;
-                    const double y2=putBottom?yAnchor+  dy:yAnchor-dy;
-                    const double y3=putBottom?yAnchor     :yAnchor-2*dy;
-                    tx.DrawLatex(xText,y1,lbl.c_str());
-                    tx.DrawLatex(xText,y2,Form("#mu = %.3f #pm %.3f GeV", mu,emu));
-                    tx.DrawLatex(xText,y3,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
+                    /* fetch η numbers if the fit exists */
+                    double etaMu = 0.0, etaSig = 0.0;
+                    if (_storedEtaFit.count(sl)) {
+                        TF1 *fEta = _storedEtaFit[sl].get();
+                        etaMu  = fEta->GetParameter(1);
+                        etaSig = fEta->GetParameter(2);
+                    }
+
+                    const double y1 = putBottom ? yAnchor+2*dy : yAnchor;
+                    const double y2 = putBottom ? yAnchor+  dy : yAnchor-dy;
+                    const double y3 = putBottom ? yAnchor      : yAnchor-2*dy;
+
+                    tx.DrawLatex(xText, y1, lbl.c_str());
+                    tx.DrawLatex(xText, y2,
+                        Form("#mu_{#pi^{0}} = %.3f GeV,   #mu_{#eta} = %.3f GeV", mu, etaMu));
+                    tx.DrawLatex(xText, y3,
+                        Form("#sigma_{#pi^{0}} = %.3f GeV,   #sigma_{#eta} = %.3f GeV", si, etaSig));
                 }
 
                 if (sl!="Inclusive") {
@@ -905,7 +939,7 @@ class Pi0QA : public QA
                 cGrid.cd();
                 TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.028);  tl.SetTextAlign(22);
                 tl.DrawLatex(0.50, 0.96,
-                    Form("Run %s   |   E > %.2f GeV, #alpha #leq %.2f, #chi^{2} #leq %.2f",
+                    Form("Run %s, E #geq %.2f GeV, #alpha < %.2f, #chi^{2} < %.2f",
                          runShort.c_str(), eCut, asyCut, chiCut));
             }
 
@@ -1149,7 +1183,7 @@ class Pi0QA : public QA
                 for (int i = 0; i < n; ++i) {
                     const int       runNum = runList[i].first;    // numeric value
                     const RunPoint& p      = mp.at(runList[i].second); // exact key
-                    const double dx = 0.25;                       // tune if necessary
+                    const double dx = 0.35;                       // tune if necessary
                     const int    sliceIdx = colourIdx;            // index before colourIdx++
                     x[i]  = runNum + dx * (sliceIdx - (int)s_runPoints.size() / 2);
                     yMu[i]= p.mu;     eMu[i]= p.muErr;
@@ -1258,8 +1292,8 @@ class Pi0QA : public QA
                     ymax = std::max(ymax, yy + ey[p]);    // highest point + error bar
                 }
             }
-            double margin = 0.05 * ymax;                 // 5 % head‑room
-            gSiList.front()->GetYaxis()->SetRangeUser(0.0, ymax + margin);
+            const double marginSi = 0.05 * ymax;         // 5 % head‑room
+            gSiList.front()->GetYaxis()->SetRangeUser(0.0, ymax + marginSi);
 
 
             /* ------------------------------------------------------------
@@ -2475,7 +2509,12 @@ public:
         h->SetDirectory(nullptr);
         h->SetStats(0);
 
-        const std::string runID = root.parent_path().filename().string();
+        /* we are inside “…/output/<RUN>/<trigger>/EventQA”
+         *            parent_path()           ↑         ↑
+         *            parent_path().parent_path()  ↑
+         *  → the numeric run directory is two levels up               */
+        const std::string runID          = root.parent_path().parent_path().filename().string();
+        const bool        isCombinedPass = (root.parent_path().filename() == "Combined");
 
         /* quick‑reject empty histograms (very low stats)  ---------- */
         if (h->GetEntries() < 20)

@@ -302,6 +302,26 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
     /* sEPD */
     H["h_sEPD_Hitmap_South_" + trig] = makeEpdHitmap("h_sEPD_Hitmap_South_" + trig, epdg, 0);
     H["h_sEPD_Hitmap_North_" + trig] = makeEpdHitmap("h_sEPD_Hitmap_North_" + trig, epdg, 1);
+      
+    H["h_SEPD_RingOcc_South_" + trig] =
+          new TH1F(("h_SEPD_RingOcc_South_" + trig).c_str(),
+                   "sEPD South – ring occupancy;ring index;hits / event",
+                   16, -0.5, 15.5);
+
+    H["h_SEPD_RingOcc_North_" + trig] =
+          new TH1F(("h_SEPD_RingOcc_North_" + trig).c_str(),
+                   "sEPD North – ring occupancy;ring index;hits / event",
+                   16, -0.5, 15.5);
+
+    H["h_SEPD_RingQ_South_" + trig] =
+          new TH1F(("h_SEPD_RingQ_South_" + trig).c_str(),
+                   "sEPD South – ΣQ per ring;ring index;ΣQ  [ADC]",
+                   16, -0.5, 15.5);
+
+    H["h_SEPD_RingQ_North_" + trig] =
+          new TH1F(("h_SEPD_RingQ_North_" + trig).c_str(),
+                   "sEPD North – ΣQ per ring;ring index;ΣQ  [ADC]",
+                   16, -0.5, 15.5);
 
     /* EMCal / HCal (η,φ) maps */
     H["h_EMC_EtaPhiMap_" + trig]  = new TH2F(("h_EMC_EtaPhiMap_"  + trig).c_str(),
@@ -344,6 +364,10 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
     cloneHitMap("h_MBD_Hitmap_North", H["h_MBD_Hitmap_North_" + trig]);
     cloneHitMap("h_sEPD_Hitmap_South", H["h_sEPD_Hitmap_South_" + trig]);
     cloneHitMap("h_sEPD_Hitmap_North", H["h_sEPD_Hitmap_North_" + trig]);
+    cloneHitMap("h_SEPD_RingOcc_South", H["h_SEPD_RingOcc_South_" + trig]);
+    cloneHitMap("h_SEPD_RingOcc_North", H["h_SEPD_RingOcc_North_" + trig]);
+    cloneHitMap("h_SEPD_RingQ_South",   H["h_SEPD_RingQ_South_"   + trig]);
+    cloneHitMap("h_SEPD_RingQ_North",   H["h_SEPD_RingQ_North_"   + trig]);
   }
 
   out->cd();
@@ -1440,6 +1464,41 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
       const double phiPlot = (phi < 0) ? phi + 2*M_PI : phi; // [0,2π)
 
       ++radialCnt[arm][ring];                               // QA counter
+      
+      /* ─── per‑ring QA fills ─────────────────────────────────────── */
+      for (const std::string& t : trig)
+      {
+        auto& H = qaHistogramsByTrigger[t];
+
+        /* global histograms ------------------------------------------------ */
+        const std::string hOcc = (arm == 0)
+            ? "h_SEPD_RingOcc_South_" + t
+            : "h_SEPD_RingOcc_North_" + t;
+
+        const std::string hQ   = (arm == 0)
+            ? "h_SEPD_RingQ_South_"   + t
+            : "h_SEPD_RingQ_North_"   + t;
+
+        if (auto* ho = dynamic_cast<TH1*>(H[hOcc])) ho->Fill(ring);
+        if (auto* hq = dynamic_cast<TH1*>(H[hQ ]))  hq->Fill(ring, w);
+
+        /* centrality‑slice clones (only if they exist) --------------------- */
+        const std::string tag = sliceTag + '_' + t;
+
+        const std::string hOccC = (arm == 0)
+            ? "h_SEPD_RingOcc_South_" + tag
+            : "h_SEPD_RingOcc_North_" + tag;
+
+        const std::string hQC   = (arm == 0)
+            ? "h_SEPD_RingQ_South_"   + tag
+            : "h_SEPD_RingQ_North_"   + tag;
+
+        if (auto it = H.find(hOccC); it != H.end())
+            static_cast<TH1*>(it->second)->Fill(ring);
+        if (auto it = H.find(hQC); it != H.end())
+            static_cast<TH1*>(it->second)->Fill(ring, w);
+      }
+
 
       /* ---- 3a. Hit‑maps (global + slice) ---------------------------- */
       const std::string baseKey = (arm == 0)
