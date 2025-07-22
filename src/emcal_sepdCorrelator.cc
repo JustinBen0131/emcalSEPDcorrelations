@@ -952,7 +952,7 @@ emcal_sepdCorrelator::firstEventCuts(PHCompositeNode*   topNode,
 
   /* 2. Fetch GL1 trigger words ------------------------------------- */
   uint64_t wScaled = 0, wLive = 0, wRaw = 0;
-  if (auto* gl1 = findNode::getClass<Gl1Packet>(topNode, "GL1Packet"))
+  if (auto* gl1 = findNode::getClass<Gl1Packet>(topNode, "14001"))
   {
     wScaled = gl1->lValue(0, "ScaledVector");
     wLive   = gl1->lValue(0, "LiveVector");
