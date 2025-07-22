@@ -1183,18 +1183,46 @@ class Pi0QA : public QA
             }
 
             /* ------------------------------------------------------------
-             * 4)  Draw canvas (μ upper, σ lower)
+             * 4)  Draw canvas (μ upper, σ lower)  +  descriptive header
              * ---------------------------------------------------------- */
-            TCanvas cR("c_mu_sigma_vs_run_allCent",
-                       "#pi^{0} peak position / width vs run", 900, 800);
 
-            // μ pad
-            TPad* p1=new TPad("p1","",0,0.35,1,1);
-            p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
+            /* ----  run‑number range / count (for Combined pass) -------------- */
+            std::string runLabel;
+            {
+                std::vector<int> rNums;
+                for (const auto& [sl, mp] : s_runPoints)
+                    for (const auto& [id, _] : mp)
+                        if (std::all_of(id.begin(), id.end(), ::isdigit))
+                            rNums.push_back(std::stoi(id));
+
+                if (!rNums.empty()) {
+                    const auto [lo, hi] = std::minmax_element(rNums.begin(), rNums.end());
+                    std::set<int> uniq(rNums.begin(), rNums.end());
+                    runLabel = Form("(runs %d #rightarrow %d, %zu runs)",
+                                    *lo, *hi, uniq.size());
+                } else {
+                    runLabel = "(combined)";
+                }
+            }
+
+            /* ---- create canvas – leave the ROOT title blank ----------------- */
+            TCanvas cR("c_mu_sigma_vs_run_allCent","",900,800);
+
+            /* μ‑pad ----------------------------------------------------------- */
+            TPad* p1 = new TPad("p1","",0,0.35,1,1);
+            p1->SetBottomMargin(0.02);
+            p1->SetTopMargin(0.08);          // room for our custom TLatex header
+            p1->Draw();
+            p1->cd();
+
             gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
-            for (std::size_t i=0;i<gMuList.size();++i)
-                gMuList[i]->Draw(i==0 ? "AP" : "P SAME");
+            for (std::size_t i = 0; i < gMuList.size(); ++i)
+                gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
             leg.Draw();
+
+            /* ---- header: cut‑combination + run summary ---------------------- */
+            TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04); tl.SetTextAlign(13);
+            tl.DrawLatex(0.12, 0.96, Form("%s  %s", cutTag.c_str(), runLabel.c_str()));
 
             /* ---------- auto‑range μ‑pad ---------- */
             double yMin =  1e9, yMax = -1e9;
@@ -2458,36 +2486,45 @@ public:
         }
 
         // ============================================================
-        // (A)  primary‑vertex z  –  robust iterative Gaussian fit
+        // (A)  primary‑vertex z  –  robust iterative Gaussian fit
         // ============================================================
         if (isVz)
         {
-            std::cout << "[EventQA]   " << runID
-                      << "  –  processing vertex‑Z histogram ‘" << n << "’\n";
+            const std::string trig = root.filename().string();   // trigger folder name
+            std::cout << "\n[EventQA] ===== vertex‑Z processing =====\n"
+                      << "  runID        : " << runID              << '\n'
+                      << "  trigger      : " << trig               << '\n'
+                      << "  hist name    : " << n                  << '\n'
+                      << "  entries      : " << h->GetEntries()    << '\n';
 
-            /* ----------------------------------------------------- *
-             * STEP‑0 : robust seed from 16‑50‑84 % quantiles        *
-             * ----------------------------------------------------- */
+            /* ------------------------------------------------------- *
+             * STEP‑0 : robust seed from 16‑50‑84 % quantiles          *
+             * ------------------------------------------------------- */
             double probs[3] = {0.16, 0.50, 0.84};
             double q[3];
             h->GetQuantiles(3, q, probs);
             double mu    = q[1];
-            double sigma = 0.5*(q[2]-q[0]);       // 68 % inter‑quantile width
+            double sigma = 0.5*(q[2]-q[0]);          // 68 % inter‑quantile width
             if (sigma <= 0) sigma = h->GetRMS();
-            if (sigma <= 0) sigma = 1.0;          // hard fallback
+            if (sigma <= 0) sigma = 1.0;             // hard fallback
+
+            std::cout << "  seed μ,σ     : " << mu << ", " << sigma << '\n';
 
             TF1 g("g","gaus", mu-3*sigma, mu+3*sigma);
             g.SetLineColor(kRed+1);
             g.SetLineWidth(2);
             g.SetParameters(h->GetMaximum(), mu, sigma);
 
-            /* ----------------------------------------------------- *
-             * STEP‑1 : iterative 2.5 σ shrink until convergence     *
-             * ----------------------------------------------------- */
+            /* ------------------------------------------------------- *
+             * STEP‑1 : iterative 2.5 σ shrink until convergence       *
+             * ------------------------------------------------------- */
             constexpr int    kMaxIter   = 5;
             constexpr double kNSigmaFit = 2.5;
             constexpr double kTol       = 1e-3;
-            bool   fitOK = false;
+
+            bool  fitOK    = false;
+            int   fitStat  = -1;
+            double chi2    = 0.0;
 
             for (int it = 0; it < kMaxIter; ++it)
             {
@@ -2497,38 +2534,54 @@ public:
                 g.SetParameters(h->GetBinContent(h->FindBin(mu)), mu, sigma);
 
                 TFitResultPtr res = h->Fit(&g,"Q0RSLL");
-                fitOK = (int)res == 0;
+                fitStat           = static_cast<int>(res);
+                fitOK             = (fitStat == 0);
+
                 if (!fitOK)
                 {
-                    std::cout << "    ↳ fit failed at iteration " << it << '\n';
+                    std::cout << "    iter " << it << "  –  Fit **FAILED** (status "
+                              << fitStat << ")\n";
                     break;
                 }
 
                 const double muNew    = g.GetParameter(1);
                 const double sigmaNew = std::fabs(g.GetParameter(2));
 
-                const bool conv =
+                const bool   conv =
                        std::fabs(muNew   - mu)    < kTol*sigma &&
                        std::fabs(sigmaNew- sigma) < kTol*sigma;
+
                 mu    = muNew;
                 sigma = sigmaNew;
+                chi2  = g.GetChisquare();
 
-                std::cout << "    ↳ iter " << it
-                          << "   μ = " << mu << "   σ = " << sigma << '\n';
+                std::cout << "    iter " << it
+                          << "  μ=" << mu << "  σ=" << sigma
+                          << "  χ²=" << chi2
+                          << "  status=" << fitStat
+                          << (conv ? "  (converged)" : "") << '\n';
 
-                if (conv)
-                {
-                    std::cout << "      convergence reached\n";
-                    break;
-                }
+                if (conv) break;
+            }
+
+            /* basic sanity filter – reject obviously wrong fits        */
+            const bool saneParams =
+                   std::fabs(mu) < 50.0        &&     // cm
+                   sigma         > 0.5          &&     // cm
+                   sigma         < 30.0;
+
+            if (!saneParams)
+            {
+                std::cout << "  sanity check **FAILED**  (|μ|<50 cm, 0.5<σ<30 cm)\n";
+                fitOK = false;
             }
 
             const double muErr  = fitOK ? g.GetParError(1) : 0.0;
             const double sigErr = fitOK ? g.GetParError(2) : 0.0;
 
-            /* ----------------------------------------------------- *
-             * Per‑run diagnostic PNG                               *
-             * ----------------------------------------------------- */
+            /* ------------------------------------------------------- *
+             * Per‑run diagnostic PNG                                  *
+             * ------------------------------------------------------- */
             {
                 TCanvas c("c_vz","", 900, 600);
                 h->Draw();
@@ -2540,37 +2593,44 @@ public:
                 c.SaveAs(outPng.string().c_str());
             }
 
-            /* ----------------------------------------------------- *
-             * Decide whether to cache this fit for the summary      *
-             * ----------------------------------------------------- */
+            /* ------------------------------------------------------- *
+             * Decide whether to cache this fit for the summary        *
+             * ------------------------------------------------------- */
             const long long nEvt  = static_cast<long long>(h->GetEntries());
             auto& maxEvtForRun    = s_evtCounts[runID];
-            const bool takeThis   = fitOK && nEvt > maxEvtForRun;
 
-            if (nEvt > maxEvtForRun)      // always keep the highest stat counter
-                maxEvtForRun = nEvt;
+            const bool firstForRun    = (s_points.find(runID) == s_points.end());
+            const bool takeThis       = fitOK && ( firstForRun || nEvt > maxEvtForRun );
+
+            std::cout << "  decision     : "
+                      << (takeThis ? "STORE" : "skip")
+                      << "   (fitOK=" << fitOK
+                      << ", first="   << firstForRun
+                      << ", nEvt="    << nEvt
+                      << ", maxEvt="  << maxEvtForRun << ")\n";
 
             if (runID != "Combined" && takeThis)
             {
-                std::cout << "    ↳ storing fit for summary ("
-                          << nEvt << " events)\n";
-
-                VzPoint& p = s_points[runID];
-                p.mu        = mu;
-                p.muErr     = muErr;
-                p.sigma     = sigma;
-                p.sigmaErr  = sigErr;
+                VzPoint& p  = s_points[runID];
+                p.mu        = mu;        p.muErr    = muErr;
+                p.sigma     = sigma;     p.sigmaErr = sigErr;
                 p.nEvt      = nEvt;
 
                 p.hist.reset(static_cast<TH1*>(h->Clone()));
                 p.hist->SetDirectory(nullptr);
+                p.hist->Scale( 1.0 / p.hist->GetEntries() );   // normalise for overlay
+
+                maxEvtForRun = nEvt;      // update AFTER successful storage
+                std::cout << "  → stored as current best for run " << runID << '\n';
             }
-            else if (runID != "Combined")
+            else if (nEvt > maxEvtForRun)
             {
-                std::cout << "    ↳ NOT stored "
-                          << (fitOK ? "(insufficient statistics)" : "(bad fit)")
-                          << '\n';
+                /* keep only the counter so a later good fit can be compared */
+                maxEvtForRun = nEvt;
+                std::cout << "  → updated event counter only ("
+                          << maxEvtForRun << ")\n";
             }
+            std::cout << "[EventQA] ===== vertex‑Z done =====\n";
         }
 
         // ============================================================
