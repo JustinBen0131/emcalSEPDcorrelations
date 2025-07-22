@@ -1084,11 +1084,11 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
         return Fun4AllReturnCodes::ABORTEVENT;
     }
 
-  /* ------------------------------------------------------------------ */
-  /* 4.  Vertex‑z QA & online cut                                       */
-  /* ------------------------------------------------------------------ */
-  for (const auto& t : activeTrig)
-    static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])->Fill(m_vz);
+    /* 4.  Vertex‑z QA  -------------------------------------- */
+    for (const auto& t : activeTrig) {
+        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_vertexZ"])
+            ->Fill(m_vz);
+    }
 
 
     /* ------------------------------------------------------------------ */
@@ -1121,10 +1121,12 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
     }
 
     /* centrality histogram (filled once the value is validated) -------- */
-    if (centile >= 0.f && centile <= 100.f)
-        for (const auto& t : activeTrig)
-          static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
-            ->Fill(centile);
+    if (centile >= 0.f && centile <= 100.f) {
+        for (const auto& t : activeTrig) {
+            static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_centrality"])
+                ->Fill(centile);
+        }
+    }
 
     /* guard: vz must be reasonable for centrality calibration ---------- */
     if (!std::isfinite(m_vz) || std::abs(m_vz) > 60.0)
@@ -1237,8 +1239,8 @@ emcal_sepdCorrelator::makeEpdHitmap(const std::string& name,
         1.75, 1.95, 2.15, 2.35, 2.55, 2.75, 2.95, 3.15, 3.55 };
 
     auto* h = new TH2F(name.c_str(),
-                       ";#varphi  [rad];r  [cm]",
-                       24, 0., 2.*TMath::Pi(),   // 24 × 15°
+                       ";#varphi  [deg];r  [cm]",
+                       24, 0., 360.,             // 24 × 15°
                        16, rEdge);               // *** non‑linear *** radii
     // Allow the uniform φ‑axis to grow if ever needed, but keep the
     // variable‑bin r‑axis fixed – this prevents the ROOT ExtendAxis
@@ -1288,33 +1290,36 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
       if (auto* h2 = dynamic_cast<TH2*>(h))     { h2->Fill(x, y, w); return true; }
       return false;
     };
+    
 
-    /* 0 bis.  *** NEW helper: polar filler with 30° tile‑0 ***           */
   auto fillPolar = [](TH2* h, double phi, double r, double w,
                         unsigned epdKey)
-  {
-      if (!h) return;
+    {
+        if (!h) return;
 
-      const double twoPi = 2. * TMath::Pi();
-      auto wrap = [twoPi](double a)
-      {
-        a = std::fmod(a, twoPi);          // keep 0 ≤ φ < 2π
-        return (a < 0) ? a + twoPi : a;
-      };
+        const double twoPi   = 2.*TMath::Pi();
+        const double rad2deg = 180.0 / TMath::Pi();      // ROOT “POL” expects degrees
+        auto wrapDeg = [twoPi, rad2deg](double a)
+        {
+            a = std::fmod(a, twoPi);                     // 0 ≤ φ < 2π  (rad)
+            if (a < 0) a += twoPi;
+            return a * rad2deg;                          // convert to degrees
+        };
 
-      const int ring = TowerInfoDefs::get_epd_rbin(epdKey);        // 0 … 15
+        const int ring = TowerInfoDefs::get_epd_rbin(epdKey);
 
-      if (ring == 0)                                              // tile‑0 spans 30°
-      {
-        const double dphi = TMath::Pi() / 12.;                    // 15°
-        h->Fill(wrap(phi)       , r, w);
-        h->Fill(wrap(phi + dphi), r, w);                          // neighbouring bin
-      }
-      else
-      {
-        h->Fill(wrap(phi), r, w);
-      }
-  };
+        if (ring == 0)                                   // tile‑0 spans 30°
+        {
+            const double dphi = TMath::Pi() / 12.;       // 15° in rad
+            h->Fill(wrapDeg(phi)       , r, w);
+            h->Fill(wrapDeg(phi + dphi), r, w);
+        }
+        else
+        {
+            h->Fill(wrapDeg(phi), r, w);
+        }
+    };
+
   /* ------------------------------------------------------------------ */
 
   /* ------------------------------------------------------------------ */

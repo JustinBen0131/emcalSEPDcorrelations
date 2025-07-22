@@ -150,7 +150,13 @@ class emcal_sepdCorrelator : public SubsysReco
   };
     
   std::map<std::string, HistMap>     qaHistogramsByTrigger;
+  // ── trigger QA helpers ────────────────────────────────────────────────
+  TH2I* h_MBTrigCorr   = nullptr;                 // 2‑D map: MinBias × Trigger
+  std::unordered_map<std::string,int> m_trigBin;  // trigger‑key → x‑bin index
 
+  // first‑event gate: MB + trigger selection (declared here, defined in .cc)
+  bool firstEventCuts(PHCompositeNode*   topNode,
+                        std::vector<std::string>& activeTrig);
   // --- analysis cuts ------------------------------------------------------
   const std::vector<float>               m_asymCuts {0.5f, 0.7f};
   const std::vector<float>               m_chi2Cuts {1.f, 4.f};
@@ -188,10 +194,6 @@ class emcal_sepdCorrelator : public SubsysReco
   void bookEventPlaneCentralityQA (const std::string& trig, HistMap& H);
   void fillCentralityQA           (const std::vector<std::string>& trig);
   void fillEventPlaneQA           (const std::vector<std::string>& trig);
-  bool firstEventCuts(PHCompositeNode*, std::vector<std::string>&);
-    
-  TH2I*                                        h_MBTrigCorr   {nullptr};
-  std::unordered_map<std::string,int>          m_trigBin;     // trigger → x‑bin
 
   // --- per‑event scalars ---------------------------------------------------
   double m_sepdQ  = 0.,  m_mbdQ  = 0.;     // integrated charges
