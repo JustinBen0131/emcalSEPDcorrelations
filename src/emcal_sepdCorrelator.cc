@@ -30,6 +30,7 @@
 #include <mbd/MbdPmtHit.h>
 #include <mbd/MbdGeom.h>
 #include <mbd/MbdOut.h>
+#include <ffarawobjects/Gl1Packet.h>
 #include <mbd/MbdPmtContainer.h>
 #include <epd/EpdGeom.h>
 #include <epd/EpdReco.h>
@@ -43,11 +44,14 @@
 
 // Standard C++ -------------------------------------------------------------
 #include <atomic>
+#include <algorithm>   // std::clamp
+#include <cmath>       // std::cosh, std::hypot, std::fmod
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <tuple>
+
 
 
 #ifdef _OPENMP
@@ -105,6 +109,45 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
   trigAna = new TriggerAnalyzer();
   LOG(1, CLR_GREEN, "[Init] booking scalar QA histograms …");
   createHistos_Data();
+    
+
+  //---------------------------------------------------------------------------
+  //  Correlation map between Minimum‑Bias decision and trigger status
+  //  ─────────────────────────────────────────────────────────────────────────
+  //
+  //  Y‑axis categories (Event category):
+  //    1  →  ¬MB  &  ¬Trig   — event fails both cuts
+  //    2  →  ¬MB  &   Trig   — event rejected **only** by MB cut
+  //    3  →   MB  &  ¬Trig   — event rejected **only** by trigger logic
+  //    4  →   MB  &   Trig   — event accepted by *both* cuts
+  //---------------------------------------------------------------------------
+  {
+        out->mkdir("CutQA")->cd();                      // separate folder
+        const int nTrig = triggerNameMap.size();
+
+        h_MBTrigCorr = new TH2I("h_MB_vs_Trigger",
+                                "Minimum‑bias vs Trigger decision;"
+                                "Trigger key;"
+                                "Event category",
+                                nTrig, 0.5, nTrig + 0.5,          // X: trigger
+                                4,      0.5, 4.5);                // Y: category
+
+        // Label Y‑bins with the categories explained above
+        h_MBTrigCorr->GetYaxis()->SetBinLabel(1, "¬MB  ¬Trig");
+        h_MBTrigCorr->GetYaxis()->SetBinLabel(2, "¬MB   Trig");
+        h_MBTrigCorr->GetYaxis()->SetBinLabel(3, " MB  ¬Trig");
+        h_MBTrigCorr->GetYaxis()->SetBinLabel(4, " MB   Trig");
+
+        // Label X‑bins with trigger keys and cache their indices
+        int ib = 1;
+        for (auto& [bitName, key] : triggerNameMap)
+        {
+            h_MBTrigCorr->GetXaxis()->SetBinLabel(ib, key.c_str());
+            m_trigBin[key] = ib++;                      // cache index
+        }
+        out->cd();                                     // back to root
+  }
+
 
   /* 1.  optional DST node-tree dump ---------------------------------- */
   if (Verbosity() >= 2)           // ← adjust threshold as desired
@@ -171,6 +214,7 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
+
 int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
 {
   /* 0. banner -------------------------------------------------------- */
@@ -217,6 +261,7 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   LOG(1, CLR_BLUE, "[InitRun] InitRun completed successfully");
   return Fun4AllReturnCodes::EVENT_OK;
 }
+
 
 
 void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
@@ -286,14 +331,10 @@ void emcal_sepdCorrelator::bookShapeHitMaps(PHCompositeNode* topNode)
     cloneHitMap("h_EMC_EtaPhiMap",   H["h_EMC_EtaPhiMap_"   + trig]);
     cloneHitMap("h_IHCAL_EtaPhiMap", H["h_IHCAL_EtaPhiMap_" + trig]);
     cloneHitMap("h_OHCAL_EtaPhiMap", H["h_OHCAL_EtaPhiMap_" + trig]);
-
-
     cloneHitMap("h_MBD_Hitmap_South", H["h_MBD_Hitmap_South_" + trig]);
     cloneHitMap("h_MBD_Hitmap_North", H["h_MBD_Hitmap_North_" + trig]);
-
     cloneHitMap("h_sEPD_Hitmap_South", H["h_sEPD_Hitmap_South_" + trig]);
     cloneHitMap("h_sEPD_Hitmap_North", H["h_sEPD_Hitmap_North_" + trig]);
-
   }
 
   out->cd();
@@ -820,6 +861,21 @@ void emcal_sepdCorrelator::createHistos_Data()
           new TH1F(("h_centrality_" + trig).c_str(),
                    "Centrality percentile (MBD);centrality [%];Events",
                    100, 0., 100.);
+      
+    H["cnt_"+trig+"_raw"] =
+          new TH1I(("cnt_"+trig+"_raw").c_str(),
+                   (trig+" – raw bit fired;flag;Events").c_str(),
+                   1, 0.5, 1.5);
+
+    H["cnt_"+trig+"_live"] =
+          new TH1I(("cnt_"+trig+"_live").c_str(),
+                   (trig+" – live bit fired;flag;Events").c_str(),
+                   1, 0.5, 1.5);
+
+    H["cnt_"+trig+"_scaled"] =
+          new TH1I(("cnt_"+trig+"_scaled").c_str(),
+                   (trig+" – scaled bit fired;flag;Events").c_str(),
+                   1, 0.5, 1.5);
     out->cd();
   }
 }
@@ -850,6 +906,108 @@ void emcal_sepdCorrelator::buildSepdChannelMap()
                                          << std::setprecision(1) << frac << "%)");
   m_sepdMapReady = true;
 }
+
+// ------------------------------------------------------------------
+//  firstEventCuts – logic only, fills counters + h_MBTrigCorr,
+//                 returns true if (MB  &&  ≥1 scaled bit fired)
+// ------------------------------------------------------------------
+bool
+emcal_sepdCorrelator::firstEventCuts(PHCompositeNode* topNode,
+                                   std::vector<std::string>& activeTrig)
+{
+  /* 0. clear output vector (safety when called more than once) */
+  activeTrig.clear();
+
+  /* 1.  Minimum‑bias flag (cached in fetchNodes) -------------------- */
+  const bool isMB = m_isMinBias;
+  LOG(2, CLR_BLUE, "[firstEventCuts] event " << event_count
+         << "  –  isMB = " << std::boolalpha << isMB);
+
+  /* 2.  Fetch GL1 trigger words ------------------------------------- */
+  uint64_t wScaled = 0, wLive = 0, wRaw = 0;
+  if (auto* gl1 = findNode::getClass<Gl1Packet>(topNode, "GL1Packet"))
+  {
+    wScaled = gl1->lValue(0, "ScaledVector");
+    wLive   = gl1->lValue(0, "LiveVector");
+    wRaw    = gl1->lValue(0, "TriggerVector");
+
+    LOG(3, CLR_BLUE, "  GL1  raw=0x" << std::hex << wRaw
+                     << "  live=0x"   << wLive
+                     << "  scaled=0x" << wScaled << std::dec);
+  }
+  else
+    LOG(1, CLR_YELLOW, "  GL1Packet node missing – assuming all bits = 0");
+
+  /* 3.  Decode once per event --------------------------------------- */
+  const auto bitsScaled = extractTriggerBits(wScaled, event_count);
+  const auto bitsLive   = extractTriggerBits(wLive  , event_count);
+  const auto bitsRaw    = extractTriggerBits(wRaw   , event_count);
+
+  if (Verbosity() >= 4)
+  {
+    auto dump = [&](const char* tag, const std::vector<int>& v)
+    {
+      std::ostringstream os; os << "    " << tag << ":";
+      for (int b : v) os << ' ' << b;   LOG(4, CLR_CYAN, os.str());
+    };
+    dump("scaled", bitsScaled);
+    dump("live  ", bitsLive);
+    dump("raw   ", bitsRaw);
+  }
+
+  /* 4.  Per‑trigger loop ------------------------------------------- */
+  for (const auto& [bitIdx, key] : triggerNameMap)
+  {
+    ++m_trigStat[key].tested;
+
+    const bool firedScaled = checkTriggerCondition(bitsScaled, bitIdx);
+    const bool firedLive   = checkTriggerCondition(bitsLive  , bitIdx);
+    const bool firedRaw    = checkTriggerCondition(bitsRaw   , bitIdx);
+
+    if (Verbosity() >= 3)
+      LOG(3, CLR_GREEN, "    bit " << std::setw(2) << bitIdx
+          << " (" << std::left << std::setw(30) << key << ") "
+          << "raw=" << firedRaw << " live=" << firedLive
+          << " scaled=" << firedScaled);
+
+    /* 4a.  populate counters (TH1I – one bin, value = 1) */
+    auto safeFill = [&](const std::string& hname)
+    {
+      auto& H  = qaHistogramsByTrigger[key];
+      auto  it = H.find(hname);
+      if (it != H.end())
+        static_cast<TH1I*>(it->second)->Fill(1.);
+      else
+        LOG(2, CLR_YELLOW, "      missing histogram \"" << hname << '"');
+    };
+    if (firedRaw   ) safeFill("cnt_" + key + "_raw");
+    if (firedLive  ) safeFill("cnt_" + key + "_live");
+    if (firedScaled) safeFill("cnt_" + key + "_scaled");
+
+    /* 4b.  MB×Trigger correlation map (always filled) */
+    if (h_MBTrigCorr)
+    {
+      const int cat  = isMB ? (firedScaled ? 4 : 3)
+                            : (firedScaled ? 2 : 1);          // see Init()
+      const int xbin = m_trigBin[key];                        // cached
+      h_MBTrigCorr->Fill(xbin, cat);
+    }
+
+    /* 4c.  Gate decision – keep only *scaled* bit */
+    if (firedScaled)
+    {
+      activeTrig.push_back(key);
+      ++m_trigStat[key].fired;
+    }
+  } // trigger loop
+
+  /* 5.  Final decision --------------------------------------------- */
+  const bool pass = isMB && !activeTrig.empty();
+  LOG(2, CLR_BLUE, "  → firstEventCuts(): " << (pass ? "PASS" : "FAIL"));
+  return pass;
+}
+
+
 
 // ======================================================================
 //  process_event – one‑event driver, with streamlined logging
@@ -894,32 +1052,16 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   }
 
   /* ------------------------------------------------------------------ */
-  /* 3.  Trigger decoding                                               */
+  /* 3.  Combined MB‑and‑Trigger gate (fills h_MBTrigCorr)              */
   /* ------------------------------------------------------------------ */
-  trigAna->decodeTriggers(topNode);
-
   std::vector<std::string> activeTrig;
-  if (Verbosity() >= 4) LOG(4, CLR_BLUE, "    Trigger matrix:");
-
-  for (auto& [bitName, key] : triggerNameMap)
-  {
-    ++m_trigStat[key].tested;
-    const bool fired = trigAna->didTriggerFire(bitName);
-    if (fired) { activeTrig.push_back(key); ++m_trigStat[key].fired; }
-
-    if (Verbosity() >= 4)
-      std::cout << "      • " << std::left << std::setw(25) << bitName
-                << " → "
-                << (fired ? CLR_GREEN "FIRED" : CLR_YELLOW "–")
-                << CLR_RESET << '\n';
-  }
-
-  if (activeTrig.empty())
-  {
-    ++m_evtNoTrig;
-    LOG(4, CLR_YELLOW, "    no configured trigger fired – skip");
-    return Fun4AllReturnCodes::ABORTEVENT;
-  }
+  if (!firstEventCuts(topNode, activeTrig))
+    {
+        ++m_evtNoTrig;                   // keep previous statistics
+        LOG(4, CLR_YELLOW,
+            "    event rejected by MB/Trigger gate – skip");
+        return Fun4AllReturnCodes::ABORTEVENT;
+    }
 
   /* ------------------------------------------------------------------ */
   /* 4.  Vertex‑z QA & online cut                                       */
@@ -939,22 +1081,14 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* 5.  Centrality lookup & diagnostics                                */
   /*      (must precede detector‑level QA so centrality clones fill)    */
   /* ------------------------------------------------------------------ */
-  CentralityInfo*  central =
-        findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
-  MinimumBiasInfo* mbInfo  =
-        findNode::getClass<MinimumBiasInfo>(topNode, "MinimumBiasInfo");
+  CentralityInfo* central =
+          findNode::getClass<CentralityInfo>(topNode, "CentralityInfo");
 
-  if (!central || !mbInfo)
+  if (!central)
   {
-      LOG(4, CLR_YELLOW,
-          "    CentralityInfo or MinimumBiasInfo node missing – skip");
-      return Fun4AllReturnCodes::ABORTEVENT;
-  }
-  if (!central->has_centrality_bin(CentralityInfo::PROP::mbd_NS))
-  {
-      LOG(4, CLR_YELLOW,
-          "    CentralityInfo::mbd_NS not filled yet – skip");
-      return Fun4AllReturnCodes::ABORTEVENT;
+        LOG(4, CLR_YELLOW,
+            "    CentralityInfo node missing – skip");
+        return Fun4AllReturnCodes::ABORTEVENT;
   }
 
   const float centile =
@@ -991,9 +1125,8 @@ int emcal_sepdCorrelator::process_event(PHCompositeNode* topNode)
   /* 6.  Detector‑level QA                                              */
   /* ------------------------------------------------------------------ */
   LOG(5, CLR_BLUE, "    running detector‑level QA");
-  doCaloQA(activeTrig);      // towers  + v_n accumulators  (now cent‑aware)
+  doCaloQA(activeTrig);      // towers  + v_n accumulators
   doSepdQA(activeTrig);      // SEPD charge maps & ψ_n
-
   doMbdQA(activeTrig);
   doPi0QA(activeTrig);
   fillCorrelations(activeTrig);
@@ -1017,28 +1150,20 @@ bool emcal_sepdCorrelator::fetchNodes(PHCompositeNode* top)
 {
     
   /* ------------------------------------------------------------------ */
-  /* 0.  Reject non‑minimum‑bias events up‑front                        */
+  /* 0.  Minimum‑bias information         */
   /* ------------------------------------------------------------------ */
-  m_isMinBias = false;   // reset per event
+  m_isMinBias = false;                                // reset per event
 
-  MinimumBiasInfo* mbInfo =
-         findNode::getClass<MinimumBiasInfo>(top,"MinimumBiasInfo");
+  if (auto* mbInfo = findNode::getClass<MinimumBiasInfo>(top,
+                                                           "MinimumBiasInfo"))
+        m_isMinBias = mbInfo->isAuAuMinimumBias();
+  else
+        LOG(1, CLR_YELLOW,
+            "  – MinimumBiasInfo node missing (treating as !MB)");
 
-  if (!mbInfo)
-  {
-       LOG(1, CLR_YELLOW,
-           "  – MinimumBiasInfo node **missing** → skip event");
-       return false;                       // ABORTEVENT at caller
-  }
+  /* NOTE: Actual rejection is done in firstEventCuts(), so we only
+   *       cache m_isMinBias here and keep processing. */
 
-  m_isMinBias = mbInfo->isAuAuMinimumBias();
-
-  if (!m_isMinBias)
-  {
-       LOG(3, CLR_CYAN,
-           "  – event is NOT Au+Au minimum‑bias → skip event");
-       return false;                       // nothing else to do
-  }
     
   /* ––– primary vertex –––––––––––––––––––––––––––––––––––––––––––––––– */
   GlobalVertexMap* vmap = findNode::getClass<GlobalVertexMap>(top,"GlobalVertexMap");
@@ -1612,10 +1737,21 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
       const double  eta = tg ? tg->get_eta() : 0.;
       const double  et  = e / std::cosh(eta);
 
-      /* ---------- arm‑separated ΣE​T -------------------------------- */
-      if (lbl == "CEMC")       (eta < 0 ? m_cemcEt_arm[0] : m_cemcEt_arm[1]) += et;
-      else if (lbl == "IHCAL") (eta < 0 ? m_ihcalEt_arm[0] : m_ihcalEt_arm[1]) += et;
-      else if (lbl == "OHCAL") (eta < 0 ? m_ohcalEt_arm[0] : m_ohcalEt_arm[1]) += et;
+      if (lbl == "CEMC")
+      {
+            if (isSouthCEMC(ieta)) m_cemcEt_arm[0] += et;
+            else                    m_cemcEt_arm[1] += et;
+      }
+      else if (lbl == "IHCAL")
+      {
+            if (isSouthHCal(ieta)) m_ihcalEt_arm[0] += et;
+            else                   m_ihcalEt_arm[1] += et;
+      }
+      else if (lbl == "OHCAL")
+      {
+            if (isSouthHCal(ieta)) m_ohcalEt_arm[0] += et;
+            else                   m_ohcalEt_arm[1] += et;
+      }
 
       /* ---------- η–φ hit‑maps (global + centrality) ---------------- */
       std::string Hmap;
@@ -1774,16 +1910,28 @@ void emcal_sepdCorrelator::doCaloQA(const std::vector<std::string>& trig)
           a.qx[3] += et * c3;  a.qy[3] += et * s3;
       };
 
-      /* ---------- do the actual accumulation -------------------------- */
-      if (eta < 0) {
-          accumulate(lbl + "_S");
-          if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL_S");
-          accumulate("ALL_S");
-      } else {
-          accumulate(lbl + "_N");
-          if (lbl == "IHCAL" || lbl == "OHCAL") accumulate("HCAL_N");
-          accumulate("ALL_N");
-      }
+        /* ---------- do the actual accumulation -------------------------- */
+        if (lbl == "CEMC")
+        {
+            const bool south = isSouthCEMC(ieta);
+            accumulate(south ? "CEMC_S" : "CEMC_N");
+            accumulate(south ? "ALL_S"  : "ALL_N");
+        }
+        else if (lbl == "IHCAL")
+        {
+            const bool south = isSouthHCal(ieta);
+            accumulate(south ? "IHCAL_S" : "IHCAL_N");
+            accumulate(south ? "HCAL_S"  : "HCAL_N");
+            accumulate(south ? "ALL_S"   : "ALL_N");
+        }
+        else if (lbl == "OHCAL")
+        {
+            const bool south = isSouthHCal(ieta);
+            accumulate(south ? "OHCAL_S" : "OHCAL_N");
+            accumulate(south ? "HCAL_S"  : "HCAL_N");
+            accumulate(south ? "ALL_S"   : "ALL_N");
+        }
+
 
       /* ---------- per‑event debug summary ------------------------------ */
       if (Verbosity() >= 6)
@@ -2649,6 +2797,8 @@ int emcal_sepdCorrelator::End(PHCompositeNode*)
       std::cout << "--------------------------------------------------------------------------\n";
     }
   }
+  out->cd("CutQA");
+  if (h_MBTrigCorr && h_MBTrigCorr->GetEntries() > 0) h_MBTrigCorr->Write();
 
   //--------------------------------------------------------------------
   // 4.  Write footer & close the file

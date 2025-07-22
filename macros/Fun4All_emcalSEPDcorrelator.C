@@ -373,7 +373,7 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
 
   // 3f) User analysis module – must come *last*
   auto* correl = new emcal_sepdCorrelator(outRoot);
-  correl->setVzCut(100.);
+  correl->setVzCut(10.);
   correl->enableVzCut(true);
   correl->setVerbose(0);
   se->registerSubsystem(correl);

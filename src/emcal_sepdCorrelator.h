@@ -43,6 +43,8 @@
 #include <algorithm>
 #include <array>
 #include <unordered_map>
+#include <bitset>          // ← for extractTriggerBits()
+#include <TVector2.h>      // ← TVector2::Phi_mpi_pi in doCaloQA()
 #include <jetbase/JetContainer.h>
 
 // --------------------------------------------------------------------------
@@ -125,9 +127,28 @@ class emcal_sepdCorrelator : public SubsysReco
   TriggerAnalyzer*  trigAna  = nullptr;
   std::size_t       event_count = 0;
 
-  // --- trigger bookkeeping -----------------------------------------------
-  std::map<std::string, std::string> triggerNameMap {
-        {"MBD N&S >= 2", "MBD_NandS_geq_2"}};
+  // --- trigger bookkeeping if using TriggerAnalyzer package -----------------------------------------------
+//  std::map<std::string, std::string> triggerNameMap {
+//        {"MBD N&S >= 2", "MBD_NandS_geq_2"}};
+    
+  // --- trigger bookkeeping :  bit‑index  →  human‑readable key ----------
+  std::map<int, std::string> triggerNameMap = {
+      {10, "MBD_NS_geq_2"},
+      {11, "MBD_NS_geq_1"},
+      {12, "MBD_NandS_geq_2_vtx_lt_10"},
+      {13, "MBD_NandS_geq_2_vtx_lt_30"},
+      {14, "MBD_NandS_geq_2_vtx_lt_150"},
+      {15, "MBD_NandS_geq_1_vtx_lt_10"},
+      {16, "photon_6_plus_MBD_NandS_geq_2_vtx_lt_10"},
+      {17, "photon_8_plus_MBD_NandS_geq_2_vtx_lt_10"},
+      {18, "photon_10_plus_MBD_NandS_geq_2_vtx_lt_10"},
+      {19, "photon_12_plus_MBD_NandS_geq_2_vtx_lt_10"},
+      {20, "photon_6_plus_MBD_NandS_geq_2_vtx_lt_150"},
+      {21, "photon_8_plus_MBD_NandS_geq_2_vtx_lt_150"},
+      {22, "photon_10_plus_MBD_NandS_geq_2_vtx_lt_150"},
+      {23, "photon_12_plus_MBD_NandS_geq_2_vtx_lt_150"}
+  };
+    
   std::map<std::string, HistMap>     qaHistogramsByTrigger;
 
   // --- analysis cuts ------------------------------------------------------
@@ -167,6 +188,10 @@ class emcal_sepdCorrelator : public SubsysReco
   void bookEventPlaneCentralityQA (const std::string& trig, HistMap& H);
   void fillCentralityQA           (const std::vector<std::string>& trig);
   void fillEventPlaneQA           (const std::vector<std::string>& trig);
+  bool firstEventCuts(PHCompositeNode*, std::vector<std::string>&);
+    
+  TH2I*                                        h_MBTrigCorr   {nullptr};
+  std::unordered_map<std::string,int>          m_trigBin;     // trigger → x‑bin
 
   // --- per‑event scalars ---------------------------------------------------
   double m_sepdQ  = 0.,  m_mbdQ  = 0.;     // integrated charges
@@ -229,8 +254,52 @@ class emcal_sepdCorrelator : public SubsysReco
 
   void   bookFlowQA(const std::string& trig, HistMap& H);
   void   fillFlowHists(const std::vector<std::string>& trig);
+  // --------------------------------------------------------------
+  //  Tower-index ⇒ hemisphere lookup (inline, header‑only)
+  // --------------------------------------------------------------
+  inline bool isSouthCEMC (unsigned ieta) { return ieta < 48; }
+  inline bool isNorthCEMC (unsigned ieta) { return ieta >= 48; }
+
+  inline bool isSouthHCal(unsigned ieta) { return ieta < 12; }   // IHCAL & OHCAL
+  inline bool isNorthHCal(unsigned ieta) { return ieta >= 12; }
+    
+    /*
+     following two functions are for seperate raw trigger bit QA not using triggerAnalyzer
+     */
+  inline std::vector<int> extractTriggerBits(uint64_t b_gl1_scaledvec, int entry) {
+        std::vector<int> trig_bits;
+        std::bitset<64> bits(b_gl1_scaledvec);
+        if (verbose) {
+            std::cout << "Processing entry " << entry << ", gl1_scaledvec (bits): " << bits.to_string() << std::endl;
+        }
+        
+        for (unsigned int bit = 0; bit < 64; bit++) {
+            if (((b_gl1_scaledvec >> bit) & 0x1U) == 0x1U) {
+                trig_bits.push_back(bit);
+            }
+        }
+        return trig_bits;
+  }
+
+  // Inline function to check trigger condition
+  inline bool checkTriggerCondition(const std::vector<int> &trig_bits, int inputBit) {
+        for (const int &bit : trig_bits) {
+            if (bit == inputBit) {
+                if (verbose) {
+                    std::cout << "  Trigger condition met with bit: " << bit << std::endl;
+                }
+                
+                return true;
+            }
+        }
+        if (verbose) {
+            std::cout << "  No relevant trigger conditions met." << std::endl;
+        }
+        
+        return false;
+  }
+
+  // --------------------------------------------------------------------------
 
 };
-
-// --------------------------------------------------------------------------
 #endif  // EMCALSEPDCORRELATOR_H

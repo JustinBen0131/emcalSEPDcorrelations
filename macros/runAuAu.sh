@@ -77,7 +77,17 @@ root_cmd=(root "${root_flags[@]}" \
 [[ "${verbose}" == "true" ]] && echo "+ ${root_cmd[*]}" >&2
 
 # ────────────────────────────────────────────────────────────────────────────
-# 4.  Execute — filter only the duplicate‑rpath warning
+# 3.5  Clean previous output so every run starts with an empty directory
+# ────────────────────────────────────────────────────────────────────────────
+output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
+
+if [[ -d "${output_root}" ]]; then
+    echo "Cleaning old output under ${output_root}" >&2
+    rm -rf "${output_root:?}/"*
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 4.  Execute — filter only the duplicate-rpath warning
 # ────────────────────────────────────────────────────────────────────────────
 {
     "${root_cmd[@]}"
