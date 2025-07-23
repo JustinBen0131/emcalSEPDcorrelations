@@ -116,8 +116,149 @@ source /opt/sphenix/core/bin/sphenix_setup.sh -n
 set -u
 
 exec 1> >(stdbuf -oL cat) 2>&1          # live stdout/err streaming
-echo "[wrapper] $(wc -l <"$LIST") inputs  →  $OUT"
-hadd -v -v -v -f "$OUT" @"$LIST"
+echo -e "\e[1;34m[wrapper] $(wc -l <"$LIST") inputs  →  $OUT\e[0m"
+hadd -v -v -v -f "$OUT" @"$LIST" || { echo -e "\e[0;31m[FATAL] hadd failed – abort\e[0m"; exit 3; }
+
+# ──────────────────────────────────────────────────────────────────────
+#  1.  determine run‑number from final file name (…_<RUN>.root)
+#  2.  query DAQ DB for live / scaled counts (per trigger bit)
+#  3.  rescale every histogram in the matching trigger directory
+#      → prints OLD integral, FACTOR, NEW integral
+# ──────────────────────────────────────────────────────────────────────
+runNum=${OUT##*_}; runNum=${runNum%.root}
+echo -e "\e[1;34m[wrapper] commencing trigger‑prescale scaling for run $runNum\e[0m"
+
+export RUNNUM_ENV=$runNum        # pass to ROOT
+export OUTFILE_ENV=$OUT
+
+root -l -b -q <<'EOF'
+{
+  //--------------------------------------------------------------------
+  //                   verbose‑scaling.C  (inline)
+  //--------------------------------------------------------------------
+  #include <iostream>
+  #include <iomanip>
+  #include <map>
+  #include <memory>
+  using std::cout; using std::cerr; using std::endl;
+
+  /* 0. ANSI helpers --------------------------------------------------- */
+  const char* GRN="\033[0;32m", *YEL="\033[1;33m", *RED="\033[0;31m", *BLU="\033[1;34m", *RST="\033[0m";
+
+  /* 1. trigger‑bit ↔ folder mapping ---------------------------------- */
+  std::map<int,std::string> trigName = {
+      {10, "MBD_NS_geq_2"},
+      {11, "MBD_NS_geq_1"},
+      {12, "MBD_NS_geq_2_vtx_lt_10"},
+      {13, "MBD_NS_geq_2_vtx_lt_30"},
+      {14, "MBD_NS_geq_2_vtx_lt_150"},
+      {15, "MBD_NS_geq_1_vtx_lt_10"},
+      {16, "photon_6_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {17, "photon_8_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {18, "photon_10_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {19, "photon_12_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {20, "photon_6_plus_MBD_NS_geq_2_vtx_lt_150"},
+      {21, "photon_8_plus_MBD_NS_geq_2_vtx_lt_150"},
+      {22, "photon_10_plus_MBD_NS_geq_2_vtx_lt_150"},
+      {23, "photon_12_plus_MBD_NS_geq_2_vtx_lt_150"}
+  };
+
+  /* 2. DB query – collect live / scaled ------------------------------- */
+  int run = std::atoi(gSystem->Getenv("RUNNUM_ENV"));
+  std::map<std::string,double> scaleFac;
+  cout << BLU << "[scaling] querying DAQ DB for run " << run << RST << endl;
+
+  std::unique_ptr<TSQLServer> db(
+        TSQLServer::Connect("pgsql://sphnxdaqdbreplica:5432/daq","phnxro",""));
+  if (!db || db->IsZombie()) { cerr << RED << "[ERROR] DB connect failed" << RST << endl; return; }
+
+  char q[512];
+  std::sprintf(q,
+      "SELECT s.index, s.live, s.scaled "
+      "FROM gl1_scalers s WHERE s.runnumber=%d ORDER BY s.index;", run);
+  cout << YEL << "[query] " << q << RST << endl;
+
+  std::unique_ptr<TSQLResult> res(db->Query(q));
+  if (!res) { cerr << RED << "[ERROR] DB query returned null" << RST << endl; return; }
+
+  while (auto row = res->Next())
+  {
+      int idx = std::atoi(row->GetField(0));
+      double live   = std::atof(row->GetField(1));
+      double scaled = std::atof(row->GetField(2));
+
+      auto it = trigName.find(idx);
+      if (it==trigName.end()) { delete row; continue; }
+
+      double factor = (scaled>0) ? live/scaled : -1;
+      scaleFac[it->second] = factor;
+
+      cout << std::setw(4) << idx << " → "
+           << std::setw(40) << it->second
+           << " | live=" << std::setw(10) << live
+           << " scaled=" << std::setw(10) << scaled
+           << "  ⇒  factor=" << factor << endl;
+      delete row;
+  }
+  if (scaleFac.empty()) { cerr << RED << "[ERROR] no scale factors found – abort" << RST << endl; return; }
+
+  /* 3. open ROOT file ------------------------------------------------- */
+  const char* fName = gSystem->Getenv("OUTFILE_ENV");
+  TFile f(fName,"UPDATE");
+  if (f.IsZombie()) { cerr << RED << "[ERROR] cannot open " << fName << RST << endl; return; }
+
+  size_t nDirScaled=0, nHistScaled=0;
+
+  for (auto& kv : scaleFac)
+  {
+      const std::string& dir = kv.first;
+      double fac = kv.second;
+      if (fac<=0) { cout << YEL << "[skip] " << dir << " (factor <=0)" << RST << endl; continue; }
+
+      TDirectory* d = f.GetDirectory(dir.c_str());
+      if (!d) { cout << YEL << "[skip] directory " << dir << " not present" << RST << endl; continue; }
+
+      cout << GRN << "[scale] " << dir << "  factor=" << fac << RST << endl;
+      ++nDirScaled;
+
+      TIter itKey(d->GetListOfKeys());
+      while (auto* k = (TKey*)itKey())
+      {
+          TObject* obj = k->ReadObj();
+          if (!obj->InheritsFrom("TH1")) { delete obj; continue; }
+          TH1* h = (TH1*)obj;
+
+          double oldInt = h->Integral();
+          if (oldInt==0) { delete h; continue; }
+
+          h->Scale(fac);
+          double newInt = h->Integral();
+
+          cout << "   • " << std::left << std::setw(45) << h->GetName()
+               << "  " << std::right << std::fixed << std::setprecision(1)
+               << oldInt << "  →  " << newInt << endl;
+
+          d->cd();
+          h->Write(h->GetName(), TObject::kOverwrite);
+          delete h;
+          ++nHistScaled;
+      }
+      f.cd();
+  }
+
+  f.Write(); f.Close();
+  cout << BLU << "[summary] scaled " << nHistScaled << " histograms in "
+       << nDirScaled << " trigger directories" << RST << endl;
+}
+EOF
+
+if [[ $? -ne 0 ]]; then
+    echo -e "\e[0;31m[FATAL] ROOT scaling macro failed – see log above\e[0m"
+    exit 4
+fi
+
+echo -e "\e[0;32m[wrapper] scaling finished – final file size: $(du -h "$OUT" | cut -f1)\e[0m"
+
 EOS
 chmod +x "$HADD_WRAPPER"
 
