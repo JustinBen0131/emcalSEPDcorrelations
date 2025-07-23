@@ -16,6 +16,7 @@
 #include <TSystem.h>
 #include <TMath.h>
 #include <TH2Poly.h>
+#include <TKey.h>
 #include <CLHEP/Vector/ThreeVector.h>
 #include <cdbobjects/CDBTTree.h>
 #include <ffamodules/CDBInterface.h>
@@ -123,7 +124,7 @@ int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
   //    4  →   MB  &   Trig   — event accepted by *both* cuts
   //---------------------------------------------------------------------------
   {
-        out->mkdir("CutQA")->cd();                      // separate folder
+        out->mkdir("triggerQA")->cd();                      // separate folder
         const int nTrig = triggerNameMap.size();
 
         h_MBTrigCorr = new TH2I("h_MB_vs_Trigger",
@@ -2944,7 +2945,53 @@ int emcal_sepdCorrelator::End(PHCompositeNode*)
       std::cout << "--------------------------------------------------------------------------\n";
     }
   }
-  out->cd("CutQA");
+    
+  // --------------------------------------------------------------------
+  // 3a.  Extra directory / histogram summary (Verbosity() > 5)
+  // --------------------------------------------------------------------
+  if (Verbosity() > 5)
+  {
+      std::cout << "\n\033[1mDetailed ROOT‑file contents\033[0m\n"
+                << "\033[1mPath                                                        │ Entries\033[0m\n"
+                << "--------------------------------------------------------------------------\n";
+
+      /* -- recursive directory walker ---------------------------------- */
+      std::function<void(TDirectory*,std::string)> walk =
+        [&](TDirectory* dir, std::string path)
+      {
+        if (!dir) return;
+        TIter next(dir->GetListOfKeys());
+        while (TKey* key = static_cast<TKey*>(next()))
+        {
+          TObject* obj = key->ReadObj();
+          if (!obj) continue;
+
+          const std::string name = key->GetName();
+          const std::string full = path + '/' + name;   // build full path
+
+          if (obj->InheritsFrom(TDirectory::Class()))
+          {
+            /* directory: print name & recurse */
+            std::cout << std::left << std::setw(60) << (full + '/')
+                      << "│\n";
+            walk(static_cast<TDirectory*>(obj), full);
+          }
+          else if (obj->InheritsFrom(TH1::Class()))
+          {
+            /* histogram: print entries */
+            const auto* h = static_cast<const TH1*>(obj);
+            std::cout << std::left  << std::setw(60) << full
+                      << "│ " << std::right << std::setw(10)
+                      << static_cast<Long64_t>(h->GetEntries()) << '\n';
+          }
+          /* silently ignore non‑TH1, non‑TDirectory objects */
+        }
+      };
+
+      walk(out, "");   // start at the file root
+      std::cout << "--------------------------------------------------------------------------\n";
+  }
+  out->cd("triggerQA");
   if (h_MBTrigCorr && h_MBTrigCorr->GetEntries() > 0) h_MBTrigCorr->Write();
 
   //--------------------------------------------------------------------

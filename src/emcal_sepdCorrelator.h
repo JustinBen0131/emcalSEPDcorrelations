@@ -135,18 +135,18 @@ class emcal_sepdCorrelator : public SubsysReco
   std::map<int, std::string> triggerNameMap = {
       {10, "MBD_NS_geq_2"},
       {11, "MBD_NS_geq_1"},
-      {12, "MBD_NandS_geq_2_vtx_lt_10"},
-      {13, "MBD_NandS_geq_2_vtx_lt_30"},
-      {14, "MBD_NandS_geq_2_vtx_lt_150"},
-      {15, "MBD_NandS_geq_1_vtx_lt_10"},
-      {16, "photon_6_plus_MBD_NandS_geq_2_vtx_lt_10"},
-      {17, "photon_8_plus_MBD_NandS_geq_2_vtx_lt_10"},
-      {18, "photon_10_plus_MBD_NandS_geq_2_vtx_lt_10"},
-      {19, "photon_12_plus_MBD_NandS_geq_2_vtx_lt_10"},
-      {20, "photon_6_plus_MBD_NandS_geq_2_vtx_lt_150"},
-      {21, "photon_8_plus_MBD_NandS_geq_2_vtx_lt_150"},
-      {22, "photon_10_plus_MBD_NandS_geq_2_vtx_lt_150"},
-      {23, "photon_12_plus_MBD_NandS_geq_2_vtx_lt_150"}
+      {12, "MBD_NS_geq_2_vtx_lt_10"},
+      {13, "MBD_NS_geq_2_vtx_lt_30"},
+      {14, "MBD_NS_geq_2_vtx_lt_150"},
+      {15, "MBD_NS_geq_1_vtx_lt_10"},
+      {16, "photon_6_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {17, "photon_8_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {18, "photon_10_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {19, "photon_12_plus_MBD_NS_geq_2_vtx_lt_10"},
+      {20, "photon_6_plus_MBD_NS_geq_2_vtx_lt_150"},
+      {21, "photon_8_plus_MBD_NS_geq_2_vtx_lt_150"},
+      {22, "photon_10_plus_MBD_NS_geq_2_vtx_lt_150"},
+      {23, "photon_12_plus_MBD_NS_geq_2_vtx_lt_150"}
   };
     
   std::map<std::string, HistMap>     qaHistogramsByTrigger;

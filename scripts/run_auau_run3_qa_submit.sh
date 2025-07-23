@@ -338,13 +338,16 @@ if [[ "$mode" == "local" ]]; then
   maxEvt=0                      # default = analyse everything
 
   if [[ -n "$limitSwitch" ]]; then
-    if [[ "$limitSwitch" =~ ^[0-9]+$ && "$limitSwitch" -ge 100000 ]]; then
-      # token looks like a real run number
-      runNumber=$(printf "$PAD_FMT" "$limitSwitch")
-      maxEvt="${3:-0}"          # 2‑nd numeric token becomes event cap
-    else
-      # token is the event cap itself
+    if [[ "$limitSwitch" =~ ^[0-9]+$ && "${3:-}" =~ ^[0-9]+$ ]]; then
+      # two numeric tokens: 1st = run‑number, 2nd = event cap
+      runNumber=$(printf "$PAD_FMT" "$limitSwitch")   # e.g. 44477 → 00044477 or 044477…
+      maxEvt="$3"
+    elif [[ "$limitSwitch" =~ ^[0-9]+$ && -z "${3:-}" ]]; then
+      # single numeric token: interpret as event cap only
       maxEvt="$limitSwitch"
+    elif [[ "$limitSwitch" =~ ^[0-9]+$ ]]; then
+      # single numeric token followed by non‑numeric → treat token as run‑number
+      runNumber=$(printf "$PAD_FMT" "$limitSwitch")
     fi
   fi
 

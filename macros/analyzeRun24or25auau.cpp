@@ -21,6 +21,7 @@
 #include <TStyle.h>
 #include <TH2Poly.h>
 #include <TFileMerger.h>
+#include <TPaletteAxis.h>
 #include <filesystem>
 #include <TH2.h>
 #include <TH3.h>
@@ -619,7 +620,8 @@ class Pi0QA : public QA
                         etaMuErr  = gEta.GetParError (1);
                         etaSig    = gEta.GetParameter(2);
                         etaSigErr = gEta.GetParError (2);
-                        if (_storedEtaFit.count(slice)==0)
+                        /* Same logic as above: let the central‑integrated spectrum override. */
+                        if (pTInt || _storedEtaFit.count(slice)==0)
                             _storedEtaFit[slice].reset(new TF1(gEta));
                     } else {
                         etaMu = etaSig = etaMuErr = etaSigErr = 0;
@@ -701,17 +703,16 @@ class Pi0QA : public QA
             _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,piMu,piSig,
                                            total.GetChisquare(),total.GetNDF()});
 
-            if (fitOK && _storedFit.count(slice)==0) {
+            /* Always cache the central‑integrated fit (pTInt == true).
+             * For pT‑binned spectra keep the “first one wins” policy. */
+            if (fitOK && (pTInt || _storedFit.count(slice)==0)) {
                 _storedFit[slice].total.reset(new TF1(total));
                 _storedFit[slice].poly .reset(new TF1(poly ));
             }
 
-            if (fitOK) {
-                auto &m=s_runPoints[slice];
-                if (m.count(runID)==0)
-                    m[runID]={piMu,piMuErr,piSig,piSigErr};
-            }
-
+            auto &m = s_runPoints[slice];
+            if (m.count(runID) == 0)
+                m[runID] = {piMu, piMuErr, piSig, piSigErr};
            /* --------------------------------------------------------------- *
             * 8.  Cache for overview canvases                                 *
             * --------------------------------------------------------------- */
@@ -744,11 +745,12 @@ class Pi0QA : public QA
 
             if (pTIntegrated) {                          // centrality‑summary
                 log(Lvl::DBG,"cacheForOverview(): central cache  slice="+slice);
-                _centralHists.emplace(slice,cl);
+                _centralHists[slice] = cl;               // *overwrite* with pT‑integrated hist
             } else {                                     // pT‑binned summary
                 log(Lvl::DBG,"cacheForOverview(): pT‑cache slice="+slice);
                 _ptHists[slice].push_back(cl);
             }
+
         }
         catch(const std::exception& ex){
             log(Lvl::ERR,std::string("cacheForOverview(): exception – ")+ex.what());
@@ -760,11 +762,21 @@ class Pi0QA : public QA
     // -----------------------------------------------------------------------------
     void writeSummaryPanels()
     {
-        if (_centralHists.empty()) {
-            log(Lvl::INFO,"writeSummaryPanels(): _centralHists is empty – nothing to do");
-            return;
-        }
+        if (_centralHists.empty()) {                     // build it from the pT cache
+            log(Lvl::WARN,"writeSummaryPanels(): _centralHists empty – rebuilding");
 
+            for (const auto& [sl,hVec] : _ptHists) {     // one slice at a time
+                if (hVec.empty()) continue;
+                TH1 *hSum = nullptr;
+                for (const auto *hPt : hVec) {           // add all pT spectra
+                    if (!hSum)
+                        hSum = static_cast<TH1*>(hPt->Clone(Form("hCent_%s",sl.c_str())));
+                    else
+                        hSum->Add(hPt);
+                }
+                if (hSum) _centralHists[sl] = hSum;      // store for the overview grid
+            }
+        }                                                // *do NOT* return – carry on
         log(Lvl::INFO,"writeSummaryPanels(): building centrality overview");
 
         std::vector<std::string> slicesDone;          // ← for final terminal table
@@ -798,16 +810,32 @@ class Pi0QA : public QA
                     fTot=_storedFit[sl].total.get();
                     fBg =_storedFit[sl].poly .get();
                 } else {
-                    tmpTot=std::make_unique<TF1>("fTmp","gaus(0)+pol2(3)",fitLo,fitHi);
-                    int iMax=h->GetMaximumBin();
-                    tmpTot->SetParameters(h->GetBinContent(iMax),
-                                          h->GetBinCenter (iMax),0.02,1,0,0);
+                    tmpTot = std::make_unique<TF1>("fTmp","gaus(0)+pol2(3)",fitLo,fitHi);
+                    int iMax = h->GetMaximumBin();
+                    double ampSeed = std::max(1.0, h->GetBinContent(iMax));   // never start at 0
+                    tmpTot->SetParameters(ampSeed,                           // amplitude
+                                          h->GetBinCenter(iMax),             // mean  (μ) seed
+                                          0.02,                              // sigma (σ) seed
+                                          1, 0, 0);                          // background poly‑2
+
                     h->Fit(tmpTot.get(),"QRN0");
-                    tmpBg=std::make_unique<TF1>("fBgTmp","pol2",fitLo,fitHi);
+
+                    tmpBg = std::make_unique<TF1>("fBgTmp","pol2",fitLo,fitHi);
                     tmpBg->SetParameters(tmpTot->GetParameter(3),
                                          tmpTot->GetParameter(4),
                                          tmpTot->GetParameter(5));
-                    fTot=tmpTot.get(); fBg=tmpBg.get();
+
+                    fTot = tmpTot.get();                       // total  (gaus+pol2)
+                    fBg  = tmpBg .get();                       // background (pol2)
+
+                    /* ---------------------------------------------------
+                     * keep the temporary fit functions alive by handing
+                     * ownership to the current pad – otherwise they are
+                     * destroyed at the end of the loop and disappear
+                     * from the saved PNG
+                     * --------------------------------------------------- */
+                    gPad->GetListOfPrimitives()->Add(tmpTot.release());
+                    gPad->GetListOfPrimitives()->Add(tmpBg .release());
                 }
 
                 fTot->SetLineColor(kRed+1);   fTot->SetLineWidth(2);
@@ -1039,9 +1067,12 @@ class Pi0QA : public QA
                     hPt->SetStats(0);
                     hPt->Draw();
                 }
-                fs::path pngGridPt = root/"EMCal"/"invMassQA"/cutTag/sl
-                                     /"pTsummarizedMeanSigmaDistributions"
-                                     /"Pi0Mass_First6pTbins.png";
+                /* build the correct slice directory (adds the Cent_ prefix) */
+                fs::path sliceDir = cPath(root, sl, fs::path("EMCal/invMassQA") / cutTag);
+
+                /* (C1) first six pT‑bin grid */
+                fs::path pngGridPt = sliceDir
+                                     / "Pi0Mass_First6pTbins.png";
                 ensure_dir(pngGridPt.parent_path());
                 cGridPt.SaveAs(pngGridPt.string().c_str());
                 log(Lvl::DBG,"pT‑grid PNG  → "+pngGridPt.string());
@@ -1091,8 +1122,7 @@ class Pi0QA : public QA
                 gSi->GetYaxis()->SetTitleSize(0.09); gSi->GetYaxis()->SetLabelSize(0.07);
                 gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
 
-                fs::path pngPT = root/"EMCal"/"invMassQA"/cutTag/sl
-                                  /"Pi0Mass_Sigma_vs_pT.png";
+                fs::path pngPT = sliceDir / "Pi0Mass_Sigma_vs_pT.png";
                 ensure_dir(pngPT.parent_path());
                 cPT.SaveAs(pngPT.string().c_str());
                 log(Lvl::DBG,"μ,σ vs pT PNG → "+pngPT.string());
@@ -1992,14 +2022,70 @@ public:
       tx.SetTextColorAlpha(kGray + 2, 0.70);
 
       for (int s = 0; s < 64; ++s) {               // 32 per hemisphere
-        const int    basePhi = (s % 32) * 8;
-        const double yMid    = basePhi + 4;
-        const double xSec    = (s < 32) ? 72 : 24;
-        tx.DrawLatex(xSec, yMid, Form("S%d", s));
+          const int    basePhi = (s % 32) * 8;
+          const double yMid    = basePhi + 4;
+          const double xSec    = (s < 32) ? 72 : 24;
+          tx.DrawLatex(xSec, yMid, Form("S%d", s));
+      }
+
+      /* ----------------------------------------------------------------
+       *  missing‑SEB detector (run‑by‑run, Inclusive slice only)
+       * ---------------------------------------------------------------- */
+      {
+            static std::unordered_set<std::string> s_doneRuns;   // run‑ID cache
+            const std::string runKey = root.parent_path().filename().string();
+            const bool isCombined    = (runKey == "Combined");
+
+            if (!isCombined && slice == "Inclusive" && s_doneRuns.insert(runKey).second)
+            {
+                /* mapping  SEB → contiguous sector range (inclusive) */
+                const std::pair<int,int> sebRange[16] = {
+                    {16,19},  /* SEB0  */ {20,23},  /* SEB1  */ {28,31},  /* SEB2  */
+                    {24,27},  /* SEB3  */ { 8,11},  /* SEB4  */ {12,15},  /* SEB5  */
+                    { 4, 7},  /* SEB6  */ { 0, 3},  /* SEB7  */ {48,51},  /* SEB8  */
+                    {52,55},  /* SEB9  */ {60,63},  /* SEB10 */ {56,59},  /* SEB11 */
+                    {40,43},  /* SEB12 */ {44,47},  /* SEB13 */ {36,39},  /* SEB14 */
+                    {32,35}   /* SEB15 */
+                };
+
+                /* helper – is *entire* sector empty? */
+                auto sectorIsEmpty = [&](int sec)->bool
+                {
+                    double sum = 0.0;
+                    for (int iphi = 0; iphi < 256; ++iphi)
+                        for (int ieta = 0; ieta < 96; ++ieta)
+                            if (sector_from_idx(ieta, iphi) == sec)
+                                sum += src->GetBinContent(iphi + 1, ieta + 1);
+                    return sum <= 0.0;
+                };
+
+                std::vector<int> missingSEB;
+                for (int seb = 0; seb < 16; ++seb)
+                {
+                    const auto [lo, hi] = sebRange[seb];
+                    bool empty = true;
+                    for (int sec = lo; sec <= hi && empty; ++sec)
+                        empty &= sectorIsEmpty(sec);
+                    if (empty) missingSEB.push_back(seb);
+                }
+
+                if (!missingSEB.empty())
+                {
+                    const fs::path txt =
+                        "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output/MissingSEB.txt";
+                    ensure_dir(txt.parent_path());
+
+                    std::ofstream ofs(txt, std::ios::app);
+                    ofs << runLabel;                       // first column = run number (no leading zeros)
+                    for (int seb : missingSEB) ofs << '\t' << "SEB" << seb;
+                    ofs << '\n';
+              }
+          }
       }
 
       c.SaveAs(outPng.string().c_str());
       return rot;
+
     }; // makePanel
 
     // ── centralities: keep one rotated copy per slice for the overview
@@ -2123,6 +2209,30 @@ class HcalQA : public QA
 
           rot->SetTitle("");
           rot->Draw("COLZ");
+          
+          /* ── add horizontal z-axis title (“counts”) ───────────────────────── */
+          gPad->Update();                                   // palette now exists
+          if (auto* pal = dynamic_cast<TPaletteAxis*>(
+                  rot->GetListOfFunctions()->FindObject("palette")))
+          {
+              // 1. (optional) fine-tune palette position so we know exact NDC
+              //    — keeps label from overlapping the plot frame
+              pal->SetX1NDC(0.88);           // left  edge of palette
+              pal->SetX2NDC(0.92);           // right edge of palette
+              pal->SetY1NDC(0.12);           // bottom
+              pal->SetY2NDC(0.92);           // top
+              gPad->Modified(); gPad->Update();
+
+              // 2. draw the horizontal label
+              const double xMid = 0.5 * (pal->GetX1NDC() + pal->GetX2NDC());
+              const double yTop = pal->GetY2NDC() + 0.015;   // a little above
+
+              TLatex tz;
+              tz.SetNDC();
+              tz.SetTextSize(0.032);          // match your header size
+              tz.SetTextAlign(22);            // centre, centred
+              tz.DrawLatex(xMid, yTop, "counts");
+          }
 
           /* ── descriptive title – plot type + run information ───────────── */
           std::string runID = root.parent_path().filename().string();          // "00067834" or "Combined"
@@ -2262,53 +2372,58 @@ class HcalQA : public QA
 
 
 // ───────────────── Event‑plane observables (sEPD) ──────────────────────
-class SepdPlaneQA : public QA
+class sEPDotherQA : public QA
 {
  public:
-  SepdPlaneQA(std::string t, fs::path b, const CentList& s)
+  sEPDotherQA(std::string t, fs::path b, const CentList& s)
   : QA(std::move(t), std::move(b), s) {}
 
-  bool process(TObject* o) override
-  {
-    if (!o) {
-      log::err("[SepdPlaneQA] nullptr TObject received – skipping.");
-      return false;
+    bool process(TObject* o) override
+    {
+      if (!o) { log::err("[sEPDotherQA] nullptr TObject – skip"); return false; }
+      if (!o->InheritsFrom(TH1::Class())) return false;
+
+      const std::string n = o->GetName();
+      log::trace("[sEPDotherQA] Inspecting \"" + n + "\"");
+
+      /* 1. recognise wanted histograms ----------------------------------- */
+      static const std::vector<std::string> keys = {
+        /* event‑plane QA */
+        "h_Psi1_sEPD", "h_Psi2_sEPD", "h_Psi3_sEPD",
+        "h_Psi1_res_vs_Qsum", "h_Psi2_res_vs_Qsum",
+        "h_Psi3_res_vs_Qsum", "p_R2_vs_cent",
+        /* NEW ► per‑ring QA */
+        "h_SEPD_RingOcc_South", "h_SEPD_RingOcc_North",
+        "h_SEPD_RingQ_South",   "h_SEPD_RingQ_North"
+      };
+      const bool match = std::any_of(keys.begin(), keys.end(),
+                                     [&](const std::string& k){ return n.rfind(k,0)==0; });
+      if (!match) return false;
+
+      /* 2. decide sub‑folder – tileQA vs EventPlaneQA -------------------- */
+      const bool isTile =
+           n.rfind("h_SEPD_RingOcc_",0)==0 || n.rfind("h_SEPD_RingQ_",0)==0;
+      const std::string subdir = isTile ? "sEPD/tileQA" : "sEPD/EventPlaneQA";
+
+      /* 3. build output path & create folders ---------------------------- */
+      fs::path out = cPath(root, sliceKey(n), subdir) / (n + ".png");
+      try { ensure_dir(out.parent_path()); }
+      catch (const std::exception& e) {
+        log::err("[sEPDotherQA] mkdir failed for \"" +
+                 out.parent_path().string() + "\": " + e.what());
+        return false;
+      }
+
+      /* 4. save                                                          */
+      try {
+        save1D(static_cast<TH1*>(o), out);          // TH1 / TH2 / TProfile all OK
+        log::ok("[sEPDotherQA] Saved → " + out.string());
+      } catch (const std::exception& e) {
+        log::err("[sEPDotherQA] save1D failed for \"" + n + "\": " + e.what());
+        return false;
+      }
+      return true;
     }
-    if (!o->InheritsFrom(TH1::Class())) return false;
-
-    const std::string n = o->GetName();
-    log::trace("[SepdPlaneQA] Inspecting \"" + n + "\".");
-
-    /* keep only the Ψₙ & resolution‑proxy histograms */
-    static const std::vector<std::string> keys = {
-      "h_Psi1_sEPD", "h_Psi2_sEPD", "h_Psi3_sEPD",
-      "h_Psi1_res_vs_Qsum", "h_Psi2_res_vs_Qsum", "h_Psi3_res_vs_Qsum",
-      "p_R2_vs_cent"
-    };
-    const bool match = std::any_of(keys.begin(), keys.end(),
-                                   [&](const std::string& k){ return n.rfind(k,0)==0; });
-    if (!match) return false;
-
-    /* build output path & ensure directory exists */
-    fs::path out = cPath(root, sliceKey(n), "sEPD/EventPlaneQA") / (n + ".png");
-    try {
-      ensure_dir(out.parent_path());
-    } catch (const std::exception& e) {
-      log::err("[SepdPlaneQA] Failed to create directory \"" +
-               out.parent_path().string() + "\": " + e.what());
-      return false;
-    }
-
-    /* save histogram – wrap in try/catch to surface ROOT errors */
-    try {
-      save1D(static_cast<TH1*>(o), out);   // works for TH1, TH2, TProfile
-      log::ok("[SepdPlaneQA] Saved → " + out.string());
-    } catch (const std::exception& e) {
-      log::err("[SepdPlaneQA] Exception while saving \"" + n + "\": " + e.what());
-      return false;
-    }
-    return true;
-  }
 };
 
 
@@ -2479,7 +2594,7 @@ using SepdQA = NSDetectorQA<sEPDTag>;
 class EventQA : public QA
 {
 public:
-    using QA::QA;          // inherit all constructors
+    using QA::QA;   // inherit all constructors
 
     // ────────────────────────────────────────────────────────────────
     // 1. Per‑histogram processing
@@ -2496,12 +2611,12 @@ public:
         const bool isVz   = (n.rfind("h_vertexZ_"  ,0) == 0);
         const bool isCent = (n.rfind("h_centrality_",0) == 0);
         if (!isVz && !isCent)
-            return false;                       // nothing to do
+            return false;                       // irrelevant histogram
 
         /* “…/output/<RUN>/<trigger>/EventQA/…”  (always Inclusive) */
         const fs::path outPng = isVz
-            ? root / "MBD"       / "zVertex"   / "VertexZ.png"
-            : root / "centrality"/ "Centrality.png";
+          ? root / "MBD"        / "zVertex"    / "VertexZ.png"
+          : root / "centrality" / "Centrality.png";
         ensure_dir(outPng.parent_path());
 
         /* clone → local ownership → detach from any directory */
@@ -2509,18 +2624,26 @@ public:
         h->SetDirectory(nullptr);
         h->SetStats(0);
 
-        /* we are inside “…/output/<RUN>/<trigger>/EventQA”
-         *            parent_path()           ↑         ↑
-         *            parent_path().parent_path()  ↑
-         *  → the numeric run directory is two levels up               */
-        const std::string runID          = root.parent_path().parent_path().filename().string();
-        const bool        isCombinedPass = (root.parent_path().filename() == "Combined");
+        const std::string runID          = root.parent_path().filename().string();   // "44792384"  or "Combined"
+        const bool        isCombinedPass = (runID == "Combined");
+
+        /* ─── verbose header when we are analysing the COMBINED file ─── */
+        if (isCombinedPass) {
+            std::cout << "\n╔══════════════════════════════════════════════════════════════╗\n"
+                         "║  EventQA  –  COMBINED pass : new histogram received          ║\n"
+                         "╠══════════════════════════════════════════════════════════════╣\n"
+                         "║  Trigger     : " << std::setw(20) << root.filename().string()          << " ║\n"
+                         "║  Histogram   : " << std::setw(40) << n                                   << " ║\n"
+                         "║  Type        : " << std::setw(12) << (isVz?  "vertex‑Z" : "centrality") << " ║\n"
+                         "║  Entries     : " << std::setw(12) << h->GetEntries()                    << " ║\n"
+                         "╚══════════════════════════════════════════════════════════════╝\n";
+        }
 
         /* quick‑reject empty histograms (very low stats)  ---------- */
         if (h->GetEntries() < 20)
         {
-            std::cout << "[EventQA]   " << runID << "  –  histogram ‘"
-                      << n << "’ has <20 entries → skipped\n";
+            std::cout << "[EventQA‑DBG] skip   run=" << runID
+                      << "  hist='" << n << "'  entries=" << h->GetEntries() << '\n';
             return false;
         }
 
@@ -2530,11 +2653,12 @@ public:
         if (isVz)
         {
             const std::string trig = root.filename().string();   // trigger folder name
-            std::cout << "\n[EventQA] ===== vertex‑Z processing =====\n"
-                      << "  runID        : " << runID              << '\n'
-                      << "  trigger      : " << trig               << '\n'
-                      << "  hist name    : " << n                  << '\n'
-                      << "  entries      : " << h->GetEntries()    << '\n';
+            std::cout << "\n[EventQA‑DBG] >>> vertex‑Z processing start <<<\n"
+                      << "   runID          : " << runID           << '\n'
+                      << "   trigger        : " << trig            << '\n'
+                      << "   hist name      : " << n               << '\n'
+                      << "   entries        : " << h->GetEntries() << '\n'
+                      << "   output PNG     : " << outPng          << '\n';
 
             /* ------------------------------------------------------- *
              * STEP‑0 : robust seed from 16‑50‑84 % quantiles          *
@@ -2546,8 +2670,7 @@ public:
             double sigma = 0.5*(q[2]-q[0]);          // 68 % inter‑quantile width
             if (sigma <= 0) sigma = h->GetRMS();
             if (sigma <= 0) sigma = 1.0;             // hard fallback
-
-            std::cout << "  seed μ,σ     : " << mu << ", " << sigma << '\n';
+            std::cout << "[EventQA‑DBG] seed μ=" << mu << "  σ=" << sigma << '\n';
 
             TF1 g("g","gaus", mu-3*sigma, mu+3*sigma);
             g.SetLineColor(kRed+1);
@@ -2578,8 +2701,8 @@ public:
 
                 if (!fitOK)
                 {
-                    std::cout << "    iter " << it << "  –  Fit **FAILED** (status "
-                              << fitStat << ")\n";
+                    std::cout << "[EventQA‑DBG] iter " << it
+                              << "  –  Fit **FAILED** (status " << fitStat << ")\n";
                     break;
                 }
 
@@ -2594,8 +2717,9 @@ public:
                 sigma = sigmaNew;
                 chi2  = g.GetChisquare();
 
-                std::cout << "    iter " << it
-                          << "  μ=" << mu << "  σ=" << sigma
+                std::cout << "[EventQA‑DBG] iter " << it
+                          << "  μ="  << mu
+                          << "  σ="  << sigma
                           << "  χ²=" << chi2
                           << "  status=" << fitStat
                           << (conv ? "  (converged)" : "") << '\n';
@@ -2603,15 +2727,12 @@ public:
                 if (conv) break;
             }
 
-            /* basic sanity filter – reject obviously wrong fits        */
+            /* sanity filter – reject obviously wrong fits            */
             const bool saneParams =
-                   std::fabs(mu) < 50.0        &&     // cm
-                   sigma         > 0.5          &&     // cm
-                   sigma         < 30.0;
-
+                   std::fabs(mu) < 50.0   &&  sigma > 0.5 && sigma < 30.0;
             if (!saneParams)
             {
-                std::cout << "  sanity check **FAILED**  (|μ|<50 cm, 0.5<σ<30 cm)\n";
+                std::cout << "[EventQA‑DBG] sanity check **FAILED**  |μ|<50 cm  && 0.5<σ<30 cm\n";
                 fitOK = false;
             }
 
@@ -2637,39 +2758,41 @@ public:
              * ------------------------------------------------------- */
             const long long nEvt  = static_cast<long long>(h->GetEntries());
             auto& maxEvtForRun    = s_evtCounts[runID];
+            const bool firstForRun = (s_points.find(runID) == s_points.end());
+            const bool takeThis    = fitOK && (firstForRun || nEvt > maxEvtForRun);
 
-            const bool firstForRun    = (s_points.find(runID) == s_points.end());
-            const bool takeThis       = fitOK && ( firstForRun || nEvt > maxEvtForRun );
-
-            std::cout << "  decision     : "
+            std::cout << "[EventQA‑DBG] decision: "
                       << (takeThis ? "STORE" : "skip")
-                      << "   (fitOK=" << fitOK
+                      << "   (fitOK="  << fitOK
                       << ", first="   << firstForRun
                       << ", nEvt="    << nEvt
-                      << ", maxEvt="  << maxEvtForRun << ")\n";
+                      << ", maxEvt="  << maxEvtForRun
+                      << ", combinedPass=" << isCombinedPass << ")\n";
 
-            if (runID != "Combined" && takeThis)
+            /* ---------- store or update counters ------------------ */
+            if (!isCombinedPass && takeThis)
             {
-                VzPoint& p  = s_points[runID];
+                VzPoint& p = s_points[runID];
                 p.mu        = mu;        p.muErr    = muErr;
                 p.sigma     = sigma;     p.sigmaErr = sigErr;
                 p.nEvt      = nEvt;
 
                 p.hist.reset(static_cast<TH1*>(h->Clone()));
                 p.hist->SetDirectory(nullptr);
-                p.hist->Scale( 1.0 / p.hist->GetEntries() );   // normalise for overlay
+                p.hist->Scale(1.0 / p.hist->GetEntries());   // normalise overlay
 
                 maxEvtForRun = nEvt;      // update AFTER successful storage
-                std::cout << "  → stored as current best for run " << runID << '\n';
+                std::cout << "[EventQA‑DBG] stored as current BEST for run "
+                          << runID << '\n';
             }
-            else if (nEvt > maxEvtForRun)
+            else if (!isCombinedPass && nEvt > maxEvtForRun)
             {
-                /* keep only the counter so a later good fit can be compared */
-                maxEvtForRun = nEvt;
-                std::cout << "  → updated event counter only ("
-                          << maxEvtForRun << ")\n";
+                maxEvtForRun = nEvt;      // keep counter so later good fit can compare
+                std::cout << "[EventQA‑DBG] updated event counter only → "
+                          << maxEvtForRun << '\n';
             }
-            std::cout << "[EventQA] ===== vertex‑Z done =====\n";
+
+            std::cout << "[EventQA‑DBG] <<< vertex‑Z processing end <<<\n";
         }
 
         // ============================================================
@@ -2677,24 +2800,21 @@ public:
         // ============================================================
         else   /* isCent */
         {
+            std::cout << "[EventQA‑DBG] centrality hist  run=" << runID
+                      << "  entries=" << h->GetEntries() << '\n';
+
             TCanvas c("c_cent","",900,600);
             h->Draw();
 
-            /* print the run‑number in the upper‑right corner */
-            TLatex tx;
-            tx.SetNDC();               // Normalised device coordinates
-            tx.SetTextAlign(31);       // right‑aligned, top‑aligned
-            tx.SetTextSize(0.04);
+            TLatex tx; tx.SetNDC(); tx.SetTextAlign(31); tx.SetTextSize(0.04);
             tx.DrawLatex(0.97,0.94, runID.c_str());
-
             c.SaveAs(outPng.string().c_str());
 
-            if (runID != "Combined")
+            if (!isCombinedPass)
             {
                 std::unique_ptr<TH1> cp(static_cast<TH1*>(h->Clone()));
                 cp->SetDirectory(nullptr);
-                if (cp->GetEntries() > 0)
-                    cp->Scale(1.0 / cp->GetEntries());
+                if (cp->GetEntries() > 0) cp->Scale(1.0 / cp->GetEntries());
                 s_centHists[runID] = std::move(cp);
             }
         }
@@ -2706,13 +2826,33 @@ public:
     // ────────────────────────────────────────────────────────────────
     ~EventQA() override
     {
-        const std::string runID = root.parent_path().filename().string();
-        if (runID != "Combined" || s_summaryWritten)
-            return;                         // only once, in the Combined pass
+        /* we are inside “…/output/Combined/<trigger>”                */
+        const bool combinedHere = (root.parent_path().filename() == "Combined");
+        if (!combinedHere || s_summaryWritten) return;
         s_summaryWritten = true;
 
-        const fs::path outDir = root.parent_path();      // “…/Combined”
-        std::cout << "\n[EventQA] ===== FINAL SUMMARY =====\n";
+        std::cout << "\n╔══════════════════════════════════════════════════════════════╗\n"
+                     "║                EventQA  –  COMBINED SUMMARY                 ║\n"
+                     "╠═══════════════════════╤═════════════════════════════════════╣\n"
+                     "║  Vertex‑Z fits        │ " << std::setw(8) << s_points.size()    << "                                 ║\n"
+                     "║  Centrality histograms│ " << std::setw(8) << s_centHists.size() << "                                 ║\n"
+                     "╚═══════════════════════╧═════════════════════════════════════╝\n";
+        std::cout << std::left;
+        std::cout << "\n┌────────┬───────────┬──────────┬───────────┐\n"
+                     "│  Run   │   μ (cm)  │ σ (cm)   │  Events   │\n"
+                     "├────────┼───────────┼──────────┼───────────┤\n";
+        for (const auto& [run,p] : s_points)
+            std::cout << "│ " << std::setw(6)  << run
+                      << " │ " << std::setw(9) << std::fixed << std::setprecision(2) << p.mu
+                      << " │ " << std::setw(9) << p.sigma
+                      << " │ " << std::setw(9) << p.nEvt << " │\n";
+        std::cout << "└────────┴───────────┴──────────┴───────────┘\n\n";
+
+
+        /* print table of stored run points for extra visibility      */
+        for (auto& [run,p] : s_points)
+            std::cout << "    run " << run << "  μ=" << p.mu
+                      << "  σ=" << p.sigma << "  nEvt=" << p.nEvt << '\n';
 
         /* ---------- helper: reproducible colour stream ------------ */
         auto nextColour = [](){
@@ -2734,16 +2874,17 @@ public:
             for (auto& [run,p] : s_points)
             {
                 Color_t col = nextColour();
-                p.hist->SetLineColor(col);
-                p.hist->SetLineWidth(2);
+                p.hist->SetLineColor(col); p.hist->SetLineWidth(2);
                 p.hist->Draw(first ? "HIST" : "HIST SAME");
                 leg.AddEntry(p.hist.get(), run.c_str(), "l");
                 first = false;
             }
             leg.Draw();
+
             fs::path vzOverlay = root / "MBD" / "zVertex" / "VertexZ_AllRuns.png";
             ensure_dir(vzOverlay.parent_path());
             c.SaveAs(vzOverlay.string().c_str());
+            std::cout << "    saved → " << vzOverlay << '\n';
         }
 
         /* (B) centrality overlay ----------------------------------- */
@@ -2751,29 +2892,29 @@ public:
         {
             std::cout << "  – writing Centrality_AllRuns overlay\n";
             TCanvas c("c_cent_overlay","Centrality – all runs",900,600);
-            TLegend leg(0.5,0.45,0.75,0.65); leg.SetBorderSize(0);
+            TLegend leg(0.50,0.45,0.75,0.65); leg.SetBorderSize(0);
 
             bool first = true;
             for (auto& [run,h] : s_centHists)
             {
                 Color_t col = nextColour();
-                h->SetLineColor(col);
-                h->SetLineWidth(2);
+                h->SetLineColor(col); h->SetLineWidth(2);
                 h->Draw(first ? "HIST" : "HIST SAME");
                 leg.AddEntry(h.get(), run.c_str(), "l");
                 first = false;
             }
             leg.Draw();
+
             fs::path centOverlay = root / "centrality" / "Centrality_AllRuns.png";
             ensure_dir(centOverlay.parent_path());
             c.SaveAs(centOverlay.string().c_str());
+            std::cout << "    saved → " << centOverlay << '\n';
         }
 
         /* (C)  μ,σ  versus run number ------------------------------ */
         if (s_points.size() > 1)
         {
             std::cout << "  – writing μ,σ vs run summary plot\n";
-
             std::vector<int> runs;
             for (auto& [r,_] : s_points)
                 if (std::all_of(r.begin(),r.end(),::isdigit))
@@ -2784,7 +2925,8 @@ public:
             std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
             for (int i = 0; i < n; ++i)
             {
-                const auto& p = s_points[std::to_string(runs[i])];
+                std::string runStr = Form("%08d", runs[i]);   // keep the 8‑digit run key
+                const auto& p      = s_points.at(runStr);     // fetch existing entry
                 x[i]   = runs[i];
                 yMu[i] = p.mu;        eMu[i] = p.muErr;
                 ySi[i] = p.sigma;     eSi[i] = p.sigmaErr;
@@ -2794,10 +2936,8 @@ public:
                                                       nullptr,eMu.data());
             auto gSi = std::make_unique<TGraphErrors>(n,x.data(),ySi.data(),
                                                       nullptr,eSi.data());
-            gMu->SetMarkerStyle(kFullCircle);
-            gMu->SetLineWidth(2);
-            gSi->SetMarkerStyle(kOpenCircle);
-            gSi->SetLineWidth(2);
+            gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+            gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
             /* dynamic Y‑ranges ------------------------------------ */
             double minMu = yMu[0] - eMu[0], maxMu = yMu[0] + eMu[0];
@@ -2811,56 +2951,48 @@ public:
             double absMu = std::max(std::fabs(minMu), std::fabs(maxMu));
             if (absMu <= 0.) absMu = 0.01;
 
-            gMu->SetMinimum(-1.10 * absMu);
-            gMu->SetMaximum( 1.10 * absMu);
-            gSi->SetMinimum(0.0);
-            gSi->SetMaximum(1.10 * maxSig);
+            gMu->SetMinimum(-1.10 * absMu); gMu->SetMaximum(1.10 * absMu);
+            gSi->SetMinimum(0.0);           gSi->SetMaximum(1.10 * maxSig);
 
             TCanvas c("c_mu_sigma_vs_run","vertex‑Z  #mu,#sigma  vs run",900,800);
 
             TPad* p1 = new TPad("p1","",0,0.35,1,1);
-            p1->SetBottomMargin(0.02);
-            p1->Draw();
-            p1->cd();
+            p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
             gMu->SetTitle(";Run number;#mu  [cm]");
             gMu->Draw("AP");
 
             c.cd();
             TPad* p2 = new TPad("p2","",0,0,1,0.32);
-            p2->SetTopMargin(0.02);
-            p2->SetBottomMargin(0.30);
-            p2->Draw();
-            p2->cd();
+            p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
+            p2->Draw(); p2->cd();
             gSi->SetTitle(";Run number;#sigma  [cm]");
             gSi->Draw("AP");
 
             fs::path pngRun = root / "MBD" / "zVertex" / "VertexZ_MeanSigma_vs_Run.png";
             ensure_dir(pngRun.parent_path());
             c.SaveAs(pngRun.string().c_str());
+            std::cout << "    saved → " << pngRun << '\n';
         }
 
-        std::cout << "[EventQA] ===== summary complete =====\n";
+        std::cout << "[EventQA‑DBG] ===== summary complete =====\n";
     }
 
     // ────────────────────────────────────────────────────────────────
-    // 3. Static containers (shared across ALL EventQA instances)
+    // 3. Static containers
     // ────────────────────────────────────────────────────────────────
     struct VzPoint {
         double mu{}, muErr{}, sigma{}, sigmaErr{};
-        long long nEvt{};                         // statistics for bookkeeping
+        long long nEvt{};
         std::unique_ptr<TH1> hist;
     };
 
-    /* runID → fit results & histogram */
-    static inline std::unordered_map<std::string,VzPoint>               s_points;
-    /* runID → normalised centrality histogram */
-    static inline std::unordered_map<std::string,std::unique_ptr<TH1>>  s_centHists;
-    /* runID → highest event count across triggers */
-    static inline std::unordered_map<std::string,long long>             s_evtCounts;
+    static inline std::unordered_map<std::string,VzPoint>              s_points;
+    static inline std::unordered_map<std::string,std::unique_ptr<TH1>> s_centHists;
+    static inline std::unordered_map<std::string,long long>            s_evtCounts;
 
     static inline bool  s_summaryWritten = false;
 
-    /* accessor for final summary in main() */
+    /* accessor for external code if needed */
     static const auto& eventCounts() { return s_evtCounts; }
 };
 
@@ -3385,6 +3517,116 @@ class VnPlotQA : public QA
 };
 
 
+// ╔══════════════════════════════════════════════╗
+// ║               T r i g g e r  Q A             ║
+// ╚══════════════════════════════════════════════╝
+class TriggerQA : public QA
+{
+    enum class Lvl { DBG, INF, WRN, ERR };
+    static void log(Lvl l, const std::string& m)
+    {
+        static const char* tag[]{"DBG","INF","WRN","ERR"};
+        std::ostream& os = (l==Lvl::ERR) ? std::cerr : std::cout;
+        os << "[TriggerQA] " << tag[static_cast<int>(l)] << "  " << m << '\n';
+    }
+
+public:
+    using QA::QA;                       // inherit constructors
+
+    // ────────────────────────────────────────────────────────────────
+    // 1. per‑histogram processing
+    // ────────────────────────────────────────────────────────────────
+    bool process(TObject* o) override
+    {
+        if (!o->InheritsFrom(TH1::Class()))          // neither TH1 nor TH2
+            return false;
+
+        const std::string n = o->GetName();
+
+        /* --------  A. MB×Trigger correlation  (TH2I)  --------------- */
+        if (n == "h_MB_vs_Trigger")
+        {
+            auto* h2 = dynamic_cast<TH2*>(o);
+            if (!h2) return false;
+
+            fs::path out = root / "triggerQA" / "MBTrigCorrelation.png";
+            ensure_dir(out.parent_path());
+
+            TCanvas c("c_corr","MB vs Trigger decision",1200,700);
+            c.SetRightMargin(0.18);
+            h2->SetStats(0);
+            h2->SetTitle("Minimum‑bias vs Trigger decision;Trigger key;Event category");
+            c.SetLogz();
+            h2->Draw("COLZ TEXT");
+
+            /* add raw totals in a text box */
+            TLatex tx; tx.SetNDC(); tx.SetTextSize(0.03); tx.SetTextAlign(13);
+            const double padL=c.GetLeftMargin(), padT=c.GetTopMargin();
+            int nTrig=h2->GetNbinsX();
+            long long totEvt=0, bothOK=0;
+            for (int ix=1; ix<=nTrig; ++ix){
+                bothOK += static_cast<long long>(h2->GetBinContent(ix,4));
+                for (int iy=1; iy<=4; ++iy)
+                    totEvt += static_cast<long long>(h2->GetBinContent(ix,iy));
+            }
+            tx.DrawLatex(padL+0.02,1-padT-0.04,
+                         Form("Total events : %lld",totEvt));
+            tx.DrawLatex(padL+0.02,1-padT-0.08,
+                         Form("Accepted (MB && Trig) : %lld (%.2f%%)",
+                              bothOK, (totEvt?100.*bothOK/totEvt:0)));
+
+            c.SaveAs(out.string().c_str());
+            log(Lvl::INF,"wrote " + out.string());
+            return true;
+        }
+
+        /* --------  B. scalar trigger counters  ---------------------- */
+        const bool isCnt =
+              n.find("cnt_")  == 0 ||
+              n.rfind("h_vtxRelToCut_",0) == 0;
+        if (!isCnt) return false;
+
+        auto* h1 = dynamic_cast<TH1*>(o);
+        if (!h1) return false;
+
+        std::string subdir;
+        if (n.find("_raw")    != std::string::npos) subdir = "bitCounts/raw";
+        else if (n.find("_live")   != std::string::npos) subdir = "bitCounts/live";
+        else if (n.find("_scaled") != std::string::npos) subdir = "bitCounts/scaled";
+        else if (n.rfind("h_vtxRelToCut_",0)==0)         subdir = "vtxCutCompliance";
+        else                                            subdir = "misc";
+
+        fs::path out = root / "triggerQA" / subdir / (n + ".png");
+        ensure_dir(out.parent_path());
+
+        TCanvas c("c_cnt","",800,600);
+        h1->SetStats(0); h1->SetLineWidth(2);
+        const double yMax = 1.15 * h1->GetMaximum();
+        h1->SetMaximum(yMax>0 ? yMax : 1.);        // avoids 0‑range canvases
+        h1->Draw("HIST TEXT00");
+        c.SaveAs(out.string().c_str());
+
+        log(Lvl::DBG,"saved " + out.string());
+        return true;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 2. destructor – no combined overlay needed, but emit recap
+    // ────────────────────────────────────────────────────────────────
+    ~TriggerQA() override
+    {
+        if (_emitted || root.parent_path().parent_path().filename()!="Combined")
+            return;
+        _emitted = true;
+        log(Lvl::INF,"Combined run – TriggerQA finished (no overlays requested)");
+    }
+
+private:
+    static inline bool _emitted = false;   // only once in Combined pass
+};
+
+
+
 /* ────────────────────────────────────────────────────────────────────
  *  9.  MAIN DRIVER  –  per‑run analysis in parallel + combined pass
  *      (process pool implementation – safe for all ROOT classes)
@@ -3422,18 +3664,33 @@ void runOneQaPass(const std::string& inFile,
         if (!kTriggersWanted.count(trg)) continue;      // ignore unwanted triggers
 
         TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
-        TIter itH(dTrig->GetListOfKeys());
+          /* recurse through all sub‑directories and stop as soon as
+             one non‑empty TH1 is found – no external state needed      */
+        std::function<void(TDirectory*)> probeDir = [&](TDirectory* dir)
+        {
+              TIter it(dir->GetListOfKeys());
+              while (auto* key = dynamic_cast<TKey*>(it()))
+              {
+                  /* descend first */
+                  if (strcmp(key->GetClassName(),"TDirectoryFile") == 0) {
+                      probeDir(static_cast<TDirectory*>(key->ReadObj()));
+                      if (hasStatistics) return;          // early exit
+                      continue;
+                  }
 
-        while (auto* kHist = dynamic_cast<TKey*>(itH())) {
-          std::unique_ptr<TObject> obj(kHist->ReadObj());   // RAII – autodelete
-          if (!obj->InheritsFrom(TH1::Class())) continue;   // TH2/TH3 inherit TH1
+                  /* plain object */
+                  TObject* obj = key->ReadObj();
+                  TH1* h = dynamic_cast<TH1*>(obj);
+                  if (h && h->GetEntries() > 0 && h->Integral() > 0) {
+                      hasStatistics = true;               // mark and abort walk
+                      return;
+                  }
+              }
+          };
 
-          TH1* h = static_cast<TH1*>(obj.get());
-          if (h->GetEntries() > 0 && h->Integral() > 0) {   // non‑empty hist found
-            hasStatistics = true;
-            break;
-          }
-        }
+        /* kick off the recursive probe at trigger level */
+        probeDir(dTrig);
+          
         if (hasStatistics) break;               // early exit if anything has stats
       }
     }
@@ -3501,8 +3758,8 @@ void runOneQaPass(const std::string& inFile,
                             "EMCal/otherQA", "EMCal/invMassQA", "EMCal/invMassQA/cutQA",
                             "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
                             "MBD/otherQA", "MBD/zVertex",
-                            "sEPD/OtherQA", "sEPD/EventPlaneQA",
-                            "jetQA/generalHistos", "jetQA/summary"})
+                            "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
+                            "jetQA/generalHistos", "jetQA/summary", "triggerQA" })
             ensure_dir(b / sub);
       }
 
@@ -3515,23 +3772,42 @@ void runOneQaPass(const std::string& inFile,
     qa.emplace_back(std::make_unique<HcalQA >(trg,base,slices));
     qa.emplace_back(std::make_unique<MbdQA  >(trg,base,slices,mbdCache));
     qa.emplace_back(std::make_unique<SepdQA >(trg,base,slices,sepdCache));
-    qa.emplace_back(std::make_unique<SepdPlaneQA>(trg,base,slices));
+    qa.emplace_back(std::make_unique<sEPDotherQA>(trg,base,slices));
     qa.emplace_back(std::make_unique<JetQA >(trg,base,slices));
     qa.emplace_back(std::make_unique<VnPlotQA>(trg, base, slices));
     qa.emplace_back(std::make_unique<EventQA>(trg, base, slices));
+    qa.emplace_back(std::make_unique<TriggerQA>(trg, base, slices));
 
 
     /* histogram loop ----------------------------------------------- */
-    TIter itH(dTrig->GetListOfKeys());
-    while (auto* kh = dynamic_cast<TKey*>(itH())) {
-      log::trace("Handling [" + trg + "] \"" + string(kh->GetName()) + "\"");
-      TObject* obj = kh->ReadObj();
-      if (obj->InheritsFrom(TH1::Class()))
-        static_cast<TH1*>(obj)->SetDirectory(nullptr);
+      /* ------------------------------------------------------------------ *
+       *  recurse through every sub‑directory and hand each object to the
+       *  active QA modules; keeps the statistics counters unchanged
+       * ------------------------------------------------------------------ */
+      auto walkDir = [&](TDirectory* dir, auto&& walk)->void
+      {
+          TIter it(dir->GetListOfKeys());
+          while (auto* key = dynamic_cast<TKey*>(it()))
+          {
+              /* ---------- descend first, if this entry is a directory ---- */
+              if (strcmp(key->GetClassName(),"TDirectoryFile") == 0) {
+                  walk(static_cast<TDirectory*>(key->ReadObj()), walk);
+                  continue;
+              }
 
-      ++stat[trg].tot;
-      for (auto& m : qa) if (m->process(obj)) { ++stat[trg].used; break; }
-    }
+              /* ---------- plain object (histogram, profile, …) ----------- */
+              TObject* obj = key->ReadObj();
+              if (obj->InheritsFrom(TH1::Class()))
+                  static_cast<TH1*>(obj)->SetDirectory(nullptr);
+
+              ++stat[trg].tot;
+              for (auto& m : qa)
+                  if (m->process(obj)) { ++stat[trg].used; break; }
+          }
+      };
+
+      /* kick off the recursion at the trigger directory */
+      walkDir(dTrig, walkDir);
 
     log::ok("Trigger " + trg + ": processed " +
             std::to_string(stat[trg].tot) + " objects");
@@ -3553,10 +3829,10 @@ void runOneQaPass(const std::string& inFile,
 
   log::ok("All outputs under " + kOutputBase);
     
-    /* ------------------------------------------------------------------ *
-     *  RUN‑BY‑RUN EVENT SUMMARY  (vertex‑Z entries as proxy for events)   *
-     * ------------------------------------------------------------------ */
-    {
+  /* ------------------------------------------------------------------ *
+   *  RUN‑BY‑RUN EVENT SUMMARY  (vertex‑Z entries as proxy for events)   *
+   * ------------------------------------------------------------------ */
+  {
         using term::CLR_BOLD; using term::CLR_RST;
         const auto& ev = EventQA::eventCounts();
         if (!ev.empty())
@@ -3611,46 +3887,95 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
         log::err("No input files found in " + kInputDir.string());
         return;
     }
-
     /* ------------------------------------------------------------------
-     *  Random sampling that guarantees `nSample` non‑empty runs
+     *  Top‑N sampling based on statistics in h_vertexZ_<trigger>
+     *      – prints a detailed ranked table before sampling
      * ----------------------------------------------------------------- */
     if (nSample > 0) {
-        std::mt19937 rng( static_cast<unsigned>(
-            std::chrono::steady_clock::now().time_since_epoch().count()) );
 
-        std::shuffle(runFiles.begin(), runFiles.end(), rng);
+        struct RunStat { fs::path file; long long nEvt; std::string run; };
+        std::vector<RunStat> ranked;
+        ranked.reserve(runFiles.size());
 
-        std::vector<fs::path> picked;
-        picked.reserve(nSample);
+        log::banner("Run pre‑scan – counting entries in h_vertexZ_<trigger>");
 
+        /* pass‑1 : inspect each ROOT file once ------------------------- */
         for (const auto& f : runFiles) {
-            if (picked.size() == static_cast<std::size_t>(nSample))
-                break;                                  // enough good runs
 
-            /* quick “is‑empty?” probe – re‑use the logic from runOneQaPass */
-            std::unique_ptr<TFile> tf(TFile::Open(f.c_str(), "READ"));
-            bool nonEmpty = false;
-            if (tf && !tf->IsZombie()) {
-                TIter it(tf->GetListOfKeys());
-                while (auto* k = dynamic_cast<TKey*>(it())) {
-                    if (strcmp(k->GetClassName(), "TDirectoryFile")) continue;
-                    auto* trgDir = static_cast<TDirectory*>(k->ReadObj());
-                    TIter itH(trgDir->GetListOfKeys());
-                    while (auto* hkey = dynamic_cast<TKey*>(itH())) {
-                        std::unique_ptr<TObject> hObj(hkey->ReadObj());
-                        auto* h = dynamic_cast<TH1*>(hObj.get());
-                        if (h && h->GetEntries() > 0 && h->Integral() > 0) {
-                            nonEmpty = true; break;
-                        }
-                    }
-                    if (nonEmpty) break;
-                }
+            /* extract the 8‑digit run number from the filename */
+            std::smatch m;
+            std::string fname = f.filename().string();
+            std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)"));
+            std::string runStr = m.empty() ? "UNKNOWN" : m[1].str();
+
+            std::unique_ptr<TFile> tf( TFile::Open(f.c_str(), "READ") );
+            if (!tf || tf->IsZombie()) {
+                log::warn("   ↳ " + runStr + "  – file unreadable, skipped");
+                continue;
             }
-            if (nonEmpty) picked.push_back(f);
+
+            long long bestInFile = 0;               /* keep largest entry count */
+            TIter itTop( tf->GetListOfKeys() );
+
+            while (auto* kDir = dynamic_cast<TKey*>(itTop())) {
+
+                if (strcmp(kDir->GetClassName(), "TDirectoryFile")) continue;
+                const std::string trg = kDir->GetName();
+                if (!kTriggersWanted.count(trg)) continue;   /* other triggers */
+
+                TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
+                const std::string hName = "h_vertexZ_" + trg;
+
+                if (auto* h = dynamic_cast<TH1*>( dTrig->Get(hName.c_str()) ))
+                    bestInFile = std::max(bestInFile,
+                                  static_cast<long long>(h->GetEntries()));
+            }
+
+            log::trace("   ↳ run " + runStr +
+                       "   entries = " + std::to_string(bestInFile));
+
+            if (bestInFile > 0)                      /* discard fully empty runs */
+                ranked.push_back( {f, bestInFile, runStr} );
         }
-        runFiles.swap(picked);                           // keep only good ones
+
+        if (ranked.empty()) {
+            log::err("No non‑empty runs found – aborting sampling.");
+            return;
+        }
+
+        /* order by “most statistics” (descending) --------------------- */
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const RunStat& a, const RunStat& b)
+                  { return a.nEvt > b.nEvt; });
+
+        /* pretty table before trimming -------------------------------- */
+        log::banner("Top‑run ranking (h_vertexZ entries)");
+        std::cout << term::CLR_BOLD
+                  << std::left  << std::setw(6)  << "Rank"
+                  << std::setw(12) << "Run"
+                  << std::right << std::setw(15) << "Entries"
+                  << term::CLR_RST << "\n";
+
+        int rankIdx = 1;
+        for (const auto& r : ranked) {
+            std::cout << std::left  << std::setw(6)  << rankIdx++
+                      << std::setw(12) << r.run
+                      << std::right << std::setw(15) << r.nEvt << "\n";
+            if (rankIdx > nSample && nSample > 0) break;
+        }
+
+        /* keep only the first N -------------------------------------- */
+        if (static_cast<int>(ranked.size()) > nSample)
+            ranked.resize(nSample);
+
+        log::info("Selected " + std::to_string(ranked.size()) +
+                  " run(s) with the highest statistics for combined pass.");
+
+        /* rebuild runFiles with the selected paths -------------------- */
+        runFiles.clear();
+        for (auto& r : ranked) runFiles.push_back( std::move(r.file) );
     }
+
 
     if (testRun && runFiles.size() > 1)
         runFiles.resize(1);            // old behaviour

@@ -353,6 +353,10 @@
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TStyle.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TColor.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TH2Poly.h
+./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TPaletteAxis.h
+./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TPave.h
+./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TBox.h
+./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TGaxis.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/ROOT/TProcessExecutor.hxx
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/MPCode.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/MPSendRecv.h
@@ -381,8 +385,6 @@
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/ROOT/TSequentialExecutor.hxx
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/Math/MinimizerOptions.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TLegend.h
-./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TPave.h
-./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TBox.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TGraphErrors.h
 ./analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/RVersion.h /Users/patsfan753/Desktop/analysis/env/include/ROOT/RConfig.hxx /Users/patsfan753/Desktop/analysis/env/include/TClass.h /Users/patsfan753/Desktop/analysis/env/include/TDictAttributeMap.h /Users/patsfan753/Desktop/analysis/env/include/TInterpreter.h /Users/patsfan753/Desktop/analysis/env/include/TROOT.h /Users/patsfan753/Desktop/analysis/env/include/TBuffer.h /Users/patsfan753/Desktop/analysis/env/include/TMemberInspector.h /Users/patsfan753/Desktop/analysis/env/include/TError.h /Users/patsfan753/Desktop/analysis/env/include/RtypesImp.h /Users/patsfan753/Desktop/analysis/env/include/TIsAProxy.h /Users/patsfan753/Desktop/analysis/env/include/TFileMergeInfo.h /Users/patsfan753/Desktop/analysis/env/include/TCollectionProxyInfo.h /Users/patsfan753/Desktop/analysis/env/bin/rootcling
 analyzeRun24or25auau_cpp__ROOTBUILDVERSION= 6.34.04
