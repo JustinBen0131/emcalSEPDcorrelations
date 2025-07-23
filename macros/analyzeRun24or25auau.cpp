@@ -498,11 +498,11 @@ class Pi0QA : public QA
                 log(Lvl::INFO,"cutTag initialised → " + cutTag);
             } else if (combDir != cutTag) {
                 // ── 1. finish the combination we just completed ──────────────────
-                writeSummaryPanels();                       // existing call
+                writeSummaryPanels();
 
-                if (runID == "Combined") {                  // produce run‑summary only
+                if (runID == "Combined") {
                     writeRunSummary();
-                    s_runPoints.clear();                    //  (optional) keep slices separate
+                    s_runPoints.clear();
                 }
 
                 // ── 2. reset caches and move on to the next cut tag ───────────────
@@ -511,7 +511,7 @@ class Pi0QA : public QA
                 _fitSummary.clear();       // ← CLEAR per‑spectrum fit book‑keeping
                 _storedFit.clear();
                 _storedEtaFit.clear();
-                cutTag = combDir;                           // now safe – nothing lost
+                cutTag = combDir;
             }
 
             /* destination directory ------------------------------------ */
@@ -662,22 +662,66 @@ class Pi0QA : public QA
                       << slice << ',' << w << ',' << ratio << ',' << rErr << '\n';
             }
 
-           /* --------------------------------------------------------------- *
-            * 6.  Pretty plot of the single spectrum                          *
-            * --------------------------------------------------------------- */
             {
                 log(Lvl::INFO,"rendering spectrum → " + outPng.string());
-                TCanvas c; h->SetStats(0); h->Draw();
+                /* -------------------------------------------------------- *
+                 * Draw everything on a throw‑away canvas “cTmp”
+                 * -------------------------------------------------------- */
+                auto cTmp = std::make_unique<TCanvas>("cTmp","",800,600);
+                h->SetStats(0); h->Draw();
                 poly.Draw("SAME"); total.Draw("SAME");
                 if (_storedEtaFit.count(slice))
                     _storedEtaFit[slice]->Draw("SAME");
 
-                TLatex tl; tl.SetNDC(); tl.SetTextSize(0.038); tl.SetTextAlign(13);
-                tl.DrawLatex(0.14,0.89,
-                             Form("E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
-                                  ck.E,ck.asy,ck.chi));
+                TLatex tl; tl.SetNDC(); tl.SetTextSize(0.032); tl.SetTextAlign(13);
 
-                TLegend leg(0.55,0.64,0.88,0.88); leg.SetBorderSize(0); leg.SetTextAlign(12);
+                /* ---------------------------------------------------------------
+                 *  Header line layout
+                 *      • always print centrality (“Inclusive” or “Cent X‑Y %”)
+                 *      • if pT range is −1 … −1  →  show “pT IND”
+                 *        else                    →  show explicit pT range
+                 * --------------------------------------------------------------- */
+                std::string centLabel =
+                    (slice == "Inclusive") ?
+                        "Inclusive" :
+                        Form("Cent %s %%", slice.c_str());
+
+                std::string ptLabel;
+                if (ck.pLo < -0.5 && ck.pHi < -0.5)          // pT‑integrated spectrum
+                    ptLabel = "pT IND";
+                else
+                    ptLabel = Form("pT %.2f #minus %.2f GeV/c", ck.pLo, ck.pHi);
+
+                // line 1 : centrality  +  pT range
+                tl.DrawLatex(0.14, 0.88,
+                             Form("%s   %s",
+                                  centLabel.c_str(), ptLabel.c_str()));
+
+                // line 2 : cut summary
+                tl.DrawLatex(0.14, 0.85,
+                             Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
+                                  ck.E, ck.asy, ck.chi));
+
+                
+                
+                // ──────────────────────────────────────────────────────────────────────
+                // Legend placement & style
+                //   • default  : top‑right, narrow height (≈ 0.14)
+                //   • busy bins: bottom‑right, same height
+                //   • bigger text + tighter line spacing so “μ” and “σ” sit closer
+                // ──────────────────────────────────────────────────────────────────────
+                double legY1 = 0.71, legY2 = 0.85;                 // default: top‑right, 0.14 tall
+                if (pTInt && (slice == "0_10" || slice == "10_20" || slice == "20_30" || slice == "30_40")) {
+                    legY1 = 0.15;                                  // bottom‑right window
+                    legY2 = 0.28;                                  // same 0.14 tall
+                }
+
+                TLegend leg(0.45, legY1, 0.88, legY2);
+                leg.SetBorderSize(0);
+                leg.SetTextAlign(12);
+                leg.SetTextSize(0.032);        // larger font
+                leg.SetEntrySeparation(0.006); // tighter vertical gap
+
                 leg.AddEntry((TObject*)nullptr,
                              Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV",piMu,piMuErr),"");
                 leg.AddEntry((TObject*)nullptr,
@@ -689,7 +733,26 @@ class Pi0QA : public QA
                                  Form("          #sigma = %.3f #pm %.3f GeV",etaSig,etaSigErr),"");
                 }
                 leg.Draw();
-                c.SaveAs(outPng.string().c_str());
+
+                cTmp->SaveAs(outPng.string().c_str());
+
+                /* -------------------------------------------------------- *
+                 * Cache the fully‑decorated canvas:
+                 *   • pT‑independent  →  _centralCanvas   (one per slice)
+                 *   • pT‑binned       →  _ptCanvas        (many per slice)
+                 * -------------------------------------------------------- */
+                if (pTInt && n.find("pt-1.0to-1.0") != std::string::npos) {
+                    _centralCanvas[slice].reset( static_cast<TCanvas*>(cTmp->Clone()) );
+                    log(Lvl::DBG,"cached decorated CENTRAL canvas for slice \""+slice+"\"");
+                } else {        /* pT‑binned spectrum */
+                    /* give every clone a UNIQUE name to keep all of them alive */
+                    const std::string cvName =
+                        Form("cPt_%s_%zu", slice.c_str(), _ptCanvas[slice].size());
+                    _ptCanvas[slice].push_back(
+                        std::unique_ptr<TCanvas>( static_cast<TCanvas*>(cTmp->Clone(cvName.c_str())) ) );
+                    log(Lvl::DBG,Form("cached pT canvas for slice \"%s\"  (count now %zu)",
+                                      slice.c_str(), _ptCanvas[slice].size()));
+                }
             }
 
            /* --------------------------------------------------------------- *
@@ -891,6 +954,31 @@ class Pi0QA : public QA
             for (const auto& sl : slices)                     /* keep slice order */
             {
                 log(Lvl::DBG,"writeSummaryPanels(): processing slice \""+sl+"\"");
+
+                /* If a fully‑decorated canvas was cached earlier, just paste it */
+                auto itCv = _centralCanvas.find(sl);
+                if (itCv != _centralCanvas.end()) {
+                    cGrid.cd(pad++);                     // activate next pad
+                    itCv->second->DrawClonePad();        // reproduce exactly
+                    slicesDone.push_back(sl);
+                    log(Lvl::DBG," → drew cached canvas for slice \""+sl+"\"");
+                    /* collect μ & σ from stored fits for the graphs */
+                    if (_storedFit.count(sl)) {
+                        const auto& f = _storedFit[sl].total;
+                        vMu.push_back(f->GetParameter(1));
+                        vMuErr.push_back(f->GetParError(1));
+                        vSi.push_back(f->GetParameter(2));
+                        vSiErr.push_back(f->GetParError(2));
+                        if (sl!="Inclusive") {
+                            int lo=std::stoi(sl.substr(0,sl.find('_')));
+                            int hi=std::stoi(sl.substr(sl.find('_')+1));
+                            vC .push_back(0.5*(lo+hi));  vCerr.push_back(0.5*(hi-lo));
+                        }
+                    }
+                    continue;   // pad is done – proceed with next slice
+                }
+
+                /* ---------- legacy fall‑back path ---------- */
                 auto it = _centralHists.find(sl);
                 if (it == _centralHists.end()) {
                     log(Lvl::WARN,"writeSummaryPanels(): central slice \""+sl+"\" missing in cache");
@@ -1132,16 +1220,34 @@ class Pi0QA : public QA
                 log(Lvl::DBG,"writeSummaryPanels(): pT‑dependent plots for slice "+sl);
 
                 /* (C1) first six spectra grid ---------------------------------- */
-                const int nShow=std::min<int>(6,itH->second.size());
+                const int nShow = 6;                        // <‑‑ always 6 pads
                 TCanvas cGridPt(Form("c_pi0_ptGrid_%s",sl.c_str()),
                                 Form("#pi^{0} invariant mass – Cent %s %% (first six p_{T} bins)",sl.c_str()),
                                 1800,1000);
                 cGridPt.Divide(3,2,0.01,0.01);
-                for(int i=0;i<nShow;++i){
-                    cGridPt.cd(i+1);
-                    TH1* hPt=itH->second[i];
-                    hPt->SetStats(0);
-                    hPt->Draw();
+
+                for (int i = 0; i < nShow; ++i) {
+                    cGridPt.cd(i + 1);
+
+                    bool drawn = false;
+                    auto itCv = _ptCanvas.find(sl);
+                    if (itCv != _ptCanvas.end() && i < static_cast<int>(itCv->second.size())) {
+                        itCv->second[i]->DrawClonePad();     // cached, fully‑decorated canvas
+                        drawn = true;
+                    }
+
+                    if (!drawn && i < static_cast<int>(itH->second.size())) {
+                        TH1* hPt = itH->second[i];           // raw histogram (has entries)
+                        hPt->SetStats(0);
+                        hPt->Draw();
+                        drawn = true;
+                    }
+
+                    if (!drawn) {                            // truly empty pT bin → blank pad
+                        gPad->SetFrameLineColor(0);          // hide the default frame
+                        TLatex tx; tx.SetNDC(); tx.SetTextAlign(22); tx.SetTextSize(0.04);
+                        tx.DrawLatex(0.50,0.50,"no entries");
+                    }
                 }
                 fs::path sliceDir = cPath(root, sl, fs::path("EMCal/invMassQA") / cutTag);
 
@@ -1259,6 +1365,22 @@ class Pi0QA : public QA
             /* ------------------------------------------------------------
              * 3)  Build one TGraphErrors per slice
              * ---------------------------------------------------------- */
+            std::vector<int> allRuns;
+            for (const auto& [sl, mp] : s_runPoints)
+                for (const auto& [runStr, _] : mp)
+                    if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
+                        allRuns.push_back(std::stoi(runStr));
+
+            std::sort(allRuns.begin(), allRuns.end());
+            allRuns.erase(std::unique(allRuns.begin(), allRuns.end()), allRuns.end());
+
+            std::unordered_map<int,int> runSlot;          // runNumber → slot 1…N
+            for (std::size_t k = 0; k < allRuns.size(); ++k)
+                runSlot[ allRuns[k] ] = static_cast<int>(k) + 1;
+
+            /* ------------------------------------------------------------
+             * 3)  Build one TGraphErrors per slice
+             * ---------------------------------------------------------- */
             std::vector<TGraphErrors*> gMuList, gSiList;
             TLegend leg(0.12,0.73,0.42,0.88); leg.SetBorderSize(0);
 
@@ -1286,9 +1408,10 @@ class Pi0QA : public QA
                 for (int i = 0; i < n; ++i) {
                     const int       runNum = runList[i].first;    // numeric value
                     const RunPoint& p      = mp.at(runList[i].second); // exact key
-                    const double dx = 0.35;                       // tune if necessary
+                    const double base = runSlot.at(runNum);       // 1,2,3,… categorical slot
+                    const double dx   = 0.25;                     // tiny offset per slice
                     const int    sliceIdx = colourIdx;            // index before colourIdx++
-                    x[i]  = runNum + dx * (sliceIdx - (int)s_runPoints.size() / 2);
+                    x[i] = base + dx * (sliceIdx - (int)s_runPoints.size() / 2);
                     yMu[i]= p.mu;     eMu[i]= p.muErr;
                     ySi[i]= p.sigma;  eSi[i]= p.sigmaErr;
                 }
@@ -1357,6 +1480,14 @@ class Pi0QA : public QA
                 gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
             leg.Draw();
 
+            TAxis* axMu = gMuList.front()->GetHistogram()->GetXaxis();
+            const int nRuns = static_cast<int>(allRuns.size());
+            axMu->SetLimits(0.5, nRuns + 0.5);          // frame 0.5 … N+0.5
+            axMu->SetNdivisions(nRuns, 0, 0, true);     // one major tick per run
+            /* keep the tick positions but HIDE the labels – they go to the σ‑pad */
+            axMu->SetLabelOffset(999);                  // effectively invisible
+            axMu->SetTickLength(0.03);
+
             /* ---- header: cut‑combination + run summary ---------------------- */
             TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04); tl.SetTextAlign(13);
             tl.DrawLatex(0.12, 0.96, Form("%s  %s", cutTag.c_str(), runLabel.c_str()));
@@ -1385,6 +1516,30 @@ class Pi0QA : public QA
             for (std::size_t i = 0; i < gSiList.size(); ++i)
                 gSiList[i]->Draw(i == 0 ? "AP" : "P SAME");
 
+            /* ------------------------------------------------------------------ *
+             *  Categorical x axis with vertically‑printed run numbers
+             * ------------------------------------------------------------------ */
+            TAxis* axSi = gSiList.front()->GetHistogram()->GetXaxis();
+            /* make the helper histogram have exactly one bin per run */
+            axSi->Set(nRuns, 0.5, nRuns + 0.5);          // <── crucial
+            axSi->SetLimits(0.5, nRuns + 0.5);
+            axSi->SetNdivisions(nRuns, 0, 0, true);
+
+            /* if a lot of runs, show every N‑th label only (auto‑throttle) */
+            int skip = 1;
+            if      (nRuns > 100) skip = 10;
+            else if (nRuns > 60)  skip = 5;
+            else if (nRuns > 40)  skip = 2;
+
+            for (int k = 0; k < nRuns; ++k)
+                if (k % skip == 0)
+                    axSi->SetBinLabel(k + 1, Form("%d", allRuns[k]));
+                else
+                    axSi->SetBinLabel(k + 1, "");        // leave blank
+
+            axSi->LabelsOption("v");
+            axSi->SetLabelSize(0.030);                  // a bit smaller
+            
             /* -------- auto‑scale y‑axis, but anchor lower edge at 0 -------- */
             double ymax = -1e9;
             for (auto g : gSiList) {
@@ -1400,8 +1555,11 @@ class Pi0QA : public QA
 
 
             /* ------------------------------------------------------------
-             * 5)  Save PNG
+             * 5)  Save PNG(s)
+             *    – one “all‑centralities” overlay  +  one file per slice
              * ---------------------------------------------------------- */
+
+            /* A) overlay of all centralities (exactly as before) */
             fs::path pngRun = root/"EMCal"/"invMassQA"/cutTag
                            /"Pi0Mass_Sigma_vs_Run_AllCentrality.png";
             ensure_dir(pngRun.parent_path());
@@ -1414,6 +1572,79 @@ class Pi0QA : public QA
                 log(Lvl::ERR,std::string("ERROR while saving \"")+pngRun.string()+
                               "\" – "+ex.what());
             }
+
+            /* B) one PNG per centrality slice – re‑use the already‑built graphs */
+            for (std::size_t idx = 0; idx < gMuList.size(); ++idx)
+            {
+                const std::string& sl = slicesDone[idx];        // slice key, e.g. "10_20" or "Inclusive"
+
+                TCanvas cS(Form("c_mu_sigma_vs_run_%s", sl.c_str()),"",900,800);
+
+                /* ---------- upper pad (μ) ---------- */
+                TPad* pU = new TPad("pU","",0,0.35,1,1);
+                pU->SetBottomMargin(0.02);
+                pU->SetTopMargin(0.08);
+                pU->Draw(); pU->cd();
+
+                gMuList[idx]->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
+                gMuList[idx]->Draw("AP");
+
+                /* same categorical axis settings as in the overlay */
+                TAxis* axU = gMuList[idx]->GetHistogram()->GetXaxis();
+                axU->SetLimits(0.5, nRuns + 0.5);
+                axU->SetNdivisions(nRuns, 0, 0, true);
+                axU->SetLabelOffset(999);          // hide labels in upper pad
+                axU->SetTickLength(0.03);
+
+                TLatex tlt; tlt.SetNDC(); tlt.SetTextSize(0.04); tlt.SetTextAlign(13);
+                if (sl == "Inclusive")
+                     tlt.DrawLatex(0.12,0.96,Form("%s  Inclusive  %s",cutTag.c_str(),runLabel.c_str()));
+                else tlt.DrawLatex(0.12,0.96,Form("%s  Cent %s %%  %s",
+                                                  cutTag.c_str(),sl.c_str(),runLabel.c_str()));
+
+                /* ---------- lower pad (σ) ---------- */
+                cS.cd();
+                TPad* pL = new TPad("pL","",0,0,1,0.32);
+                pL->SetTopMargin(0.02);
+                pL->SetBottomMargin(0.30);
+                pL->Draw(); pL->cd();
+
+                gSiList[idx]->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
+                gSiList[idx]->Draw("AP");
+
+                TAxis* axL = gSiList[idx]->GetHistogram()->GetXaxis();
+                axL->Set(nRuns, 0.5, nRuns + 0.5);           // <── same one‑bin‑per‑run fix
+                axL->SetLimits(0.5, nRuns + 0.5);
+                axL->SetNdivisions(nRuns, 0, 0, true);
+                
+                /* auto‑throttle label density (same rule as overlay) */
+                int skip = 1;
+                if      (nRuns > 100) skip = 10;
+                else if (nRuns > 60)  skip = 5;
+                else if (nRuns > 40)  skip = 2;
+
+                for (int k = 0; k < nRuns; ++k)
+                    axL->SetBinLabel(k + 1,
+                        (k % skip == 0) ? Form("%d", allRuns[k]) : "");
+
+                axL->LabelsOption("v");
+                axL->SetLabelSize(0.030);
+
+                /* save the per‑slice PNG */
+                fs::path pngSlice = root/"EMCal"/"invMassQA"/cutTag
+                                  /Form("Pi0Mass_Sigma_vs_Run_Cent_%s.png", sl.c_str());
+                ensure_dir(pngSlice.parent_path());
+
+                try {
+                    cS.SaveAs(pngSlice.string().c_str());
+                    log(Lvl::INFO,"  slice run‑summary written → "+pngSlice.string());
+                }
+                catch(const std::exception& ex){
+                    log(Lvl::ERR,std::string("ERROR while saving \"")+pngSlice.string()+
+                                  "\" – "+ex.what());
+                }
+            }
+
 
             /* ------------ Recap table ---------------------------------- */
             std::ostringstream oss;
@@ -1441,6 +1672,10 @@ class Pi0QA : public QA
     std::unordered_map<std::string,
                      std::vector<TH1*>>            _ptHists;
     std::unordered_map<std::string, FitInfo>         _fitSummary;
+    
+    std::unordered_map<std::string,std::unique_ptr<TCanvas>> _centralCanvas;
+    
+    std::unordered_map<std::string,std::vector<std::unique_ptr<TCanvas>>> _ptCanvas;
 
     /* run label of this instance */
     std::string runID;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ###############################################################################
 # merge_data.sh – highly verbose Condor hadd helper
-#
+# ./merge_data.sh condorStillRunning --> SKIP anly lists in hadding that are idle or running in condor -- do the rest
 # ▸ Purpose
 #   1.  One “hadd” job per run directory      →   MODE = condor
 #   2.  Merge all per‑run ROOT files          →   MODE = addRuns
@@ -45,8 +45,11 @@ TMP_LIST_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/tmp_run_lists"
 CONDOR_STDOUT="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/stdout"
 CONDOR_STDERR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/error"
 CONDOR_LOGDIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/log"
+QA_CMD_FILTER='regexp("run_auau_run3_qa.sh",Cmd)'
 HADD_WRAPPER="hadd_run_condor.sh"
 REQUEST_MEMORY="2000MB"
+JOB_PRIO=100000
+
 
 mkdir -p "$OUTPUT_DIR" "$TMP_LIST_DIR" "$CONDOR_STDOUT" \
          "$CONDOR_STDERR" "$CONDOR_LOGDIR"
@@ -94,11 +97,23 @@ fi
 SUBMODE=${1:-}
 
 case "$MODE" in
-  condor)     [[ -z "$SUBMODE" || "$SUBMODE" =~ ^(test|firstHalf)$ ]] || usage ;;
-  addRuns)    [[ -z "$SUBMODE" || "$SUBMODE" == condor ]]              || usage ;;
-  local)      [[ -n "$SUBMODE" && "$SUBMODE" =~ ^[0-9]{5,8}$ ]]        || usage ;;
-  *)          usage ;;
+  condor|condorStillRunning)
+      [[ -z "$SUBMODE" || "$SUBMODE" =~ ^(test|firstHalf)$ ]] || usage
+      ;;
+  addRuns)
+      [[ -z "$SUBMODE" || "$SUBMODE" == condor ]] || usage
+      ;;
+  local)
+      [[ -n "$SUBMODE" && "$SUBMODE" =~ ^[0-9]{5,8}$ ]] || usage
+      ;;
+  *)
+      usage
+      ;;
 esac
+
+# Flag: should we keep busy runs and merely skip the still‑running chunk files?
+SKIP_RUNNING=0
+[[ $MODE == condorStillRunning ]] && SKIP_RUNNING=1
 
 ###############################################################################
 # ---- 5. Build the tiny wrapper executed inside each Condor slot ------------
@@ -265,20 +280,89 @@ chmod +x "$HADD_WRAPPER"
 ###############################################################################
 # ---- 6. Helpers -------------------------------------------------------------
 ###############################################################################
-safe_find() {                                  # noisy, fault‑tolerant “find”
+
+# When SKIP_RUNNING = 1 build once‑per‑script a list of files still produced
+SKIP_FILE="$TMP_LIST_DIR/skip_running_jobs.txt"
+if (( SKIP_RUNNING )); then
+    say "Building skip‑list for active Condor chunks → $(basename "$SKIP_FILE")"
+    : > "$SKIP_FILE"
+    condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Args 2>/dev/null |
+      awk -v base="$CONDOR_OUT_BASE" '
+          {
+              run=$1; tag=$3;
+              if (run ~ /^[0-9]+$/ && tag != "")
+                  printf "%s/%s/%s.root\n", base, run, tag
+          }' | sort -u > "$SKIP_FILE"
+    lines=$(wc -l < "$SKIP_FILE")
+    say "  • $lines file(s) will be ignored during hadd"
+fi
+
+safe_find() {                                  # robust, fault‑tolerant “find”
   local dir=$1 list=$2
   say "  • scanning $dir"
+
+  ###########################################################################
+  # 1. RE‑BUILD the skip‑list *every time* so chunks that finish meanwhile
+  #    are picked up the next second we look at the directory.
+  ###########################################################################
+  if (( SKIP_RUNNING )); then
+      condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Args 2>/dev/null |
+        awk -v base="$CONDOR_OUT_BASE" '
+            {
+                run=$1; tag=$3;
+                if (run ~ /^[0-9]+$/ && tag != "")
+                    printf "%s/%s/%s.root\n", base, run, tag
+            }' | sort -u > "${SKIP_FILE}.new"
+      mv -f "${SKIP_FILE}.new" "$SKIP_FILE"
+  fi
+
+  ###########################################################################
+  # 2. INITIAL CANDIDATE LIST  – all *.root presently on disk
+  ###########################################################################
   (
     set +e +o pipefail
     find "$dir" -type f -name '*.root' -print 2> >(while read -r l; do warn "    find: $l"; done) |
-      sort > "$list"
-  )
-  if [[ $? -ne 0 || ! -s "$list" ]]; then
-      warn "    ➜ no ROOT files"
+      sort
+  ) > "${list}.00_all"
+
+  ###########################################################################
+  # 3. SKIP LIST  – remove files whose chunks are still in Condor
+  ###########################################################################
+  if (( SKIP_RUNNING )) && [[ -s "$SKIP_FILE" ]]; then
+      grep -F -v -f "$SKIP_FILE" "${list}.00_all" > "${list}.01_skip"
+  else
+      mv "${list}.00_all" "${list}.01_skip"
+  fi
+
+  ###########################################################################
+  # 4. OPEN‑FILE FILTER  – drop ROOTs that are *currently* open for writing
+  #    (covers the extremely slow‑write edge‑case).
+  ###########################################################################
+  if command -v lsof >/dev/null 2>&1; then
+      lsof +D "$dir" 2>/dev/null | awk '/\.root$/ {print $9}' | sort -u > "${list}.open"
+      if [[ -s "${list}.open" ]]; then
+          grep -F -v -f "${list}.open" "${list}.01_skip" > "${list}"
+      else
+          mv "${list}.01_skip" "${list}"
+      fi
+      rm -f "${list}.open"
+  else
+      mv "${list}.01_skip" "${list}"
+  fi
+  rm -f "${list}.00_all" "${list}.01_skip"
+
+  ###########################################################################
+  # 5. FINAL SANITY  – abort run if nothing is left to merge
+  ###########################################################################
+  if [[ ! -s "$list" ]]; then
+      warn "    ➜ no eligible ROOT files after safety filters"
       return 1
   fi
+
   (( DEBUG )) && { say "    first 10 entries:"; head -n 10 "$list" | sed 's/^/      /'; }
 }
+
+
 
 # ---- 6a. busy‑run cache -----------------------------------------------------
 declare -Ag busySet=()                 # busySet[run]=1   (global)
@@ -286,7 +370,7 @@ declare -Ag busySet=()                 # busySet[run]=1   (global)
 refresh_busy_runs() {
   busySet=()
   while read -r token; do busySet["$token"]=1; done < <(
-      condor_q "$USER" -af Cmd Args 2>/dev/null |
+      condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Cmd Args 2>/dev/null |
       grep -Eo '[0-9]{5,8}' | sort -u
   )
 }
@@ -300,7 +384,7 @@ purge_busy_jobs() {
 
   # 1) remove chunk *.list files ------------------------------------------------
   mapfile -t busyLists < <(
-      condor_q "$USER" -af Args 2>/dev/null |
+      condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Args 2>/dev/null |
       grep -Eo '/[^[:space:]]+tmp_condor_lists[^[:space:]]+\.list' | sort -u
   )
   if (( ${#busyLists[@]} )); then
@@ -315,7 +399,7 @@ purge_busy_jobs() {
   for run in "${!busySet[@]}"; do
       # build the list of ROOT files that the *still‑running* job(s) would create
       mapfile -t toDelete < <(
-          condor_q "$USER" -af Args 2>/dev/null |
+          condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Args 2>/dev/null |
           awk -v r="$run" -v base="$CONDOR_OUT_BASE" '$1==r {printf "%s/%s/%s.root\n", base, $1, $3}'
       )
       (( ${#toDelete[@]} )) || { say "      – run $run  (no matching partial outputs)"; continue; }
@@ -349,24 +433,36 @@ fi
 ###############################################################################
 # ---- 8.  PER‑RUN MERGE (MODE = condor) --------------------------------------
 ###############################################################################
-if [[ $MODE == condor ]]; then
-  # housekeeping --------------------------------------------------------------
+if [[ $MODE == condor || $MODE == condorStillRunning ]]; then
+  ###########################################################################
+  # (Re)initialise work‑area for *every* submission, even when we are in
+  # condorStillRunning mode.  We remove only the per‑run merged ROOT files
+  # and the old Condor log/err/out to guarantee a clean slate; individual
+  # segment ROOTs inside $CONDOR_OUT_BASE are NEVER touched.
+  ###########################################################################
   say "Cleaning previous Condor text outputs"
   for d in "$CONDOR_STDOUT" "$CONDOR_STDERR" "$CONDOR_LOGDIR"; do
       [[ -d $d ]] && find "$d" -type f -delete
   done
-  say "Removing stale per‑run ROOT files from $OUTPUT_DIR"
+
+  say "Removing stale per‑run ROOT files from $OUTPUT_DIR (will be regenerated)"
   find "$OUTPUT_DIR" -maxdepth 1 -type f -name "${RUN_MERGED_PREFIX}_????????.root" -delete
+
 
   # Step 1 – enumerate run directories ----------------------------------------
   say "Step 1 – enumerating run directories under $CONDOR_OUT_BASE"
   mapfile -t runs < <(find "$CONDOR_OUT_BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
 
-  # Step 2 – drop busy runs ----------------------------------------------------
-  say "Step 2 – filtering out active Condor runs"
-  runs=( $(for r in "${runs[@]}"; do [[ -z ${busySet[$r]+x} ]] && echo "$r"; done) )
-  (( ${#busySet[@]} )) && say "    active: $(printf '%s ' "${!busySet[@]}")" || say "    none"
-  (( ${#runs[@]} )) || { good "Nothing idle to merge"; exit 0; }
+  # Step 2 – busy‑run handling -------------------------------------------------
+  if (( SKIP_RUNNING )); then
+      say "Step 2 – keeping runs that still have active chunks (individual files will be skipped)"
+      # nothing is removed from the runs[] array
+  else
+      say "Step 2 – filtering out active Condor runs"
+      runs=( $(for r in "${runs[@]}"; do [[ -z ${busySet[$r]+x} ]] && echo "$r"; done) )
+      (( ${#busySet[@]} )) && say "    active: $(printf '%s ' "${!busySet[@]}")" || say "    none"
+      (( ${#runs[@]} )) || { good "Nothing idle to merge"; exit 0; }
+  fi
 
   say "Step 3 – ${#runs[@]} idle run(s) will be processed"
   case "$SUBMODE" in
@@ -383,6 +479,7 @@ output          = $CONDOR_STDOUT/merge.\$(Cluster).\$(Process).out
 error           = $CONDOR_STDERR/merge.\$(Cluster).\$(Process).err
 log             = $CONDOR_LOGDIR/merge.\$(Cluster).\$(Process).log
 request_memory  = $REQUEST_MEMORY
+priority        = $JOB_PRIO
 getenv          = True
 stream_output   = True
 stream_error    = True
