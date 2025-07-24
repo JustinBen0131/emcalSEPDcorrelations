@@ -1,18 +1,66 @@
 #!/usr/bin/env bash
 ###############################################################################
-# merge_data.sh – highly verbose Condor hadd helper
-# ./merge_data.sh condorStillRunning --> SKIP anly lists in hadding that are idle or running in condor -- do the rest
-# ▸ Purpose
-#   1.  One “hadd” job per run directory      →   MODE = condor
-#   2.  Merge all per‑run ROOT files          →   MODE = addRuns
-#   3.  Merge a single run locally            →   MODE = local <runNumber>
+# merge_data.sh — sPHENIX Au+Au Run‑3 QA file‑merging helper
 #
-# ▸ New in this version
-#   • Busy‑run detection (unchanged from v2)
+# OVERVIEW
+# ▸ Each reconstruction “chunk” writes a ROOT file in
+#       $CONDOR_OUT_BASE/<RUN>/<TAG>.root
+# ▸ This script gathers those chunks and merges them with **hadd**, either
+#   locally or on the HTCondor farm.  It also post‑processes the output by
+#   re‑scaling trigger‑specific histograms with live/scaled counts from the
+#   DAQ database.
+#
+# BASIC INVOCATION
+#   ./merge_data.sh MODE [removeOtherJobs] [QUALIFIER]
+#
+#   MODE
+#     condor             one Condor hadd job per run directory
+#     condorStillRunning like condor, but chunks whose jobs are currently
+#                        *IDLE* or *RUNNING* are **skipped** instead of killed
+#     addRuns            merge the already‑produced per‑run ROOTs into a
+#                        single “grand‑total” file
+#     local <RUN>        merge a single run locally (quick debugging)
+#
+#   removeOtherJobs      (optional) purge *all* of your active HTCondor jobs
+#                        before the merge; their chunk lists, partial ROOTs
+#                        and the jobs themselves are deleted
+#
+#   QUALIFIER
+#     condor             (only for addRuns) run the grand‑total merge on Condor
+#     test               (only for condor / condorStillRunning) submit just the
+#                        first idle run, useful for smoke tests
+#     firstHalf          process only the first 50 % of idle runs
+#     <runNumber>        required for MODE = local
+#
+# QUICK EXAMPLES
+#   # Submit every idle run to Condor (one job per run)
+#   ./merge_data.sh condor
+#
+#   # Resume a partially finished campaign; keep busy jobs alive
+#   ./merge_data.sh condorStillRunning
+#
+#   # Same as above, but with shell tracing and verbose logging
+#   DEBUG=1 ./merge_data.sh condorStillRunning
+#
+#   # Regenerate run 66484 locally, ignoring busy runs, with full debug output
+#   DEBUG=1 ./merge_data.sh condorStillRunning local 00066484
+#
+#   # Produce the final grand‑total file on Condor
+#   ./merge_data.sh addRuns condor
+#
+#   • Busy‑run detection
 #   • **removeOtherJobs** switch:
-#       – gathers every live HTCondor job (for $USER)
+#       – enumerates every live HTCondor job belonging to \$USER
 #       – deletes its chunk list, partial ROOT outputs and the job itself
-#       – makes the merge phase immune to corrupted, half‑written files
+#       – guarantees the merge sees only complete, uncorrupted input.
+#
+# ENVIRONMENT
+#   DEBUG=1          enables `set -x` and extra logging
+#   PGHOST           overrides the host used for DAQ‑DB access
+#
+# NOTE
+#   Individual chunk ROOTs are **never** deleted by default.  Only the merged
+#   per‑run files and Condor log/output files are reconstructed on each launch.
 ###############################################################################
 
 ###############################################################################

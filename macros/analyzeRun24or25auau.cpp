@@ -65,7 +65,23 @@ namespace {
 }
 std::string kInputFile   = "";   // gets filled inside the loop
 std::string kOutputBase  = "";   // ditto
-std::set<string> kTriggersWanted{ "MBD_NandS_geq_2" };
+std::set<std::string> kTriggersWanted{
+    "MBD_NS_geq_2",
+    "MBD_NS_geq_1",
+    "MBD_NS_geq_2_vtx_lt_10",
+    "MBD_NS_geq_2_vtx_lt_30",
+    "MBD_NS_geq_2_vtx_lt_150",
+    "MBD_NS_geq_1_vtx_lt_10",
+    "photon_6_plus_MBD_NS_geq_2_vtx_lt_10",
+    "photon_8_plus_MBD_NS_geq_2_vtx_lt_10",
+    "photon_10_plus_MBD_NS_geq_2_vtx_lt_10",
+    "photon_12_plus_MBD_NS_geq_2_vtx_lt_10",
+    "photon_6_plus_MBD_NS_geq_2_vtx_lt_150",
+    "photon_8_plus_MBD_NS_geq_2_vtx_lt_150",
+    "photon_10_plus_MBD_NS_geq_2_vtx_lt_150",
+    "photon_12_plus_MBD_NS_geq_2_vtx_lt_150"
+};
+
 /* ----------  PLOT CANVAS SIZES  -----------
  * Set a value ≤0 to keep the old automatic size
  * (nEta × px for width, nPhi × px for height).
@@ -1951,11 +1967,37 @@ class CorrQA : public QA
         {
             TCanvas c("c_corr","",1100,800); setupPad(&c);
 
+            /* Build a descriptive title
+             *   – always show the two detector systems in “A vs B” order
+             *   – append centrality information:
+             *        Inclusive   →  “(Inclusive)”
+             *        X_Y         →  “(Cent X–Y %)”
+             */
+            std::string plotTitle = std::regex_replace(groupDir,
+                                                       std::regex("_"), " vs ");
+
+            if (!hasCent) {                                   // centrality‑integrated (“Inclusive”)
+                plotTitle += "  (Inclusive)";
+            } else {                                          // explicit centrality slice “lo_hi”
+                std::smatch m;
+                if (std::regex_match(slice, m, std::regex(R"((\d{1,3})_(\d{1,3}))"))) {
+                    plotTitle += "  (Cent " + m[1].str() + "–" + m[2].str() + " %)";
+                }
+            }
+
+
             if (h2) {                               /* 2‑D map */
+                /* title + axis labels */
+                h2->SetTitle(plotTitle.c_str());
+                h2->GetXaxis()->SetTitle(detA.c_str());
+                h2->GetYaxis()->SetTitle(detB.c_str());
+
                 c.SetLogz();
                 tightenAxes(h2);
                 h2->Draw("COLZ");
-            } else {                                /* 1‑D spectrum */
+            }
+            else {                                  /* 1‑D spectrum (Δη / Δφ) */
+                h1->SetTitle(plotTitle.c_str());    // simple header is enough
                 tightenAxes(h1);
                 h1->Draw();
             }
@@ -1964,18 +2006,20 @@ class CorrQA : public QA
         }
 
         /* ------------------------------------------------------------------
-         * D.  Collect centrality-dependent clones for the overview canvas
+         * D.  Collect centrality‑dependent clones for the overview canvas
+         *     (only meaningful for 2‑D histograms)
          * ----------------------------------------------------------------- */
-        if (hasCent)
+        if (hasCent && h2)                                     // <<< guard against 1‑D
         {
             const std::string baseKey = groupDir + "|" +
-                                        stripCentSuffix(hName) ;  // "h_SEPD_vs_MBD"
+                                        stripCentSuffix(hName);  // "h_SEPD_vs_MBD"
             auto& v = m_centCache[baseKey];
             auto  cl = std::shared_ptr<TH2>(static_cast<TH2*>(h2->Clone()));
-            cl->SetDirectory(nullptr); tidyAxes(cl.get()); styleAxes(cl.get(),false);
+            cl->SetDirectory(nullptr);
+            tidyAxes(cl.get());
+            styleAxes(cl.get(), false);
             v.emplace_back(slice, std::move(cl));
         }
-
         /* ─────────── existing E-F-G blocks stay exactly as before ───────── */
         handleNorthSouthPairing(hName, isNorth, isSouth, hasCent,
                                 groupDir, slice, o);
@@ -2039,7 +2083,31 @@ class CorrQA : public QA
             if (hasCent) dir /= ("Cent_" + slice);
             ensure_dir(dir);
 
-            fs::path png = dir / (baseKey + std::string("_NS.png"));
+            /* ------------------------------------------------------------ *
+             * 1.  Produce a single “North + South” map by a straightforward
+             *     bin‑by‑bin ADDITION, preserving statistics.
+             * ------------------------------------------------------------ */
+            std::unique_ptr<TH2> hTot(
+                static_cast<TH2*>(pair.s->Clone(
+                    (baseKey + std::string("_combined")).c_str())));
+            hTot->Add(pair.n.get());                    // ⟵ real addition
+            tidyAxes(hTot.get());  styleAxes(hTot.get(), false);
+
+            fs::path pngTot = dir / (baseKey + std::string("_combined.png"));
+            {
+                TCanvas cTot(("c_" + baseKey + "_comb").c_str(), "", 1100, 800);
+                setupPad(&cTot);
+                cTot.SetLogz();
+                tightenAxes(hTot.get());
+                hTot->Draw("COLZ");
+                drawRunLabel(stripLeadingZeros(root.parent_path().filename().string()));
+                cTot.SaveAs(pngTot.string().c_str());
+            }
+
+            /* ------------------------------------------------------------ *
+             * 2.  Keep the original side‑by‑side view for quick checks.
+             * ------------------------------------------------------------ */
+            fs::path pngNS = dir / (baseKey + std::string("_NS.png"));
 
             const double zMax = std::max(pair.n->GetMaximum(),
                                           pair.s->GetMaximum());
@@ -2049,17 +2117,18 @@ class CorrQA : public QA
             TCanvas c("c_ns","",1200,600); c.Divide(2,1,0.01,0.01);
             c.cd(1); setupPad(gPad); gPad->SetLogz();
             tightenAxes(pair.s.get());
-            pair.s->Draw("COLZ");
-            drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
+            pair.s->DrawCopy("COLZ");
 
             c.cd(2); setupPad(gPad); gPad->SetLogz();
             tightenAxes(pair.n.get());
-            pair.n->Draw("COLZ");
-            drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
-            c.SaveAs(png.string().c_str());
+            pair.n->DrawCopy("COLZ");
 
-            g_nsCache.erase(cacheKey);
+            drawRunLabel(stripLeadingZeros(root.parent_path().filename().string()));
+            c.SaveAs(pngNS.string().c_str());
+
+            g_nsCache.erase(cacheKey);                  // clean‑up
         }
+
     }
 
     /* ==================================================================== *
@@ -2473,6 +2542,8 @@ private:
 };
 
 
+
+
 // ─── HCal QA – proportional η–φ hit‑maps (IHCal / OHCal) ─────────────
 class HcalQA : public QA
 {
@@ -2706,25 +2777,111 @@ class HcalQA : public QA
           return true;
       }
 
-      if (p.i && p.o)                         // have both arms – combine now
-      {
-        auto tot = std::unique_ptr<TH2>(
-                       cloneDetach(p.i.get(),
-                                   (std::string(p.i->GetName())+"_tot").c_str()));
-        tot->Add(p.o.get());
-        tot->SetTitle("totalHcal");
-        fs::path outTot = cPath(root, slice, fs::path("HCal") / "totalHcal")
-                              / (baseName + "_total.png");
-        makePanel(tot.get(), outTot);
+        // build a *true* total‑HCal map once both IHCal & OHCal are ready
+        if (p.i && p.o)
+        {
+            /* ------------------------------------------------------------ *
+             * 1. create an empty clone that will hold the summed occupancies
+             *    – we inherit binning & axes from IHCal, but clear contents
+             * ------------------------------------------------------------ */
+            auto tot = std::unique_ptr<TH2>(
+                cloneDetach(p.i.get(), (baseName + "_tot").c_str()));
+            tot->Reset("ICE");                           // zero all bins
 
-        cache.erase(key);                     // free – Pair dtor detaches dirs
-      }
+            /* ------------------------------------------------------------ *
+             * 2. loop over every bin and add IHCal+OHCal ONLY
+             *    when neither side carries the “‑9999” masked‑plate marker
+             * ------------------------------------------------------------ */
+            const int nX = tot->GetNbinsX();
+            const int nY = tot->GetNbinsY();
+
+            for (int ix = 1; ix <= nX; ++ix)
+                for (int iy = 1; iy <= nY; ++iy)
+                {
+                    const double cI = p.i->GetBinContent(ix, iy);
+                    const double cO = p.o->GetBinContent(ix, iy);
+
+                    if (cI < 0 || cO < 0) {               // at least one bad plate
+                        tot->SetBinContent(ix, iy, -9999.);   // keep it masked
+                    } else {
+                        tot->SetBinContent(ix, iy, cI + cO);  // proper sum
+                    }
+                }
+
+            tot->SetTitle("totalHCal");                   // picked up by makePanel()
+
+            /* ------------------------------------------------------------ *
+             * 3. write the PNG through the same helper as IHCal / OHCal
+             * ------------------------------------------------------------ */
+            fs::path outTot = cPath(root, slice, fs::path("HCal") / "totalHcal")
+                                / (baseName + "_tot.png");
+            makePanel(tot.get(), outTot);
+
+            cache.erase(key);                             // drop pair – not needed any more
+        }
     }
 
     return true;
   }
 };
 
+
+
+// ------------------------------------------------------------------
+//  Histogram factory – identical binning to SepdMonDraw
+// ------------------------------------------------------------------
+TH2* makeSepdHitmap(const std::string& name, bool bigTile0 = false)
+{
+  /*  For tiles 1 … 31 we need 24   φ bins (15°)         *
+   *  For tile‑0 we need   12   φ bins (30°) → pass flag */
+  const Int_t nbPhi  = bigTile0 ? 12 : 24;
+  const Int_t nbRing = 16;             // hardware rings
+  const Double_t rMin = 0.15;          // cm
+  const Double_t rMax = 3.50;          // cm
+  return new TH2F(name.c_str(), name.c_str(),
+                  nbPhi,    0., 2.*TMath::Pi(),
+                  nbRing, rMin,  rMax);
+}
+
+// ------------------------------------------------------------------
+//  Wrapper that creates *two* histograms like SepdMonDraw
+// ------------------------------------------------------------------
+std::pair<TH2*,TH2*> makeEpdHitmaps(const std::string& basename)
+{
+  auto hReg = makeSepdHitmap(basename + "_std");  // tiles 1 … 31
+  auto hT0  = makeSepdHitmap(basename + "_t0" , true); // tile‑0
+  /* cosmetic identical to monitor */
+  for (auto h : {hReg, hT0})
+  {
+    h->SetDirectory(nullptr);
+    h->SetStats(0);
+    h->SetLineColor(kBlack);
+    h->SetLineWidth(1);
+  }
+  return {hReg, hT0};
+}
+
+// ------------------------------------------------------------------
+//  Fill routine – *discrete* φ chosen from sector/tile, not a float
+// ------------------------------------------------------------------
+void fillSepdHitmap(TH2* hReg, TH2* hT0,
+                    int adcChannel,  double weight = 1.0)
+{
+  const int tile   = returnTile  (adcChannel);   // 0 … 31
+  const int ring   = returnRing  (adcChannel);   // 0 … 15
+  const int sector = returnSector(adcChannel);   // 0 … 11
+
+  const int odd = (tile + 1) & 1;                // even/odd helper
+  const int phiBin = (tile == 0)                 // → φ‑bin index
+                   ? sector                      // 12 bins, 0 … 11
+                   : sector * 2 + odd;           // 24 bins, 0 … 23
+
+  const double r   = 0.15 + 0.21 * ring + 0.105; // ring centre radius
+  const double phi = (phiBin + 0.5) * (2.*TMath::Pi()/          // bin centre
+                                       (tile==0 ? 12 : 24));
+
+  (tile == 0 ? hT0 : hReg)->Fill(phi, r, weight);
+}
 
 
 // ───────────────── Event‑plane observables (sEPD) ──────────────────────
@@ -2875,22 +3032,30 @@ class NSDetectorQA : public QA
     TCanvas c("c_hit", "", 1200, 600);
     c.Divide(2, 1, 0.01, 0.01);
 
-    auto drawPad = [&](TH2* h, const char* ttl)
-    {
-      gPad->SetRightMargin(0.20);
-      gPad->SetLeftMargin (0.10);
-      gPad->SetBottomMargin(0.10);
-      gPad->SetTopMargin  (0.08);
+    auto drawPad = [&](TH2* h, const char* ttl, bool withZ)
+      {
+        constexpr double Rmax = 3.8;              // outermost ring radius (cm)
 
-      h->SetTitle(ttl);
-      h->GetZaxis()->SetTitle("Counts");
-      h->GetZaxis()->SetTitleOffset(1.3);
-      h->Draw("POLZ");                     // works for both hex & polar
+        gPad->SetLeftMargin (0.10);
+        gPad->SetBottomMargin(0.10);
+        gPad->SetTopMargin  (0.08);
+        gPad->SetRightMargin(withZ ? 0.20 : 0.05);
+        gPad->SetTicks(1,1);
+
+        // draw empty circular frame first → adds ring & spoke grid
+        gPad->DrawFrame(-Rmax, -Rmax, Rmax, Rmax);
+
+        h->SetTitle(ttl);
+        h->GetZaxis()->SetTitle("Counts");
+        h->GetZaxis()->SetTitleOffset(1.30);
+
+        const char* opt = withZ ? "same COLZ POL AH" : "same COL POL AH";
+        h->Draw(opt);
     };
 
     try {
-      c.cd(1); drawPad(in.s, DERIVED::titleSouth);
-      c.cd(2); drawPad(in.n, DERIVED::titleNorth);
+      c.cd(1); drawPad(in.s, DERIVED::titleSouth, false);   // South: no colour‑bar
+      c.cd(2); drawPad(in.n, DERIVED::titleNorth, true );   // North: show colour‑bar
       c.SaveAs(png.string().c_str());
       log::ok("[NSDetectorQA] Combined S/N map saved → " + png.string());
     } catch (const std::exception& e) {
@@ -4005,58 +4170,7 @@ void runOneQaPass(const std::string& inFile,
   std::unique_ptr<TFile> in(TFile::Open(kInputFile.c_str(), "READ"));
   if (!in || in->IsZombie()) { log::err("Cannot open " + kInputFile); return; }
   log::ok("Input file opened");
-    
-  // ------------------------------------------------------------------
-  // 0‑bis.  Quick statistics sanity‑check
-  //        → skip this run if *every* histogram is empty
-  // ------------------------------------------------------------------
-  bool hasStatistics = false;                 // assume “all empty” for now
-    {
-      TIter itTop(in->GetListOfKeys());
-      while (auto* kDir = dynamic_cast<TKey*>(itTop())) {
-        if (strcmp(kDir->GetClassName(), "TDirectoryFile")) continue;
 
-        const std::string trg = kDir->GetName();        // e.g. "MBD_NandS_geq_2"
-        if (!kTriggersWanted.count(trg)) continue;      // ignore unwanted triggers
-
-        TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
-          /* recurse through all sub‑directories and stop as soon as
-             one non‑empty TH1 is found – no external state needed      */
-        std::function<void(TDirectory*)> probeDir = [&](TDirectory* dir)
-        {
-              TIter it(dir->GetListOfKeys());
-              while (auto* key = dynamic_cast<TKey*>(it()))
-              {
-                  /* descend first */
-                  if (strcmp(key->GetClassName(),"TDirectoryFile") == 0) {
-                      probeDir(static_cast<TDirectory*>(key->ReadObj()));
-                      if (hasStatistics) return;          // early exit
-                      continue;
-                  }
-
-                  /* plain object */
-                  TObject* obj = key->ReadObj();
-                  TH1* h = dynamic_cast<TH1*>(obj);
-                  if (h && h->GetEntries() > 0 && h->Integral() > 0) {
-                      hasStatistics = true;               // mark and abort walk
-                      return;
-                  }
-              }
-          };
-
-        /* kick off the recursive probe at trigger level */
-        probeDir(dTrig);
-          
-        if (hasStatistics) break;               // early exit if anything has stats
-      }
-    }
-
-    if (!hasStatistics) {
-      log::warn("RUN IS SKIPPED! -> every histogram in \"" + inFile +
-                "\" is empty!! (zero entries / zero integral).");
-      return;                                    // ← abort QA early → no output
-  }
-  // ------------------------------------------------------------------
 
   CentList slices = discoverSlices(in.get());
   slices.erase(
@@ -4132,35 +4246,65 @@ void runOneQaPass(const std::string& inFile,
       };
 
       fs::path b = fs::path(kOutputBase) / trg;
+      bool hasLive = false;                       // ← declare once, visible everywhere
 
       if (isMinimalTrigFolder(dTrig)) {
           /* scaled trigger inactive → only two histograms → only TriggerQA */
           ensure_dir(b / "triggerQA");
       } else {
-          /* full statistics available → build the usual directory tree once */
-          for (auto sub : { "correlations", "vNana", "centrality",
-                            "EMCal/otherQA", "EMCal/invMassQA", "EMCal/invMassQA/cutQA",
-                            "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
-                            "MBD/otherQA", "MBD/zVertex",
-                            "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
-                            "jetQA/generalHistos", "jetQA/summary", "triggerQA" })
+          /* ------------------------------------------------------------------ *
+           * Decide once for this trigger whether it has any live GL1‑scaled
+           * counts.  If the counter is zero we omit every EMCal‑ and vNana‑
+           * related directory so nothing is written later on.                  *
+           * ------------------------------------------------------------------ */
+          auto *hCntScaled = dynamic_cast<TH1 *>(
+                  dTrig->Get(Form("cnt_%s_scaled", trg.c_str())));
+          hasLive = (hCntScaled && hCntScaled->GetBinContent(1) > 0);
+
+          /* mandatory sub‑directories (always produced) */
+          std::vector<std::string> subDirs = {
+              "correlations", "centrality",
+              "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
+              "MBD/otherQA", "MBD/zVertex",
+              "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
+              "jetQA/generalHistos", "jetQA/summary", "triggerQA"
+          };
+
+          /* optional EMCal / vNana trees – only when the trigger really fired */
+          if (hasLive) {
+              subDirs.insert(subDirs.end(), {
+                  "vNana",
+                  "EMCal/otherQA",
+                  "EMCal/invMassQA",
+                  "EMCal/invMassQA/cutQA"
+              });
+          }
+
+          for (const auto &sub : subDirs)
               ensure_dir(b / sub);
     }
 
     /* QA modules ---------------------------------------------------- */
     std::vector<std::unique_ptr<QA>> qa;
     fs::path base = fs::path(kOutputBase) / trg;
-    qa.emplace_back(std::make_unique<Pi0QA >(trg,base,slices,csv));
-    qa.emplace_back(std::make_unique<CorrQA>(trg,base,slices));
-    qa.emplace_back(std::make_unique<EmcalQA>(trg,base,slices));
-    qa.emplace_back(std::make_unique<HcalQA >(trg,base,slices));
-    qa.emplace_back(std::make_unique<MbdQA  >(trg,base,slices,mbdCache));
-    qa.emplace_back(std::make_unique<SepdQA >(trg,base,slices,sepdCache));
-    qa.emplace_back(std::make_unique<sEPDotherQA>(trg,base,slices));
-    qa.emplace_back(std::make_unique<JetQA >(trg,base,slices));
-    qa.emplace_back(std::make_unique<VnPlotQA>(trg, base, slices));
+
+    /* modules that never depend on EMCal statistics */
+    qa.emplace_back(std::make_unique<CorrQA>(trg, base, slices));
+    qa.emplace_back(std::make_unique<HcalQA >(trg, base, slices));
+    qa.emplace_back(std::make_unique<MbdQA  >(trg, base, slices, mbdCache));
+    qa.emplace_back(std::make_unique<SepdQA >(trg, base, slices, sepdCache));
+    qa.emplace_back(std::make_unique<sEPDotherQA>(trg, base, slices));
+    qa.emplace_back(std::make_unique<JetQA >(trg, base, slices));
     qa.emplace_back(std::make_unique<EventQA>(trg, base, slices));
     qa.emplace_back(std::make_unique<TriggerQA>(trg, base, slices));
+
+    /* modules that create EMCal or vNana content – run them only if
+         the GL1‑scaled counter is non‑zero                               */
+    if (hasLive) {
+          qa.emplace_back(std::make_unique<Pi0QA >(trg, base, slices, csv));
+          qa.emplace_back(std::make_unique<EmcalQA>(trg, base, slices));
+          qa.emplace_back(std::make_unique<VnPlotQA>(trg, base, slices));
+    }
 
 
     /* histogram loop ----------------------------------------------- */
@@ -4201,89 +4345,141 @@ void runOneQaPass(const std::string& inFile,
 
   /* -----------------------------  Summary ------------------------- */
   log::banner("Summary – QA modules");
-  std::cout << term::CLR_BOLD
-                << std::left  << std::setw(20) << "Trigger"
-                << std::right << std::setw(12) << "Total"
-                << std::setw(12)                << "Written"
-                << term::CLR_RST << "\n";
-  for (auto& [t,c] : stat)
-        std::cout << std::left  << std::setw(20) << t
+
+  /* dynamic width for the trigger column */
+  std::size_t trigCol = 0;
+  for (const auto& [t,_] : stat)
+        trigCol = std::max(trigCol, t.size());
+  trigCol = std::max<std::size_t>(trigCol, 8);          // min width ‑ 8 chars
+
+  const std::string hRule(trigCol + 29, '=');
+
+  /* header */
+  std::cout << hRule << "\n"
+              << term::CLR_BOLD
+              << std::left  << std::setw(trigCol) << "Trigger"
+              << " │ "
+              << std::right << std::setw(12) << "Total"
+              << " │ "
+              << std::setw(12)               << "Written"
+              << term::CLR_RST << "\n"
+              << hRule << "\n";
+
+  /* rows + running totals */
+  long long sumTot = 0, sumWritten = 0;
+  for (const auto& [t,c] : stat) {
+        std::cout << std::left  << std::setw(trigCol) << t
+                  << " │ "
                   << std::right << std::setw(12) << c.tot
+                  << " │ "
                   << std::setw(12)               << c.used << "\n";
-
-  /* ------------------------------------------------------------------
-  *  Additional trigger‑counter overview
-  *  – builds a compact table from cnt_* histograms plus the
-  *    MB × Trigger correlation map so that one can judge which
-  *    trigger replicates the minimum‑bias condition.
-  * ------------------------------------------------------------------ */
-  log::banner("Trigger ↔ MB correlation");
-  std::cout << term::CLR_BOLD
-            << std::left  << std::setw(20) << "Trigger"
-            << std::right << std::setw(12) << "RAW"
-            << std::setw(12)               << "LIVE"
-            << std::setw(12)               << "SCALED"
-            << std::setw(14)               << "MB&&Trig"
-            << std::setw(12)               << "MB Only"
-            << std::setw(12)               << "Trig Only"
-            << term::CLR_RST << "\n";
-
-  /* loop once more over the trigger directories that were processed
-         – the input TFile ‘in’ is still open and provides direct access   */
-  TIter itTrig(in->GetListOfKeys());
-  while (auto* kDir = dynamic_cast<TKey*>(itTrig()))
-  {
-          if (strcmp(kDir->GetClassName(), "TDirectoryFile")) continue;
-
-          std::string trgName = kDir->GetName();
-          if (!kTriggersWanted.count(trgName)) continue;
-
-          TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
-
-          /* scalar counters ------------------------------------------------ */
-          auto getCnt = [&](const std::string& h)->long long
-          {
-              if (auto* h1 = dynamic_cast<TH1*>( dTrig->Get(h.c_str()) ))
-                  return static_cast<long long>(h1->GetBinContent(1));
-              return 0LL;
-          };
-          const long long nRaw    = getCnt("cnt_" + trgName + "_raw");
-          const long long nLive   = getCnt("cnt_" + trgName + "_live");
-          const long long nScaled = getCnt("cnt_" + trgName + "_scaled");
-
-          /* MB × Trigger correlation map ---------------------------------- */
-          long long mb_and_trig = 0, mb_only = 0, trig_only = 0;
-          if (auto* h2 = dynamic_cast<TH2*>( dTrig->Get("h_MB_vs_Trigger") ))
-          {
-              int xbin = -1;
-
-              /* try to locate the X‑bin via its label */
-              for (int ix = 1; ix <= h2->GetNbinsX(); ++ix)
-                  if (const char* lb = h2->GetXaxis()->GetBinLabel(ix);
-                      lb && std::string(lb) == trgName) { xbin = ix; break; }
-
-              if (xbin > 0) {
-                  trig_only     = static_cast<long long>(h2->GetBinContent(xbin, 2));
-                  mb_only       = static_cast<long long>(h2->GetBinContent(xbin, 3));
-                  mb_and_trig   = static_cast<long long>(h2->GetBinContent(xbin, 4));
-              }
-          }
-
-          /* highlight “pure” minimum‑bias‑like triggers in green */
-          const char* rowClr =
-              (mb_and_trig > 0 && mb_only == 0 && trig_only == 0)
-                  ? term::CLR_GRN : term::CLR_CYAN;
-
-          std::cout << rowClr
-                    << std::left  << std::setw(20) << trgName
-                    << std::right << std::setw(12) << nRaw
-                    << std::setw(12)               << nLive
-                    << std::setw(12)               << nScaled
-                    << std::setw(14)               << mb_and_trig
-                    << std::setw(12)               << mb_only
-                    << std::setw(12)               << trig_only
-                    << term::CLR_RST << "\n";
+        sumTot     += c.tot;
+        sumWritten += c.used;
   }
+
+  /* grand‑total row */
+  std::cout << hRule << "\n"
+              << term::CLR_BOLD
+              << std::left  << std::setw(trigCol) << "TOTAL"
+              << " │ "
+              << std::right << std::setw(12) << sumTot
+              << " │ "
+              << std::setw(12)               << sumWritten
+              << term::CLR_RST << "\n"
+              << hRule << "\n";
+
+    log::banner("Trigger ↔ MB correlation");
+
+    /* auto‑size the first column */
+    std::size_t trigW = 0;
+    for (const auto& [t,_] : stat) trigW = std::max(trigW, t.size());
+    trigW = std::max<std::size_t>(trigW, 8);
+
+    auto printRule = [&](char ch){ std::cout << std::string(trigW + 75, ch) << "\n"; };
+
+    /* header */
+    printRule('=');
+    std::cout << term::CLR_BOLD
+              << std::left  << std::setw(trigW) << "Trigger"
+              << " │ " << std::right << std::setw(12) << "RAW"
+              << " │ " << std::setw(12)               << "LIVE"
+              << " │ " << std::setw(12)               << "SCALED"
+              << " │ " << std::setw(12)               << "MB&&Trig"
+              << " │ " << std::setw(12)               << "MB Only"
+              << " │ " << std::setw(12)               << "Trig Only"
+              << term::CLR_RST << "\n";
+    printRule('-');
+
+    /* running totals for sanity‑check */
+    long long totRaw = 0, totLive = 0, totScaled = 0,
+              totBoth = 0, totMBOnly = 0, totTrigOnly = 0;
+
+    TIter itTrig(in->GetListOfKeys());                // <‑‑ keep existing iterator
+    while (auto* kDir = dynamic_cast<TKey*>(itTrig())) {
+        if (strcmp(kDir->GetClassName(),"TDirectoryFile")) continue;
+        std::string trgName = kDir->GetName();
+        if (!kTriggersWanted.count(trgName)) continue;
+
+        TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
+
+        /* scalar counters */
+        auto getCnt = [&](const std::string& h)->long long {
+            if (auto* h1 = dynamic_cast<TH1*>( dTrig->Get(h.c_str()) ))
+                return static_cast<long long>(h1->GetBinContent(1));
+            return 0LL;
+        };
+        const long long nRaw    = getCnt("cnt_" + trgName + "_raw");
+        const long long nLive   = getCnt("cnt_" + trgName + "_live");
+        const long long nScaled = getCnt("cnt_" + trgName + "_scaled");
+
+        /* MB × Trigger */
+        long long mb_and_trig = 0, mb_only = 0, trig_only = 0;
+        if (auto* h2 = dynamic_cast<TH2*>( dTrig->Get("h_MB_vs_Trigger") )) {
+            int xbin = -1;
+            for (int ix = 1; ix <= h2->GetNbinsX(); ++ix)
+                if (const char* lb = h2->GetXaxis()->GetBinLabel(ix);
+                    lb && std::string(lb) == trgName) { xbin = ix; break; }
+            if (xbin > 0) {
+                trig_only   = static_cast<long long>(h2->GetBinContent(xbin,2));
+                mb_only     = static_cast<long long>(h2->GetBinContent(xbin,3));
+                mb_and_trig = static_cast<long long>(h2->GetBinContent(xbin,4));
+            }
+        }
+
+        /* accumulate for total row */
+        totRaw      += nRaw;
+        totLive     += nLive;
+        totScaled   += nScaled;
+        totBoth     += mb_and_trig;
+        totMBOnly   += mb_only;
+        totTrigOnly += trig_only;
+
+        const char* rowClr =
+            (mb_and_trig > 0 && mb_only == 0 && trig_only == 0)
+                ? term::CLR_GRN : term::CLR_CYAN;
+
+        std::cout << rowClr
+                  << std::left  << std::setw(trigW) << trgName
+                  << " │ " << std::right << std::setw(12) << nRaw
+                  << " │ " << std::setw(12)               << nLive
+                  << " │ " << std::setw(12)               << nScaled
+                  << " │ " << std::setw(12)               << mb_and_trig
+                  << " │ " << std::setw(12)               << mb_only
+                  << " │ " << std::setw(12)               << trig_only
+                  << term::CLR_RST << "\n";
+  }
+
+  printRule('=');
+  std::cout << term::CLR_BOLD
+              << std::left  << std::setw(trigW) << "TOTAL"
+              << " │ " << std::right << std::setw(12) << totRaw
+              << " │ " << std::setw(12)               << totLive
+              << " │ " << std::setw(12)               << totScaled
+              << " │ " << std::setw(12)               << totBoth
+              << " │ " << std::setw(12)               << totMBOnly
+              << " │ " << std::setw(12)               << totTrigOnly
+              << term::CLR_RST << "\n";
+  printRule('=');
 
   log::ok("All outputs under " + kOutputBase);
     
@@ -4439,17 +4635,6 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
         runFiles.resize(1);            // old behaviour
 
 
-//    /* 1. decide pool size (≤ physical cores, ≥ 1) ------------------ */
-//    const std::size_t nWorkers =
-//        std::min<std::size_t>(runFiles.size(),
-//                              std::max<unsigned>(1, std::thread::hardware_concurrency()));
-//
-//    ROOT::TProcessExecutor exec(nWorkers);        // **preforked** process pool
-//
-//    log::banner("Launching " + std::to_string(runFiles.size())   +
-//                " runs on "    + std::to_string(exec.GetPoolSize()) +
-//                " parallel processes");
-
     /* --- run all QA passes in‑process: no fork, shared statics -------- */
     ROOT::TSequentialExecutor exec;                // single‑process executor
 
@@ -4491,56 +4676,121 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
     /* 3. fire the jobs – chunkSize = 1  → dynamic load balancing ---- */
     exec.Map(worker, ROOT::TSeqI(runFiles.size()));
 
-    /* 4. optional: merge all runs and re‑run QA on the combined file */
+    /* 4. optional: merge all runs – first drop runs with missing SEBs */
     if (!testRun && runFiles.size() > 1) {
-        const path combined = kInputDir / "output_ALL_COMBINED.root";
-        log::banner("Hadd – building " + combined.string());
 
-        // ------------------------------------------------------------
-        // (a)  print a detailed file list with individual sizes
-        // ------------------------------------------------------------
-        log::info("Files to be merged (" + std::to_string(runFiles.size()) + " total):");
-        std::uintmax_t totBytes = 0;
+        /* -------------------- 4 a. read MissingSEB.txt --------------- */
+        std::unordered_map<std::string, std::vector<std::string>> badRunMap;
+        std::unordered_map<std::string, int>                      sebCount;
+
+        {
+            std::ifstream miss("/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output/MissingSEB.txt");
+            if (!miss) {
+                log::warn("MissingSEB.txt not found – merging all runs");
+            } else {
+                std::string line;
+                while (std::getline(miss, line)) {
+                    if (line.empty()) continue;
+                    std::istringstream iss(line);
+                    std::string run;  iss >> run;           // first token = run
+                    std::string seb;
+                    while (iss >> seb) {                    // remaining = SEB names
+                        badRunMap[run].push_back(seb);
+                        ++sebCount[seb];
+                    }
+                }
+            }
+        }
+
+        /* -------------------- 4 b. filter merge list ----------------- */
+        std::vector<fs::path> mergeFiles;
         for (const auto& f : runFiles) {
-            const auto sz = fs::file_size(f);
-            totBytes += sz;
-            log::info("   + " + f.filename().string() +
-                      "  (" + std::to_string(sz / 1'024'000) + " MB)");
-        }
-        log::info("   ------------------------------------------------");
-        log::info("Accumulated input size : " +
-                  std::to_string(totBytes / 1'024'000) + " MB");
-
-        // ------------------------------------------------------------
-        // (b)  run TFileMerger with progress timing
-        // ------------------------------------------------------------
-        const auto t0Hadd = std::chrono::steady_clock::now();
-
-        TFileMerger merger(/*dryRun=*/false, /*verbose=*/true);
-        merger.OutputFile(combined.c_str(), "RECREATE");
-
-        for (const auto& f : runFiles) {
-            log::trace("TFileMerger  ← adding  " + f.string());
-            merger.AddFile(f.c_str());
+            std::smatch m;
+            const std::string fname = f.filename().string();
+            if (std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)"))) {
+                const std::string run = m[1].str();
+                if (badRunMap.count(run) == 0)
+                    mergeFiles.push_back(f);                // good run
+            }
         }
 
-        if (!merger.Merge()) {
-            log::err("TFileMerger failed – combined QA skipped");
-            return;
+        /* -------------------- 4 c. terminal summary ------------------ */
+        log::banner("Missing SEB summary");
+        std::size_t nBad    = badRunMap.size();
+        std::size_t nBad1   = 0;
+        std::size_t nBadMul = 0;
+        for (const auto& [run, v] : badRunMap)
+            (v.size() == 1 ? ++nBad1 : ++nBadMul);
+
+        std::cout << term::CLR_BOLD
+                  << "Runs with ≥1 missing SEB : " << nBad << "\n"
+                  << "   ├─ exactly one SEB    : " << nBad1 << "\n"
+                  << "   └─ multiple SEBs      : " << nBadMul << "\n"
+                  << term::CLR_RST << std::endl;
+
+        if (!sebCount.empty()) {
+            std::size_t w = 0;
+            for (const auto& [seb,_] : sebCount) w = std::max(w, seb.size());
+            w = std::max<std::size_t>(w, 5);
+
+            std::cout << std::left << std::setw(w) << "SEB"
+                      << " │ " << "Runs\n"
+                      << std::string(w + 7, '-') << "\n";
+            for (const auto& [seb,c] : sebCount)
+                std::cout << std::left << std::setw(w) << seb
+                          << " │ " << c << "\n";
+            std::cout << std::string(w + 7, '=') << std::endl;
         }
 
-        const auto dHadd = std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - t0Hadd).count();
-        const auto outSize = fs::file_size(combined);
+        /* -------------------- 4 d. perform hadd ---------------------- */
+        if (mergeFiles.size() < 2) {
+            log::warn("Skipping hadd – need ≥2 good runs, have "
+                      + std::to_string(mergeFiles.size()));
+        } else {
 
-        log::ok("Combined ROOT file created in " +
-                std::to_string(dHadd).substr(0,5) + " s,  size " +
-                std::to_string(outSize / 1'024'000) + " MB");
+            const path combined = kInputDir / "output_ALL_COMBINED.root";
+            log::banner("Hadd – building " + combined.string());
 
-        // ------------------------------------------------------------
-        // (c)  re‑run the QA pass on the freshly merged file
-        // ------------------------------------------------------------
-        runOneQaPass(combined.string(),
-                     (kOutputDir / "Combined").string());
+            // (a) list files
+            log::info("Files to be merged (" + std::to_string(mergeFiles.size()) + " total):");
+            std::uintmax_t totBytes = 0;
+            for (const auto& f : mergeFiles) {
+                const auto sz = fs::file_size(f);
+                totBytes += sz;
+                log::info("   + " + f.filename().string() +
+                          "  (" + std::to_string(sz / 1'024'000) + " MB)");
+            }
+            log::info("   ------------------------------------------------");
+            log::info("Accumulated input size : " +
+                      std::to_string(totBytes / 1'024'000) + " MB");
+
+            // (b) run TFileMerger
+            const auto t0Hadd = std::chrono::steady_clock::now();
+
+            TFileMerger merger(/*dryRun=*/false, /*verbose=*/true);
+            merger.OutputFile(combined.c_str(), "RECREATE");
+
+            for (const auto& f : mergeFiles) {
+                log::trace("TFileMerger  ← adding  " + f.string());
+                merger.AddFile(f.c_str());
+            }
+
+            if (!merger.Merge()) {
+                log::err("TFileMerger failed – combined QA skipped");
+                return;
+            }
+
+            const auto dHadd   = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() - t0Hadd).count();
+            const auto outSize = fs::file_size(combined);
+
+            log::ok("Combined ROOT file created in " +
+                    std::to_string(dHadd).substr(0,5) + " s,  size " +
+                    std::to_string(outSize / 1'024'000) + " MB");
+
+            // (c) re‑run QA on the merged file
+            runOneQaPass(combined.string(),
+                         (kOutputDir / "Combined").string());
+        }
     }
 }
