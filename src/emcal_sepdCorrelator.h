@@ -100,7 +100,14 @@ class emcal_sepdCorrelator : public SubsysReco
   // 2) Per‑event helpers (called in process_event)
   // ======================================================================
   bool fetchNodes (PHCompositeNode*);                     // guards + cache
-  void doCaloQA   (const std::vector<std::string>&);
+  void accumulateFlowContribution(const std::string& calorimeter,
+                                    unsigned           ieta,
+                                    double             et,
+                                    double             phi,
+                                    int                ptBin);
+    
+  void doCaloQA   (PHCompositeNode* topNode,
+                   const std::vector<std::string>&);
   void doSepdQA   (const std::vector<std::string>&);
   void doMbdQA    (const std::vector<std::string>&);
   void doPi0QA    (const std::vector<std::string>&);
@@ -264,6 +271,7 @@ class emcal_sepdCorrelator : public SubsysReco
 
   inline bool isSouthHCal(unsigned ieta) { return ieta < 12; }   // IHCAL & OHCAL
   inline bool isNorthHCal(unsigned ieta) { return ieta >= 12; }
+    
   // emcal_sepdCorrelator.h  (private section)
   void  printTriggerSummary(const std::vector<std::string>& active,
                                uint64_t wRaw,uint64_t wLive,uint64_t wScaled) const;

@@ -20,7 +20,8 @@
 ###############################################################################
 set -euo pipefail
 IFS=$'\n\t'
-(( ${DEBUG:-0} )) && set -x
+DEBUG=${DEBUG:-0}        # ensure DEBUG always exists (0 if unset)
+(( DEBUG )) && set -x
 
 trap 'err=$?; printf "\033[0;31m%s  ✘  line %d – cmd `%s` exited %d\033[0m\n" \
                 "$(date "+%F %T")" "${BASH_LINENO[0]}" "$BASH_COMMAND" "$err" >&2' ERR
@@ -95,11 +96,22 @@ if [[ ${1:-} == removeOtherJobs ]]; then
 fi
 
 SUBMODE=${1:-}
+RUNNUM=${2:-}          # only meaningful when SUBMODE == local
 
 case "$MODE" in
-  condor|condorStillRunning)
-      [[ -z "$SUBMODE" || "$SUBMODE" =~ ^(test|firstHalf)$ ]] || usage
-      ;;
+  condor)
+        [[ -z "$SUBMODE" || "$SUBMODE" =~ ^(test|firstHalf)$ ]] || usage
+        ;;
+
+  condorStillRunning)
+        if [[ -z "$SUBMODE" || "$SUBMODE" =~ ^(test|firstHalf)$ ]]; then
+            :
+        elif [[ "$SUBMODE" == local && "$RUNNUM" =~ ^[0-9]{5,8}$ ]]; then
+            :
+        else
+            usage
+        fi
+        ;;
   addRuns)
       [[ -z "$SUBMODE" || "$SUBMODE" == condor ]] || usage
       ;;
@@ -149,7 +161,10 @@ echo -e "\e[1;34m[wrapper] commencing trigger‑prescale scaling for run $runNum
 export RUNNUM_ENV=$runNum        # pass to ROOT
 export OUTFILE_ENV=$OUT
 
-root -l -b -q <<'EOF'
+set -o pipefail                               # keep PIPESTATUS working
+ROOT_LOG=$(mktemp /tmp/scale_${runNum}_XXXX.log)
+
+root -l -b <<'EOF' 2>&1 | tee "$ROOT_LOG"
 {
   //--------------------------------------------------------------------
   //                   verbose‑scaling.C  (inline)
@@ -157,6 +172,7 @@ root -l -b -q <<'EOF'
   #include <iostream>
   #include <iomanip>
   #include <map>
+  #include <regex>
   #include <memory>
   using std::cout; using std::cerr; using std::endl;
 
@@ -185,14 +201,55 @@ root -l -b -q <<'EOF'
   };
 
   /* 2. DB query – collect live / scaled ------------------------------- */
-  int run = std::atoi(gSystem->Getenv("RUNNUM_ENV"));
+  const char* envRun  = gSystem->Getenv("RUNNUM_ENV");                 // may be nullptr
+  int         run     = -1;
+
+  /*––– determine run number (strip leading 0s) ––––––––––––––––––––––––*/
+  if (envRun && *envRun) {
+      run = std::strtol(envRun, nullptr, 10);                          // 00066484 → 66484
+  } else {
+      std::string fn = gSystem->Getenv("OUTFILE_ENV") ? gSystem->Getenv("OUTFILE_ENV") : "";
+      std::smatch  m;
+      if (std::regex_search(fn, m, std::regex("([0-9]{5,8})\\.root$")))
+          run = std::stoi(m[1]);
+  }
+  if (run <= 0) {
+      cerr << RED << "[ERROR] cannot determine run number – abort" << RST << endl;
+      return;
+  }
+
+  /*––– very early diagnostics –––––––––––––––––––––––––––––––––––––––––*/
+  cout << BLU << "[debug] RUNNUM_ENV="   << (envRun ? envRun : "<unset>")
+       << "  OUTFILE_ENV="              << (gSystem->Getenv("OUTFILE_ENV") ? gSystem->Getenv("OUTFILE_ENV") : "<unset>")
+       << RST << endl;
+
   std::map<std::string,double> scaleFac;
   cout << BLU << "[scaling] querying DAQ DB for run " << run << RST << endl;
 
+  /*––– open DB connection –––––––––––––––––––––––––––––––––––––––––––––*/
   std::unique_ptr<TSQLServer> db(
-        TSQLServer::Connect("pgsql://sphnxdaqdbreplica:5432/daq","phnxro",""));
-  if (!db || db->IsZombie()) { cerr << RED << "[ERROR] DB connect failed" << RST << endl; return; }
+      TSQLServer::Connect("pgsql://sphnxdaqdbreplica:5432/daq","phnxro",""));
 
+  if (!db || db->IsZombie()) {
+      cerr << RED << "[ERROR] DB connect failed" << RST << endl;
+      cerr << YEL << "[debug] PGHOST=" << (gSystem->Getenv("PGHOST") ? gSystem->Getenv("PGHOST") : "<unset>")
+           << "  PGPORT=5432  DB=daq  USER=phnxro" << RST << endl;
+      return;
+  }
+  cout << GRN << "[debug] DB connection OK – " << db->ServerInfo() << RST << endl;
+
+  /*──– sanity: show first few tables (helps if schema changes) ––––––––*/
+  {
+      std::unique_ptr<TSQLResult> tbl(db->GetTables("daq", "%"));     // ← fixed
+      cout << BLU << "[debug] available tables (first 10):" << RST << endl;
+      for (int i = 0; tbl && i < 10; ++i) {
+            std::unique_ptr<TSQLRow> row(tbl->Next());
+            if (!row) break;
+            cout << "   • " << row->GetField(0) << endl;
+       }
+  }
+
+  /*––– main scaler query ––––––––––––––––––––––––––––––––––––––––––––––*/
   char q[512];
   std::sprintf(q,
       "SELECT s.index, s.live, s.scaled "
@@ -200,28 +257,78 @@ root -l -b -q <<'EOF'
   cout << YEL << "[query] " << q << RST << endl;
 
   std::unique_ptr<TSQLResult> res(db->Query(q));
-  if (!res) { cerr << RED << "[ERROR] DB query returned null" << RST << endl; return; }
+  if (!res || res->GetRowCount()==0) {
+      cerr << RED << "[ERROR] query returned no rows" << RST << endl;
 
-  while (auto row = res->Next())
-  {
+      /* extra diagnostics – show how many rows exist for that run */
+      char qc[256];
+      std::sprintf(qc,
+        "SELECT COUNT(*) FROM gl1_scalers WHERE runnumber=%d;", run);
+
+      std::unique_ptr<TSQLResult> rc(db->Query(qc));
+      if (rc) {
+          std::unique_ptr<TSQLRow> row(rc->Next());
+          if (row)
+              cout << YEL << "[debug] gl1_scalers rows for run " << run
+                 << " = " << row->GetField(0) << RST << endl;
+      }
+
+      return;
+  }
+
+  /*––– consume scaler rows –‑ LOAD ALL SCALER DATA FIRST –––––––––––––‑*/
+  std::map<int, std::pair<double,double>> scalerMap;   // idx → {live,scaled}
+  while (auto row = res->Next()) {
       int idx = std::atoi(row->GetField(0));
-      double live   = std::atof(row->GetField(1));
-      double scaled = std::atof(row->GetField(2));
-
-      auto it = trigName.find(idx);
-      if (it==trigName.end()) { delete row; continue; }
-
-      double factor = (scaled>0) ? live/scaled : -1;
-      scaleFac[it->second] = factor;
-
-      cout << std::setw(4) << idx << " → "
-           << std::setw(40) << it->second
-           << " | live=" << std::setw(10) << live
-           << " scaled=" << std::setw(10) << scaled
-           << "  ⇒  factor=" << factor << endl;
+      scalerMap[idx] = { std::atof(row->GetField(1)), std::atof(row->GetField(2)) };
       delete row;
   }
-  if (scaleFac.empty()) { cerr << RED << "[ERROR] no scale factors found – abort" << RST << endl; return; }
+
+  /*––– now iterate over **every** trigger in trigName –––––––––––––––––*/
+  for (const auto &tg : trigName)
+  {
+      int idx = tg.first;
+      const std::string &dir = tg.second;
+
+      auto itS = scalerMap.find(idx);
+      if (itS == scalerMap.end()) {
+          cout << YEL << "[skip] " << dir << " (no row in gl1_scalers)" << RST << endl;
+          continue;
+      }
+      double live   = itS->second.first;
+      double scaled = itS->second.second;
+
+      /*── scaledown check – -1 means trigger OFF ––––––––––––––––––––––*/
+      char qsd[256];
+      std::sprintf(qsd,
+          "SELECT scaledown%d FROM gl1_scaledown WHERE runnumber=%d;", idx, run);
+      std::unique_ptr<TSQLResult> sdres(db->Query(qsd));
+      double sdFactor = -1;
+      if (sdres) {
+          std::unique_ptr<TSQLRow> sdrow(sdres->Next());
+          if (sdrow) sdFactor = std::atof(sdrow->GetField(0));
+      }
+      if (sdFactor < 0) {
+          cout << YEL << "[skip] " << dir
+               << " (scaledown = -1, no scaling applied)" << RST << endl;
+          continue;
+      }
+
+      /*── active trigger – calculate scale factor –––––––––––––––––––––*/
+      double factor = (scaled > 0) ? live / scaled : -1;
+      scaleFac[dir] = factor;
+
+      cout << std::setw(4) << idx << " → "
+           << std::setw(40) << dir
+           << " | live="   << std::setw(10) << live
+           << " scaled="   << std::setw(10) << scaled
+           << "  ⇒  factor=" << factor << endl;
+  }
+
+  if (scaleFac.empty()) {
+      cerr << RED << "[ERROR] no scale factors found – abort" << RST << endl;
+      return;
+  }
 
   /* 3. open ROOT file ------------------------------------------------- */
   const char* fName = gSystem->Getenv("OUTFILE_ENV");
@@ -242,34 +349,40 @@ root -l -b -q <<'EOF'
       cout << GRN << "[scale] " << dir << "  factor=" << fac << RST << endl;
       ++nDirScaled;
 
-      TIter itKey(d->GetListOfKeys());
-      while (auto* k = (TKey*)itKey())
+      /* --- snapshot the list of keys --------------------------------- */
+      std::vector<std::string> keyNames;
       {
-            TObject* obj = k->ReadObj();
-            if (!obj->InheritsFrom("TH1")) { delete obj; continue; }
-            TH1* h = (TH1*)obj;
-
-            // ── skip one–bin counters and the MB–vs‑Trigger QA map ────────────────
-            const std::string hname = h->GetName();
-            if (hname.rfind("cnt_",0)==0 || hname=="h_MB_vs_Trigger")
-            {   delete h;  continue;   }
-
-            double oldInt = h->Integral();
-            if (oldInt==0) { delete h; continue; }
-
-            h->Scale(fac);
-            double newInt = h->Integral();
-
-            cout << "   • " << std::left << std::setw(45) << hname
-                 << "  " << std::right << std::fixed << std::setprecision(1)
-                 << oldInt << "  →  " << newInt << endl;
-
-            d->cd();
-            h->Write(hname.c_str(), TObject::kOverwrite);
-            delete h;
-            ++nHistScaled;
+          TIter itKey(d->GetListOfKeys());
+          while (auto *k = static_cast<TKey*>(itKey()))
+              keyNames.emplace_back(k->GetName());
       }
 
+      /* --- now scale each histogram exactly once --------------------- */
+      for (const auto &hname : keyNames)
+      {
+          TObject *obj = d->Get(hname.c_str());
+          if (!obj || !obj->InheritsFrom("TH1")) { delete obj; continue; }
+          TH1 *h = static_cast<TH1*>(obj);
+
+          if (hname.rfind("cnt_",0)==0 || hname=="h_MB_vs_Trigger")
+          {   delete h;  continue;   }
+
+          double oldInt = h->Integral();
+          if (oldInt==0) { delete h; continue; }
+
+          h->Scale(fac);
+          double newInt = h->Integral();
+
+          cout << "   • " << std::left << std::setw(45) << hname
+               << "  " << std::right << std::fixed << std::setprecision(1)
+               << oldInt << "  →  " << newInt << endl;
+
+          d->cd();
+          h->Write(hname.c_str(), TObject::kOverwrite);
+          delete h;
+          ++nHistScaled;
+      }
+      
       f.cd();
   }
 
@@ -277,10 +390,13 @@ root -l -b -q <<'EOF'
   cout << BLU << "[summary] scaled " << nHistScaled << " histograms in "
        << nDirScaled << " trigger directories" << RST << endl;
 }
+.q
 EOF
+ROOT_RC=${PIPESTATUS[0]}                     # true exit code of ROOT
+echo -e "\e[1;34m[wrapper] ROOT exit code = ${ROOT_RC}  •  full log ⇒ ${ROOT_LOG}\e[0m"
 
-if [[ $? -ne 0 ]]; then
-    echo -e "\e[0;31m[FATAL] ROOT scaling macro failed – see log above\e[0m"
+if (( ROOT_RC != 0 )); then
+    echo -e "\e[0;31m[FATAL] ROOT scaling macro aborted – inspect ${ROOT_LOG}\e[0m"
     exit 4
 fi
 
@@ -442,7 +558,7 @@ fi
 ###############################################################################
 # ---- 8.  PER‑RUN MERGE (MODE = condor) --------------------------------------
 ###############################################################################
-if [[ $MODE == condor || $MODE == condorStillRunning ]]; then
+if [[ ($MODE == condor || $MODE == condorStillRunning) && $SUBMODE != local ]]; then
   ###########################################################################
   # (Re)initialise work‑area for *every* submission, even when we are in
   # condorStillRunning mode.  We remove only the per‑run merged ROOT files
@@ -520,8 +636,13 @@ fi
 ###############################################################################
 # ---- 9.  SINGLE‑RUN LOCAL MERGE --------------------------------------------
 ###############################################################################
-if [[ $MODE == local ]]; then
-  run="$SUBMODE"
+if [[ $MODE == local || ( $MODE == condorStillRunning && $SUBMODE == local ) ]]; then
+  if [[ $MODE == local ]]; then
+      run="$SUBMODE"         # ./merge_data.sh  local  <run>
+  else
+      run="$RUNNUM"          # ./merge_data.sh  condorStillRunning  local  <run>
+  fi
+  
   [[ -n ${busySet[$run]+x} ]] && { warn "Run $run is still active in Condor – skipping local merge"; exit 0; }
 
   say "Local merge for run ${run}"

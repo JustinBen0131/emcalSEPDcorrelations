@@ -4108,16 +4108,44 @@ void runOneQaPass(const std::string& inFile,
     string trg = kd->GetName(); if (!kTriggersWanted.count(trg)) continue;
     TDirectory* dTrig = static_cast<TDirectory*>(kd->ReadObj());
 
-      for (auto& s : slices) {
-        fs::path b = fs::path(kOutputBase) / trg;
-        for (auto sub : { "correlations", "vNana", "centrality",
+      /* ------------------------------------------------------------------
+       * Decide whether this trigger directory contains *only* the two
+       * counter histograms (cnt_<trig>_raw / cnt_<trig>_live) plus the
+       * generic MB⊗Trigger map.  If so, create just the triggerQA folder;
+       * otherwise keep the full sub‑folder hierarchy as before.
+       * ------------------------------------------------------------------ */
+    auto isMinimalTrigFolder = [&](TDirectory* dir)->bool
+    {
+          TIter it(dir->GetListOfKeys());
+          while (auto* key = dynamic_cast<TKey*>(it())) {
+              const std::string h = key->GetName();
+
+              /* allow only the counter pair, vertex‑cut helper and the MB map */
+              const bool ok =
+                    h == "h_MB_vs_Trigger" ||
+                    h.rfind("cnt_",0)            == 0       ||   /* cnt_* */
+                    h.rfind("h_vtxRelToCut_",0)  == 0;           /* optional */
+
+              if (!ok) return false;           /* something else → need full QA */
+          }
+          return true;                         /* nothing but counters/MB map   */
+      };
+
+      fs::path b = fs::path(kOutputBase) / trg;
+
+      if (isMinimalTrigFolder(dTrig)) {
+          /* scaled trigger inactive → only two histograms → only TriggerQA */
+          ensure_dir(b / "triggerQA");
+      } else {
+          /* full statistics available → build the usual directory tree once */
+          for (auto sub : { "correlations", "vNana", "centrality",
                             "EMCal/otherQA", "EMCal/invMassQA", "EMCal/invMassQA/cutQA",
                             "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
                             "MBD/otherQA", "MBD/zVertex",
                             "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
                             "jetQA/generalHistos", "jetQA/summary", "triggerQA" })
-            ensure_dir(b / sub);
-      }
+              ensure_dir(b / sub);
+    }
 
     /* QA modules ---------------------------------------------------- */
     std::vector<std::unique_ptr<QA>> qa;
@@ -4172,16 +4200,90 @@ void runOneQaPass(const std::string& inFile,
   csv.close();
 
   /* -----------------------------  Summary ------------------------- */
-  log::banner("Summary");
+  log::banner("Summary – QA modules");
+  std::cout << term::CLR_BOLD
+                << std::left  << std::setw(20) << "Trigger"
+                << std::right << std::setw(12) << "Total"
+                << std::setw(12)                << "Written"
+                << term::CLR_RST << "\n";
+  for (auto& [t,c] : stat)
+        std::cout << std::left  << std::setw(20) << t
+                  << std::right << std::setw(12) << c.tot
+                  << std::setw(12)               << c.used << "\n";
+
+  /* ------------------------------------------------------------------
+  *  Additional trigger‑counter overview
+  *  – builds a compact table from cnt_* histograms plus the
+  *    MB × Trigger correlation map so that one can judge which
+  *    trigger replicates the minimum‑bias condition.
+  * ------------------------------------------------------------------ */
+  log::banner("Trigger ↔ MB correlation");
   std::cout << term::CLR_BOLD
             << std::left  << std::setw(20) << "Trigger"
-            << std::right << std::setw(12) << "Total"
-            << std::setw(12)                << "Written"
+            << std::right << std::setw(12) << "RAW"
+            << std::setw(12)               << "LIVE"
+            << std::setw(12)               << "SCALED"
+            << std::setw(14)               << "MB&&Trig"
+            << std::setw(12)               << "MB Only"
+            << std::setw(12)               << "Trig Only"
             << term::CLR_RST << "\n";
-  for (auto& [t,c] : stat)
-    std::cout << std::left  << std::setw(20) << t
-              << std::right << std::setw(12) << c.tot
-              << std::setw(12)               << c.used << "\n";
+
+  /* loop once more over the trigger directories that were processed
+         – the input TFile ‘in’ is still open and provides direct access   */
+  TIter itTrig(in->GetListOfKeys());
+  while (auto* kDir = dynamic_cast<TKey*>(itTrig()))
+  {
+          if (strcmp(kDir->GetClassName(), "TDirectoryFile")) continue;
+
+          std::string trgName = kDir->GetName();
+          if (!kTriggersWanted.count(trgName)) continue;
+
+          TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
+
+          /* scalar counters ------------------------------------------------ */
+          auto getCnt = [&](const std::string& h)->long long
+          {
+              if (auto* h1 = dynamic_cast<TH1*>( dTrig->Get(h.c_str()) ))
+                  return static_cast<long long>(h1->GetBinContent(1));
+              return 0LL;
+          };
+          const long long nRaw    = getCnt("cnt_" + trgName + "_raw");
+          const long long nLive   = getCnt("cnt_" + trgName + "_live");
+          const long long nScaled = getCnt("cnt_" + trgName + "_scaled");
+
+          /* MB × Trigger correlation map ---------------------------------- */
+          long long mb_and_trig = 0, mb_only = 0, trig_only = 0;
+          if (auto* h2 = dynamic_cast<TH2*>( dTrig->Get("h_MB_vs_Trigger") ))
+          {
+              int xbin = -1;
+
+              /* try to locate the X‑bin via its label */
+              for (int ix = 1; ix <= h2->GetNbinsX(); ++ix)
+                  if (const char* lb = h2->GetXaxis()->GetBinLabel(ix);
+                      lb && std::string(lb) == trgName) { xbin = ix; break; }
+
+              if (xbin > 0) {
+                  trig_only     = static_cast<long long>(h2->GetBinContent(xbin, 2));
+                  mb_only       = static_cast<long long>(h2->GetBinContent(xbin, 3));
+                  mb_and_trig   = static_cast<long long>(h2->GetBinContent(xbin, 4));
+              }
+          }
+
+          /* highlight “pure” minimum‑bias‑like triggers in green */
+          const char* rowClr =
+              (mb_and_trig > 0 && mb_only == 0 && trig_only == 0)
+                  ? term::CLR_GRN : term::CLR_CYAN;
+
+          std::cout << rowClr
+                    << std::left  << std::setw(20) << trgName
+                    << std::right << std::setw(12) << nRaw
+                    << std::setw(12)               << nLive
+                    << std::setw(12)               << nScaled
+                    << std::setw(14)               << mb_and_trig
+                    << std::setw(12)               << mb_only
+                    << std::setw(12)               << trig_only
+                    << term::CLR_RST << "\n";
+  }
 
   log::ok("All outputs under " + kOutputBase);
     
