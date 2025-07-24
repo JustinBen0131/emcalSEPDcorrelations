@@ -710,10 +710,10 @@ class Pi0QA : public QA
                 //   • busy bins: bottom‑right, same height
                 //   • bigger text + tighter line spacing so “μ” and “σ” sit closer
                 // ──────────────────────────────────────────────────────────────────────
-                double legY1 = 0.71, legY2 = 0.85;                 // default: top‑right, 0.14 tall
+                double legY1 = 0.65, legY2 = 0.85;                 // default: top‑right, 0.14 tall
                 if (pTInt && (slice == "0_10" || slice == "10_20" || slice == "20_30" || slice == "30_40")) {
                     legY1 = 0.15;                                  // bottom‑right window
-                    legY2 = 0.28;                                  // same 0.14 tall
+                    legY2 = 0.35;                                  // same 0.14 tall
                 }
 
                 TLegend leg(0.45, legY1, 0.88, legY2);
@@ -1136,9 +1136,30 @@ class Pi0QA : public QA
             /* ===================================================================
              * 2.  Save 2×3 grid
              * ================================================================= */
+            /* replacement */
             std::string runShort = runID;
             if (std::all_of(runID.begin(), runID.end(), ::isdigit))
                 runShort = std::to_string(std::stoi(runID));
+
+            /* -------- build a human‑readable run header --------------------------- */
+            std::string runLabel;
+            if (runID != "Combined") {
+                runLabel = "Run " + runShort;                 // single‑run files
+            } else {
+                std::set<int> runNums;                        // collect all run numbers seen
+                for (const auto& [hName,fi] : _fitSummary) {
+                    std::smatch mm;
+                    if (std::regex_search(hName, mm, std::regex(R"(run_?([0-9]{6,}))")))
+                        runNums.insert(std::stoi(mm[1]));
+                }
+                if (!runNums.empty()) {
+                    int lo = *runNums.begin();
+                    int hi = *runNums.rbegin();
+                    runLabel = Form("runs %d #rightarrow %d, %zu runs", lo, hi, runNums.size());
+                } else {
+                    runLabel = "(combined)";
+                }
+            }
 
             double eCut = 0., chiCut = 0., asyCut = 0.;
             std::smatch m;
@@ -1189,6 +1210,13 @@ class Pi0QA : public QA
                 p1->Draw(); p1->cd();
                 gMu->SetTitle("; ;#mu_{#pi^{0}} (GeV/c^{2})");
                 gMu->Draw("AP");
+
+                /* ---------- run‑number banner ---------------------------------------- */
+                {
+                    TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.04);  tx.SetTextAlign(13);
+                    tx.DrawLatex(0.78, 0.92, runLabel.c_str());
+                }
+
                 gMu->GetXaxis()->SetLabelOffset(999);
                 gMu->GetXaxis()->SetTitleOffset(999);
                 gMu->GetXaxis()->SetTickLength(0);
@@ -1200,6 +1228,17 @@ class Pi0QA : public QA
                 p2->Draw(); p2->cd();
                 gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
                 gSi->Draw("AP");
+                
+                /* ---------- enlarge axis titles & labels --------------------------- */
+                TAxis* axX = gSi->GetXaxis();
+                TAxis* axY = gSi->GetYaxis();
+
+                axX->SetTitleSize(0.070);      // bigger “Centrality [%]”
+                axX->SetLabelSize(0.060);      // bigger x-tick numbers
+
+                axY->SetTitleSize(0.075);      // y-axis title almost as big as upper pad
+                axY->SetLabelSize(0.060);      // bigger y-tick numbers
+//                axY->SetTitleOffset(1.05);     // nudge title away from ticks
 
                 fs::path pngGraph = root/"EMCal"/"invMassQA"/cutTag
                                    /"Pi0Mass_Sigma_vs_Centrality.png";
@@ -1288,7 +1327,14 @@ class Pi0QA : public QA
                 p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
                 p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
                 p1->Draw(); p1->cd();
-                gMuPT->SetTitle("; ;m_{#pi^{0}}  (GeV)"); gMuPT->Draw("AP");
+                gMuPT->SetTitle("; ;m_{#pi^{0}}  (GeV)");
+                gMuPT->Draw("AP");
+
+                /* ---------- centrality + run banner ---------------------------------- */
+                {
+                    TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.040);  tx.SetTextAlign(13);
+                    tx.DrawLatex(0.12, 0.96, Form("Cent %s %%   %s", sl.c_str(), runLabel.c_str()));
+                }
 
                 cPT.cd();
                 TPad* p2=new TPad("p2","",0,0,1,fracBot);
@@ -1506,9 +1552,9 @@ class Pi0QA : public QA
             gMuList.front()->GetYaxis()->SetRangeUser(yMin - margin, yMax + margin);
 
             cR.cd();
-            TPad* p2 = new TPad("p2","",0,0,1,0.32);
+            TPad* p2 = new TPad("p2","",0,0,1,0.35);
             p2->SetTopMargin(0.02);
-            p2->SetBottomMargin(0.30);
+            p2->SetBottomMargin(0.55);
             p2->Draw();
             p2->cd();
 
@@ -1538,7 +1584,8 @@ class Pi0QA : public QA
                     axSi->SetBinLabel(k + 1, "");        // leave blank
 
             axSi->LabelsOption("v");
-            axSi->SetLabelSize(0.030);                  // a bit smaller
+            axSi->SetLabelSize(0.07);                  // a bit smaller
+            axSi->SetLabelOffset(0.012);
             
             /* -------- auto‑scale y‑axis, but anchor lower edge at 0 -------- */
             double ymax = -1e9;
@@ -1604,9 +1651,9 @@ class Pi0QA : public QA
 
                 /* ---------- lower pad (σ) ---------- */
                 cS.cd();
-                TPad* pL = new TPad("pL","",0,0,1,0.32);
+                TPad* pL = new TPad("pL","",0,0,1,0.35);
                 pL->SetTopMargin(0.02);
-                pL->SetBottomMargin(0.30);
+                pL->SetBottomMargin(0.55);
                 pL->Draw(); pL->cd();
 
                 gSiList[idx]->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
@@ -1628,7 +1675,8 @@ class Pi0QA : public QA
                         (k % skip == 0) ? Form("%d", allRuns[k]) : "");
 
                 axL->LabelsOption("v");
-                axL->SetLabelSize(0.030);
+                axL->SetLabelSize(0.07);
+                axL ->SetLabelOffset(0.012);
 
                 /* save the per‑slice PNG */
                 fs::path pngSlice = root/"EMCal"/"invMassQA"/cutTag
@@ -2141,13 +2189,13 @@ class CorrQA : public QA
                         const int lo = std::stoi(m[1].str());
                         const int hi = std::stoi(m[2].str());
                         std::ostringstream oss;
-                        oss << lo << "\\%\\;#leq\\;centrality\\;<\\;" << hi << "\\%";
+                        oss << lo << " %  #leq  centrality  <  " << hi << " %";
                         label = oss.str();
                     } else {
                         label = vec[i].first;            // fallback – unexpected slice key
                     }
                 }
-                tl.DrawLatex(0.05, 0.85, label.c_str());
+                tl.DrawLatex(0.45, 0.18, label.c_str());
             }
 
             fs::path dir = root / "correlations" / groupDir;

@@ -121,6 +121,7 @@ SKIP_RUNNING=0
 cat > "$HADD_WRAPPER" <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ ${DEBUG_WRAPPER:-0} -ne 0 ]] && set -x         # export DEBUG_WRAPPER=1 for x‑trace
 LIST=$1; OUT=$2
 [[ -s $LIST ]] || { echo "[FATAL] empty list $LIST"; exit 2; }
 
@@ -132,6 +133,8 @@ set -u
 
 exec 1> >(stdbuf -oL cat) 2>&1          # live stdout/err streaming
 echo -e "\e[1;34m[wrapper] $(wc -l <"$LIST") inputs  →  $OUT\e[0m"
+echo "[wrapper] Input file list:"
+nl -ba "$LIST"
 hadd -v -v -v -f "$OUT" @"$LIST" || { echo -e "\e[0;31m[FATAL] hadd failed – abort\e[0m"; exit 3; }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -156,6 +159,9 @@ root -l -b -q <<'EOF'
   #include <map>
   #include <memory>
   using std::cout; using std::cerr; using std::endl;
+
+  gErrorIgnoreLevel = kInfo;                 // print all ROOT messages
+  if (std::getenv("DEBUG_ROOT")) gDebug = 1; // export DEBUG_ROOT=1 for ROOT‑level trace
 
   /* 0. ANSI helpers --------------------------------------------------- */
   const char* GRN="\033[0;32m", *YEL="\033[1;33m", *RED="\033[0;31m", *BLU="\033[1;34m", *RST="\033[0m";
@@ -239,25 +245,31 @@ root -l -b -q <<'EOF'
       TIter itKey(d->GetListOfKeys());
       while (auto* k = (TKey*)itKey())
       {
-          TObject* obj = k->ReadObj();
-          if (!obj->InheritsFrom("TH1")) { delete obj; continue; }
-          TH1* h = (TH1*)obj;
+            TObject* obj = k->ReadObj();
+            if (!obj->InheritsFrom("TH1")) { delete obj; continue; }
+            TH1* h = (TH1*)obj;
 
-          double oldInt = h->Integral();
-          if (oldInt==0) { delete h; continue; }
+            // ── skip one–bin counters and the MB–vs‑Trigger QA map ────────────────
+            const std::string hname = h->GetName();
+            if (hname.rfind("cnt_",0)==0 || hname=="h_MB_vs_Trigger")
+            {   delete h;  continue;   }
 
-          h->Scale(fac);
-          double newInt = h->Integral();
+            double oldInt = h->Integral();
+            if (oldInt==0) { delete h; continue; }
 
-          cout << "   • " << std::left << std::setw(45) << h->GetName()
-               << "  " << std::right << std::fixed << std::setprecision(1)
-               << oldInt << "  →  " << newInt << endl;
+            h->Scale(fac);
+            double newInt = h->Integral();
 
-          d->cd();
-          h->Write(h->GetName(), TObject::kOverwrite);
-          delete h;
-          ++nHistScaled;
+            cout << "   • " << std::left << std::setw(45) << hname
+                 << "  " << std::right << std::fixed << std::setprecision(1)
+                 << oldInt << "  →  " << newInt << endl;
+
+            d->cd();
+            h->Write(hname.c_str(), TObject::kOverwrite);
+            delete h;
+            ++nHistScaled;
       }
+
       f.cd();
   }
 
@@ -286,7 +298,9 @@ SKIP_FILE="$TMP_LIST_DIR/skip_running_jobs.txt"
 if (( SKIP_RUNNING )); then
     say "Building skip‑list for active Condor chunks → $(basename "$SKIP_FILE")"
     : > "$SKIP_FILE"
-    condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Args 2>/dev/null |
+    condor_q "$USER" \
+        -constraint "$QA_CMD_FILTER && (JobStatus == 1 || JobStatus == 2)" \
+        -af Args 2>/dev/null |
       awk -v base="$CONDOR_OUT_BASE" '
           {
               run=$1; tag=$3;
@@ -302,18 +316,13 @@ safe_find() {                                  # robust, fault‑tolerant “fin
   say "  • scanning $dir"
 
   ###########################################################################
-  # 1. RE‑BUILD the skip‑list *every time* so chunks that finish meanwhile
-  #    are picked up the next second we look at the directory.
+  # 1. Skip‑list is NOT refreshed here.
+  #    We keep the list that was built once at script start so that any
+  #    chunk that was IDLE or RUNNING back then is excluded from every merge,
+  #    even if the job finishes while we are scanning directories.
   ###########################################################################
   if (( SKIP_RUNNING )); then
-      condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Args 2>/dev/null |
-        awk -v base="$CONDOR_OUT_BASE" '
-            {
-                run=$1; tag=$3;
-                if (run ~ /^[0-9]+$/ && tag != "")
-                    printf "%s/%s/%s.root\n", base, run, tag
-            }' | sort -u > "${SKIP_FILE}.new"
-      mv -f "${SKIP_FILE}.new" "$SKIP_FILE"
+      :
   fi
 
   ###########################################################################
