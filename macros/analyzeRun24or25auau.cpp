@@ -3043,25 +3043,42 @@ class sEPDotherQA : public QA
 
             const int clrS = kRed+1,  clrN = kBlue+2;
 
-            /* pad 1 : occupancy overlaid -------------------------------- */
+            /* pad 1 : occupancy overlaid – normalise each arm to unit area */
             c.cd(1); gPad->SetGridy();
             prep(set[OCC_S].get(), clrS); prep(set[OCC_N].get(), clrN);
+
+            /* ----------- simple per‑histogram normalisation ------------------ */
+            double occIntS = set[OCC_S]->Integral();
+            double occIntN = set[OCC_N]->Integral();
+            if (occIntS > 0.) set[OCC_S]->Scale(1.0 / occIntS);
+            if (occIntN > 0.) set[OCC_N]->Scale(1.0 / occIntN);
+
             set[OCC_S]->SetTitle("");
-            set[OCC_S]->GetYaxis()->SetTitle("hits / event");
+            set[OCC_S]->GetYaxis()->SetTitle("normalised hits");
             set[OCC_S]->Draw("hist");
             set[OCC_N]->Draw("hist same");
-            TLegend leg1(0.55,0.2,0.88,0.45); leg1.AddEntry(set[OCC_S].get(),"South","l");
-            leg1.AddEntry(set[OCC_N].get(),"North","l"); leg1.Draw();
+            TLegend leg1(0.55,0.2,0.88,0.45);
+            leg1.AddEntry(set[OCC_S].get(),"South","l");
+            leg1.AddEntry(set[OCC_N].get(),"North","l");
+            leg1.Draw();
 
-            /* pad 2 : ΣQ overlaid --------------------------------------- */
+            /* pad 2 : ΣQ overlaid – normalise each arm to unit area */
             c.cd(2); gPad->SetGridy();
             prep(set[Q_S].get(), clrS); prep(set[Q_N].get(), clrN);
+
+            double qIntS = set[Q_S]->Integral();
+            double qIntN = set[Q_N]->Integral();
+            if (qIntS > 0.) set[Q_S]->Scale(1.0 / qIntS);
+            if (qIntN > 0.) set[Q_N]->Scale(1.0 / qIntN);
+
             set[Q_S]->SetTitle("");
-            set[Q_S]->GetYaxis()->SetTitle("#SigmaQ  [ADC]");
+            set[Q_S]->GetYaxis()->SetTitle("normalised #SigmaQ");
             set[Q_S]->Draw("hist");
             set[Q_N]->Draw("hist same");
-            TLegend leg2(0.55,0.2,0.88,0.45); leg2.AddEntry(set[Q_S].get(),"South","l");
-            leg2.AddEntry(set[Q_N].get(),"North","l"); leg2.Draw();
+            TLegend leg2(0.55,0.2,0.88,0.45);
+            leg2.AddEntry(set[Q_S].get(),"South","l");
+            leg2.AddEntry(set[Q_N].get(),"North","l");
+            leg2.Draw();
 
             /* pad 3 : South occupancy alone ----------------------------- */
             c.cd(3); gPad->SetGridy();
@@ -3231,66 +3248,85 @@ class NSDetectorQA : public QA
           TCanvas c("c_hit", "", 1200, 600);
           c.Divide(2, 1, 0.01, 0.01);
 
-          /* helper to paint one pad --------------------------------------- */
           auto drawPad = [&](TH2* h, const char* ttl, bool withZ)
           {
-              constexpr double Rmax = 3.8;     // outermost ring radius (cm)
+              /* ------------------------------------------------------------
+               * Decide view style at run‑time:
+               *   • TH2Poly  → Cartesian hexagons (MBD)
+               *   • TH2      → φ–r polar map      (sEPD)
+               * ------------------------------------------------------------ */
+              const bool isHex = h->InheritsFrom(TH2Poly::Class());
 
-              gPad->SetLeftMargin (0.10);
-              gPad->SetBottomMargin(0.10);
-              gPad->SetTopMargin  (0.08);
-              gPad->SetRightMargin(0.05);      // same visible width on both pads
-              gPad->SetFixedAspectRatio();     // keep the circle truly circular
-              gPad->SetLogz();
-
-              const char* optFirst = withZ ? "COLZ POL AH"      : "COL POL AH";
-              const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
-
-              /* first draw – creates palette if needed */
-              h->SetTitle(ttl);
-              h->GetZaxis()->SetTitle("Counts");
-              h->GetZaxis()->SetTitleOffset(1.30);
-              h->Draw(optFirst);
-
-              /* palette relocation (only right pad) ----------------------- */
-              if (withZ)
+              if (isHex)                         /* ---------- MBD hex view ---------- */
               {
-                  gPad->Update();
-                  if (auto* pal = static_cast<TPaletteAxis*>(
-                          h->GetListOfFunctions()->FindObject("palette")))
+                  gPad->SetRightMargin(0.18);
+                  gPad->SetLeftMargin (0.12);
+                  gPad->SetBottomMargin(0.12);
+                  gPad->SetTopMargin  (0.08);
+                  gPad->SetLogz();
+
+                  h->SetTitle(ttl);
+                  h->GetZaxis()->SetTitle("Counts");
+                  h->GetZaxis()->SetTitleOffset(1.30);
+                  h->Draw("POLZ");
+              }
+              else                                /* ---------- sEPD polar view ---------- */
+              {
+                  constexpr double Rmax = 3.8;     // outermost ring radius (cm)
+
+                  gPad->SetLeftMargin (0.10);
+                  gPad->SetBottomMargin(0.10);
+                  gPad->SetTopMargin  (0.08);
+                  gPad->SetRightMargin(0.05);
+                  gPad->SetFixedAspectRatio();
+                  gPad->SetLogz();
+
+                  const char* optFirst = withZ ? "COLZ POL AH"      : "COL POL AH";
+                  const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
+
+                  h->SetTitle(ttl);
+                  h->GetZaxis()->SetTitle("Counts");
+                  h->GetZaxis()->SetTitleOffset(1.30);
+                  h->Draw(optFirst);
+
+                  if (withZ)                      /* relocate palette right pad */
                   {
-                      const double x2 = 1.0 - 0.5 * gPad->GetRightMargin();
-                      pal->SetX1NDC(x2 - 0.04);
-                      pal->SetX2NDC(x2);
-                      pal->SetY1NDC(0.20);
-                      pal->SetY2NDC(0.85);
-                      pal->SetLabelSize(0.030);
+                      gPad->Update();
+                      if (auto* pal = static_cast<TPaletteAxis*>(
+                              h->GetListOfFunctions()->FindObject("palette")))
+                      {
+                          const double x2 = 1.0 - 0.5 * gPad->GetRightMargin();
+                          pal->SetX1NDC(x2 - 0.04);
+                          pal->SetX2NDC(x2);
+                          pal->SetY1NDC(0.20);
+                          pal->SetY2NDC(0.85);
+                          pal->SetLabelSize(0.030);
+                      }
                   }
+
+                  gPad->DrawFrame(-Rmax, -Rmax, Rmax, Rmax);
+                  h->Draw(optSame);
+
+                  /* φ‑sector spokes ------------------------------------------- */
+                  static std::vector<TLine> spokes;
+                  if (spokes.empty())
+                  {
+                      const double dPhi  = 2.0 * TMath::Pi() / 24.0;   // 15°
+                      const double rStop = h->GetYaxis()->GetXmax();   // 3.50 cm
+                      for (int i = 0; i < 24; ++i)
+                      {
+                          const double a = i * dPhi;
+                          spokes.emplace_back(0., 0.,
+                                              rStop * std::cos(a),
+                                              rStop * std::sin(a));
+                          spokes.back().SetLineColor(kBlack);
+                          spokes.back().SetLineWidth(1);
+                      }
+                  }
+                  for (auto& l : spokes) l.Draw();
               }
 
-              /* frame + re‑draw ------------------------------------------- */
-              gPad->DrawFrame(-Rmax, -Rmax, Rmax, Rmax);
-              h->Draw(optSame);
-
-              /* φ‑sector spokes ------------------------------------------- */
-              static std::vector<TLine> spokes;
-              if (spokes.empty())
-              {
-                  const double dPhi  = 2.0 * TMath::Pi() / 24.0;       // 15°
-                  const double rStop = h->GetYaxis()->GetXmax();       // 3.50 cm
-                  for (int i = 0; i < 24; ++i)
-                  {
-                      const double a = i * dPhi;
-                      spokes.emplace_back(0., 0.,
-                                          rStop * std::cos(a),
-                                          rStop * std::sin(a));
-                      spokes.back().SetLineColor(kBlack);
-                      spokes.back().SetLineWidth(1);
-                  }
-              }
-              for (auto& l : spokes) l.Draw();
-
-              /* augmented title with run + counts ------------------------- */
+              /* ----------- common augmented title (both styles) ----------------- */
               const unsigned long long nEvt =
                   static_cast<unsigned long long>( h->GetEntries() );
 
