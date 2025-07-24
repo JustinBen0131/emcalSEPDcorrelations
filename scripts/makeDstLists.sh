@@ -167,14 +167,27 @@ if [[ $extra == caloFitting ]]; then
   ###########################################################################
   # 0 . settings that you are likely to tweak occasionally                  #
   ###########################################################################
-  tag="new_newcdbtag_v006"           # CreateDstList.pl  --tag
+  # ---------- user‑configurable switches & CLI overrides ----------
   dataset="run3auau"                 # CreateDstList.pl  --dataset
   calo_prefix="DST_CALOFITTING"
   min_runtime=300                    # s  (≥ 5 min)
   min_gl1_evt=100000                 # GL1 events cut
   top_trig=20                        # show N most‑frequent triggers
-  run3_list="run3auau-${tag}.list"
-  golden_txt="../run3GoldenRuns.txt"
+
+  # 3rd CLI arg may be either a version suffix (e.g. “v007”) or the
+  # literal string “forceFileList”.  A 4th arg can still be “forceFileList”.
+  default_ver="v006"
+  if [[ ${3:-} == forceFileList ]]; then
+      tag="new_newcdbtag_${default_ver}"
+      build_mode=forceFileList
+  else
+      ver_suffix=${3:-$default_ver}
+      tag="new_newcdbtag_${ver_suffix}"
+      build_mode=${4:-create}
+  fi
+
+  run3_list="${list_dir}/run3auau-${tag}.list"
+  golden_txt="${list_dir}/run3goldenruns.txt"
 
   ###########################################################################
   # 1 . obtain Run‑3 Au+Au run numbers for CALOFITTING                      #
@@ -312,6 +325,13 @@ if [[ $extra == caloFitting ]]; then
       fi
       printf "$hdr_fmt" "$trg" "${trig_run[$trg]}" "${trig_sum[$trg]}" "$avg"
   done | sort -k2 -nr | head -"$top_trig"
+  
+  # ------------------------------------------------------------------
+  #  ➜  WRITE THE GOLDEN‑RUN MANIFEST *BEFORE* IT IS FIRST CONSUMED.
+  #  This guarantees the file exists when CreateDstList.pl is invoked.
+  # ------------------------------------------------------------------
+  printf '%s\n' "${golden[@]}" >"$golden_txt"
+  good "Golden run list ➔ $golden_txt"
 
 
 
@@ -319,9 +339,8 @@ if [[ $extra == caloFitting ]]; then
   # 4 . produce per‑run .list files for the golden sample                  #
   ###########################################################################
 
-  # third positional argument decides how the .list files are built
-  build_mode=${3:-create}        # create  →  use CreateDstList.pl   (default)
-                                   # forceFileList → traverse caloy2fitting tree
+  # build_mode was set in the initialisation block above – do not override here
+  : "${build_mode:=create}"      # fallback only if somehow unset
 
   say "Generating ${calo_prefix} .list files for ${#golden[@]} golden runs  (mode=${build_mode})"
 
@@ -362,15 +381,15 @@ if [[ $extra == caloFitting ]]; then
 
   else
       # ----------------------------------------------------------------------
-      # 4B. STANDARD PATH – use CreateDstList.pl exactly as before
+      # 4B. SINGLE‑PASS LIST CREATION – build all CALOFITTING lists in one go
       # ----------------------------------------------------------------------
-      for run in "${golden[@]}"; do
-          out_list="${list_dir}/${calo_prefix}-${run}.list"
-          CreateDstList.pl --tag "$tag" --dataset "$dataset" \
-                           --list "$run3_list" --run "$run" \
-                           "$calo_prefix" >"$out_list"
-          good "  ${run}: $(wc -l <"$out_list") path(s)"
-      done
+      (
+        cd "$list_dir" || fatal "Cannot cd into $list_dir"
+        CreateDstList.pl --tag "$tag" \
+                         --dataset "$dataset" \
+                         --list "$golden_txt" \
+                         "$calo_prefix"
+      )
   fi
 
   printf '%s\n' "${golden[@]}" >"$golden_txt"

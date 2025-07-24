@@ -133,8 +133,8 @@ case "$DATASET" in
     ;;
   run25auau)
     if (( CALOFIT )); then
-      FILE_PREFIX="DST_CALOFITTING_run3auau_new_newcdbtag_v006"
-      LIST_PATTERN="${FILE_PREFIX}-*.list"          # no 000‑subdir for CALOFIT
+      FILE_PREFIX="dst_calofitting"
+      LIST_PATTERN="${FILE_PREFIX}-*.list"
       LIST_FMT="${FILE_PREFIX}-%08d.list"
       PAD_FMT="%08d"
     else

@@ -2027,7 +2027,7 @@ class CorrQA : public QA
                 tl.SetTextAlign(22);
                 tl.SetTextFont(42);
                 tl.SetTextSize(0.05);
-                std::string header = detA + "  vs  " + detB;
+                std::string header = prettyDet(tokA) + "  vs  " + prettyDet(tokB);
                 tl.DrawLatex(0.50, 0.96, header.c_str());
             }
             else {                                  // 1‑D spectrum (Δη / Δφ)
@@ -2048,7 +2048,7 @@ class CorrQA : public QA
                 tl.SetTextAlign(22);
                 tl.SetTextFont(42);
                 tl.SetTextSize(0.05);
-                std::string header = detA + "  vs  " + detB;
+                std::string header = prettyDet(tokA) + "  vs  " + prettyDet(tokB);
                 tl.DrawLatex(0.50, 0.96, header.c_str());
             }
             drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
@@ -2095,6 +2095,20 @@ class CorrQA : public QA
         /* fall-back: take the first token up to a digit or underscore */
         const std::size_t pos = tok.find_first_of("0123456789_");
         return tok.substr(0, pos);
+    }
+
+    /* Pretty detector label that keeps possible North/South qualifiers */
+    static std::string prettyDet(const std::string& tok)
+    {
+        std::string det = canonicalDet(tok);        // EMCal / sEPD / …
+        const bool isN = (tok.find("_North")!=std::string::npos ||
+                          tok.rfind("_N", tok.size()-2)!=std::string::npos);
+        const bool isS = (tok.find("_South")!=std::string::npos ||
+                          tok.rfind("_S", tok.size()-2)!=std::string::npos);
+
+        if (isN)      det += " North";
+        else if (isS) det += " South";
+        return det;
     }
 
     /* strip “…_<lo>_<hi>_<trigger>” so all centrality clones map back

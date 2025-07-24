@@ -1965,161 +1965,162 @@ void emcal_sepdCorrelator::doCaloQA(
     /* tower loop ------------------------------------------------------ */
     for (unsigned ch = 0; ch < twCon->size(); ++ch)
     {
-      auto* tw = twCon->get_tower_at_channel(ch);
-      if (!tw)                        continue;
-
-      const double e = tw->get_energy();
-      if (e < m_towMinE)              continue;           // noise suppression
-
-      /* 1‑A) simple book‑keeping + spectrum fill ---------------------- */
-      sumE += e; ++nHit;
-      for (const auto& t : trig)
-        static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + label])
+        auto* tw = twCon->get_tower_at_channel(ch);
+        if (!tw)                        continue;
+        
+        const double e = tw->get_energy();
+        if (e < m_towMinE)              continue;           // noise suppression
+        
+        /* 1‑A) simple book‑keeping + spectrum fill ---------------------- */
+        sumE += e; ++nHit;
+        for (const auto& t : trig)
+            static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_towerE_" + label])
             ->Fill(e);
-
-      /* 1‑B) geometry look‑up ---------------------------------------- */
-      const unsigned key  = twCon->encode_key(ch);
-      const unsigned iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
-      const unsigned ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
-
-      RawTowerGeom* tg   = ck.second.g->get_tower_geometry(key);
-      const double  eta  = tg ? tg->get_eta() : 0.0;
-      const double  et   = e  / std::cosh(eta);           // transverse energy
-
-      /* 1‑C) ΣE bookkeeping per arm ---------------------------------- */
-      if (label == "CEMC")
-      {
-        isSouthCEMC(ieta) ? m_cemcEt_arm[0] += et
-                          : m_cemcEt_arm[1] += et;
-      }
-      else if (label == "IHCAL")
-      {
-        isSouthHCal(ieta) ? m_ihcalEt_arm[0] += et
-                          : m_ihcalEt_arm[1] += et;
-      }
-      else if (label == "OHCAL")
-      {
-        isSouthHCal(ieta) ? m_ohcalEt_arm[0] += et
-                          : m_ohcalEt_arm[1] += et;
-      }
-
-      /* 1‑D) η–φ hit‑map fills (global + centrality) ------------------ */
-      std::string hMapPrefix;
-      if      (label == "CEMC")  hMapPrefix = "h_EMC_EtaPhiMap_";
-      else if (label == "IHCAL") hMapPrefix = "h_IHCAL_EtaPhiMap_";
-      else if (label == "OHCAL") hMapPrefix = "h_OHCAL_EtaPhiMap_";
-
-      if (!hMapPrefix.empty())
-      {
-        for (const auto& t : trig)
+        
+        /* 1‑B) geometry look‑up ---------------------------------------- */
+        const unsigned key  = twCon->encode_key(ch);
+        const unsigned iphi = TowerInfoDefs::getCaloTowerPhiBin(key);
+        const unsigned ieta = TowerInfoDefs::getCaloTowerEtaBin(key);
+        
+        RawTowerGeom* tg   = ck.second.g->get_tower_geometry(key);
+        const double  eta  = tg ? tg->get_eta() : 0.0;
+        const double  et   = e  / std::cosh(eta);           // transverse energy
+        
+        /* 1‑C) ΣE bookkeeping per arm ---------------------------------- */
+        if (label == "CEMC")
         {
-          /* global map */
-          static_cast<TH2F*>(qaHistogramsByTrigger[t][hMapPrefix + t])
-              ->Fill(iphi, ieta, e);
-
-          /* centrality‑tagged clone (if centrality is valid) ---------- */
-          if (m_centBin >= 0)
-          {
-            int lo = 0, hi = 100;
-            for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-              if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
-              { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
-
-            std::ostringstream k;
-            k << hMapPrefix.substr(0, hMapPrefix.size()-1)   // drop trailing '_'
-              << '_' << lo << '_' << hi << '_' << t;
-
-            auto it = qaHistogramsByTrigger[t].find(k.str());
-            if (it != qaHistogramsByTrigger[t].end())
-              static_cast<TH2F*>(it->second)->Fill(iphi, ieta, e);
-          }
+            isSouthCEMC(ieta) ? m_cemcEt_arm[0] += et
+            : m_cemcEt_arm[1] += et;
         }
-      }
-
-      /* ----------------------------------------------------------------
-       * (A)  vₙ accumulators   (harmonics n = 1,2,3)
-       *      – one entry per pT‑bin  ×  detector
-       * ----------------------------------------------------------------*/
-      int ptBin = -1;
-      for (std::size_t b = 0; b < m_ptBins.size(); ++b)
-        if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
-        { ptBin = static_cast<int>(b); break; }
-
-      if (et < 0)
-      {
-        LOG(20, CLR_YELLOW, "      [WARN] negative et=" << et
-                               << " – tower skipped");
-        continue;
-      }
-
-      if (ptBin < 0)          // clamp under/overflow to nearest bin edge
-      {
-        ptBin = (et < m_ptBins.front().first) ? 0
-               : static_cast<int>(m_ptBins.size() - 1);
-
-        static bool warned = false;
-        if (!warned)
+        else if (label == "IHCAL")
         {
-          LOG(20, CLR_YELLOW, "      [INFO] et=" << et
-                                 << " outside configured pT range – clamped "
-                                 << "to bin " << ptBin);
-          warned = true;
+            isSouthHCal(ieta) ? m_ihcalEt_arm[0] += et
+            : m_ihcalEt_arm[1] += et;
         }
-      }
-
-      double phi = tg ? tg->get_phi() : 0.0;        // (-π,π]
-      if (phi < 0) phi += 2.*M_PI;                  //  [0,2π)
-
-      /* cache CEMC tower positions for later Δη/Δφ comparisons -------- */
-      if (label == "CEMC")
-        cemcPos.emplace_back(eta, phi);
-
-      /* Δη/Δφ resolution plots: nearest CEMC tower to an IHCAL tower -- */
-      if (label == "IHCAL" && !cemcPos.empty())
-      {
-        double bestDEta = 999.0, bestDPhi = 999.0;
-        for (const auto& ep : cemcPos)
+        else if (label == "OHCAL")
         {
-          const double dEta = eta - ep.first;
-          const double dPhi = TVector2::Phi_mpi_pi(phi - ep.second);
-          if (std::hypot(dEta, dPhi) < std::hypot(bestDEta, bestDPhi))
-          {
-            bestDEta = dEta;  bestDPhi = dPhi;
-          }
+            isSouthHCal(ieta) ? m_ohcalEt_arm[0] += et
+            : m_ohcalEt_arm[1] += et;
         }
-
-        for (const auto& t : trig)
+        
+        /* 1‑D) η–φ hit‑map fills (global + centrality) ------------------ */
+        std::string hMapPrefix;
+        if      (label == "CEMC")  hMapPrefix = "h_EMC_EtaPhiMap_";
+        else if (label == "IHCAL") hMapPrefix = "h_IHCAL_EtaPhiMap_";
+        else if (label == "OHCAL") hMapPrefix = "h_OHCAL_EtaPhiMap_";
+        
+        if (!hMapPrefix.empty())
         {
-          /* global */
-          static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_dEta_CEMC_IHCAL"])
-              ->Fill(bestDEta);
-          static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_dPhi_CEMC_IHCAL"])
-              ->Fill(bestDPhi);
-
-          /* centrality‑tagged */
-          if (m_centBin >= 0)
-          {
-            int lo = 0, hi = 100;
-            for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-              if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
-              { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
-
-            std::ostringstream tag; tag << '_' << lo << '_' << hi << '_' << t;
-            const std::string kEta = "h_dEta_CEMC_IHCAL" + tag.str();
-            const std::string kPhi = "h_dPhi_CEMC_IHCAL" + tag.str();
-
-            if (auto it = qaHistogramsByTrigger[t].find(kEta);
-                it != qaHistogramsByTrigger[t].end())
-              static_cast<TH1F*>(it->second)->Fill(bestDEta);
-
-            if (auto it = qaHistogramsByTrigger[t].find(kPhi);
-                it != qaHistogramsByTrigger[t].end())
-              static_cast<TH1F*>(it->second)->Fill(bestDPhi);
-          }
+            for (const auto& t : trig)
+            {
+                /* global map */
+                static_cast<TH2F*>(qaHistogramsByTrigger[t][hMapPrefix + t])
+                ->Fill(iphi, ieta, e);
+                
+                /* centrality‑tagged clone (if centrality is valid) ---------- */
+                if (m_centBin >= 0)
+                {
+                    int lo = 0, hi = 100;
+                    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+                        if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
+                        { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
+                    
+                    std::ostringstream k;
+                    k << hMapPrefix.substr(0, hMapPrefix.size()-1)   // drop trailing '_'
+                    << '_' << lo << '_' << hi << '_' << t;
+                    
+                    auto it = qaHistogramsByTrigger[t].find(k.str());
+                    if (it != qaHistogramsByTrigger[t].end())
+                        static_cast<TH2F*>(it->second)->Fill(iphi, ieta, e);
+                }
+            }
         }
-     }
-
-    accumulateFlowContribution(label, ieta, et, phi, ptBin);
+        
+        /* ----------------------------------------------------------------
+         * (A)  vₙ accumulators   (harmonics n = 1,2,3)
+         *      – one entry per pT‑bin  ×  detector
+         * ----------------------------------------------------------------*/
+        int ptBin = -1;
+        for (std::size_t b = 0; b < m_ptBins.size(); ++b)
+            if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
+            { ptBin = static_cast<int>(b); break; }
+        
+        if (et < 0)
+        {
+            LOG(20, CLR_YELLOW, "      [WARN] negative et=" << et
+                << " – tower skipped");
+            continue;
+        }
+        
+        if (ptBin < 0)          // clamp under/overflow to nearest bin edge
+        {
+            ptBin = (et < m_ptBins.front().first) ? 0
+            : static_cast<int>(m_ptBins.size() - 1);
+            
+            static bool warned = false;
+            if (!warned)
+            {
+                LOG(20, CLR_YELLOW, "      [INFO] et=" << et
+                    << " outside configured pT range – clamped "
+                    << "to bin " << ptBin);
+                warned = true;
+            }
+        }
+        
+        double phi = tg ? tg->get_phi() : 0.0;        // (-π,π]
+        if (phi < 0) phi += 2.*M_PI;                  //  [0,2π)
+        
+        /* cache CEMC tower positions for later Δη/Δφ comparisons -------- */
+        if (label == "CEMC")
+            cemcPos.emplace_back(eta, phi);
+        
+        /* Δη/Δφ resolution plots: nearest CEMC tower to an IHCAL tower -- */
+        if (label == "IHCAL" && !cemcPos.empty())
+        {
+            double bestDEta = 999.0, bestDPhi = 999.0;
+            for (const auto& ep : cemcPos)
+            {
+                const double dEta = eta - ep.first;
+                const double dPhi = TVector2::Phi_mpi_pi(phi - ep.second);
+                if (std::hypot(dEta, dPhi) < std::hypot(bestDEta, bestDPhi))
+                {
+                    bestDEta = dEta;  bestDPhi = dPhi;
+                }
+            }
+            
+            for (const auto& t : trig)
+            {
+                /* global */
+                static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_dEta_CEMC_IHCAL"])
+                ->Fill(bestDEta);
+                static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_dPhi_CEMC_IHCAL"])
+                ->Fill(bestDPhi);
+                
+                /* centrality‑tagged */
+                if (m_centBin >= 0)
+                {
+                    int lo = 0, hi = 100;
+                    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+                        if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
+                        { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
+                    
+                    std::ostringstream tag; tag << '_' << lo << '_' << hi << '_' << t;
+                    const std::string kEta = "h_dEta_CEMC_IHCAL" + tag.str();
+                    const std::string kPhi = "h_dPhi_CEMC_IHCAL" + tag.str();
+                    
+                    if (auto it = qaHistogramsByTrigger[t].find(kEta);
+                        it != qaHistogramsByTrigger[t].end())
+                        static_cast<TH1F*>(it->second)->Fill(bestDEta);
+                    
+                    if (auto it = qaHistogramsByTrigger[t].find(kPhi);
+                        it != qaHistogramsByTrigger[t].end())
+                        static_cast<TH1F*>(it->second)->Fill(bestDPhi);
+                }
+            }
+        }
+        
+        accumulateFlowContribution(label, ieta, et, phi, ptBin);
+    }
 
     LOG(3, CLR_GREEN, "    " << label << " : "
                              << nHit << " towers  |  ΣE = " << sumE);
