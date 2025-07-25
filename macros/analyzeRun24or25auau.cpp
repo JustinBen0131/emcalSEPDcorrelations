@@ -298,6 +298,7 @@ protected:
 
 
 
+
 // ╔══════════════════════════════════════════════╗
 // ║     #pi0   I N V A R I A N T ‑ M A S S   QA  ║
 // ╚══════════════════════════════════════════════╝
@@ -407,38 +408,9 @@ class Pi0QA : public QA
     // -----------------------------------------------------------------------
     bool process(TObject* o) override
     {
-        /* quick guard‑checks – keep it readable in the main body */
-        if (!_preSanity(o)) return false;
-
-        const std::string n = o->GetName();
-        log(Lvl::DBG,"process(): starting \"" + n + '"');
-
-        try
-        {
-            /* branch (A) – raw 2‑D Minv maps ................................ */
-            if (_looksLike2DMap(o, n))
-                return _process2DMap(static_cast<TH2*>(o), n);
-
-            /* branch (B) – invariant‑mass spectra ........................... */
-            if (_looksLikeInvSpectrum(n))
-                return _processInvSpectrum(static_cast<TH1*>(o), n);
-
-            /* anything else is ignored ...................................... */
-            log(Lvl::DBG,"process(): \""+n+"\" – not relevant, skipped");
-            return false;
-        }
-        catch (const std::exception& ex)
-        {
-            log(Lvl::ERR,std::string("process(): exception – ")+ex.what());
-            return false;
-        }
-    }
-
-    /* ===================================================================== *
-     *  Helper 0 – ultra‑lightweight guards                                  *
-     * ===================================================================== */
-    bool _preSanity(TObject* o)
-    {
+        /* --------------------------------------------------------------- *
+         *  very first sanity checks                                       *
+         * --------------------------------------------------------------- */
         if (!o) {
             log(Lvl::ERR,"process(): received nullptr – skipped");
             return false;
@@ -447,1114 +419,680 @@ class Pi0QA : public QA
             log(Lvl::DBG,Form("process(): \"%s\" is not TH1 – skipped",o->GetName()));
             return false;
         }
-        return true;
-    }
 
-    bool _looksLike2DMap(TObject* o, const std::string& n) const
-    {
-        return (o->InheritsFrom(TH2::Class()) && n.rfind("Minv_vs_",0)==0);
-    }
+        const std::string n = o->GetName();
+        log(Lvl::DBG,"process(): starting \"" + n + '"');
 
-    bool _looksLikeInvSpectrum(const std::string& n) const
-    {
-        return (n.rfind("mInv_",0)==0);
-    }
-
-    /* ===================================================================== *
-     *  Helper 1 – handle raw 2‑D Minv maps                                  *
-     * ===================================================================== */
-    bool _process2DMap(TH2* h2, const std::string& n)
-    {
-        if (h2->GetEntries() <= 0 || h2->Integral() <= 0){
-            log(Lvl::INFO,"empty 2‑D map \"" + n + "\" – skipped");
-            return false;
-        }
-
-        /* ---------------- shrink‑axes code (verbatim) -------------------- */
-        auto shrinkAxis = [](TH2* h, bool xAxis)
+        /* ------------------------ full try/catch ----------------------- */
+        try
         {
-            const int nBins = xAxis ? h->GetNbinsX() : h->GetNbinsY();
-            int first =  nBins+1;
-            int last  = -1;
+            /* =============================================================== *
+             * (A)  UNCUT 2‑D maps                                             *
+             * =============================================================== */
+            if (o->InheritsFrom(TH2::Class()) && n.rfind("Minv_vs_",0) == 0)
+            {
+                auto* h2 = static_cast<TH2*>(o);
 
-            for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
-            for (int iy = 1; iy <= h->GetNbinsY(); ++iy)
-                if (h->GetBinContent(ix,iy) > 0) {
-                    int bin = xAxis ? ix : iy;
-                    first = std::min(first, bin);
-                    last  = std::max(last , bin);
+                if (h2->GetEntries()   <= 0 ||
+                    h2->Integral()     <= 0) {
+                    log(Lvl::INFO,"empty 2‑D map \"" + n + "\" – skipped");
+                    return false;
                 }
 
-            if (last >= first){
-                TAxis* ax = xAxis ? h->GetXaxis() : h->GetYaxis();
-                const double lo = ax->GetBinLowEdge(first);
-                const double hi = ax->GetBinUpEdge (last );
-                ax->SetRangeUser(lo,hi);
+                //----------------------------------------------------------------
+                // 1.  Shrink both axes to the region that actually has content
+                //----------------------------------------------------------------
+                auto shrinkAxis = [](TH2* h, bool xAxis)
+                {
+                    const int nBins = xAxis ? h->GetNbinsX() : h->GetNbinsY();
+                    int first =  nBins+1;          // start larger than any valid bin
+                    int last  = -1;                // start smaller than any valid bin
+
+                    for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+                    for (int iy = 1; iy <= h->GetNbinsY(); ++iy)
+                    {
+                        if (h->GetBinContent(ix,iy) <= 0) continue;
+
+                        int bin = xAxis ? ix : iy;
+                        first   = std::min(first, bin);
+                        last    = std::max(last , bin);
+                    }
+
+                    if (last >= first)   // protect against pathological “all‑zero” case
+                    {
+                        TAxis* ax = xAxis ? h->GetXaxis() : h->GetYaxis();
+                        const double lo = ax->GetBinLowEdge (first);
+                        const double hi = ax->GetBinUpEdge  (last );
+                        ax->SetRangeUser(lo,hi);
+                    }
+                };
+
+                shrinkAxis(h2,true );   // X‑axis
+                shrinkAxis(h2,false);   // Y‑axis
+
+                //----------------------------------------------------------------
+                // 2.  Draw with log‑Z and save
+                //----------------------------------------------------------------
+                std::string slice = sliceKey(n);
+                fs::path subDir  = "EMCal/invMassQA/cutQA";
+                fs::path outPng  = cPath(root,slice,subDir)/(n + ".png");
+                ensure_dir(outPng.parent_path());
+
+                log(Lvl::INFO,"writing 2‑D map → " + outPng.string());
+
+                TCanvas c;
+                c.SetRightMargin(0.18);    // room for the colour bar
+                c.SetLogz();               // ← log‑scale in Z
+                h2->SetStats(0);
+                h2->Draw("COLZ");
+                c.SaveAs(outPng.string().c_str());
+                return true;               // ♦ histogram consumed
             }
-        };
-        shrinkAxis(h2,true);
-        shrinkAxis(h2,false);
 
-        std::string slice = sliceKey(n);
-        fs::path subDir  = "EMCal/invMassQA/cutQA";
-        fs::path outPng  = cPath(root,slice,subDir)/(n + ".png");
-        ensure_dir(outPng.parent_path());
 
-        log(Lvl::INFO,"writing 2‑D map → " + outPng.string());
+           /* =============================================================== *
+            * (B)  INVARIANT‑MASS SPECTRA                                     *
+            * =============================================================== */
+            if (n.rfind("mInv_",0) != 0) {
+                log(Lvl::DBG,"process(): not an mInv_* spectrum – skipped");
+                return false;
+            }
 
-        TCanvas c;
-        c.SetRightMargin(0.18);
-        c.SetLogz();
-        h2->SetStats(0);
-        h2->Draw("COLZ");
-        c.SaveAs(outPng.string().c_str());
+            CutKey ck;
+            if (!decodeInvName(n, ck)) {
+                log(Lvl::WARN,"decodeInvName() failed for \"" + n + "\" – skipped");
+                return false;
+            }
 
-        return true;                               // ♦ histogram consumed
-    }
+            std::string slice = sliceKey(n);
+            const bool pTInt  = (ck.pLo < 0 || ck.pHi < 0);
 
-    /* ===================================================================== *
-     *  PUBLIC DISPATCHER  – 2nd‑level helper called from process()          *
-     * ===================================================================== */
-    bool _processInvSpectrum(TH1* h, const std::string& n)
-    {
-        CutKey          ck;                // decoded from the histogram name
-        std::string     slice;             // "Inclusive", "10_20", …
-        bool            pTInt   = false;   // pT‑integrated ?
-        fs::path        outPng;            // final PNG name
-        bool            prepOK  = _invPrep(n, ck, slice, pTInt, outPng);
-        if (!prepOK) return false;         // early bailout (decode, dirs, etc)
+           /* --------------------------------------------------------------- *
+            *   bookkeeping – cut combination changes (directory switch)      *
+            * --------------------------------------------------------------- */
+            const std::string combDir = "E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy);
+            if (cutTag.empty()) {
+                cutTag = combDir;
+                log(Lvl::INFO,"cutTag initialised → " + cutTag);
+            } else if (combDir != cutTag) {
+                log(Lvl::INFO,"cutTag change  " + cutTag + " → " + combDir);
+                writeSummaryPanels();               // finish previous cut
+                _centralHists.clear();
+                _storedFit.clear();
+                _storedEtaFit.clear();
+                cutTag = combDir;
+            }
 
-        /* ---- 1.  π0 composite fit --------------------------------------- */
-        TF1 total, poly;                   // created & filled by _fitPi0()
-        bool   fitOK      = false;
-        double piMu=0, piMuErr=0, piSig=0, piSigErr=0;
-        _fitPi0(h, total, poly, fitOK, piMu, piMuErr, piSig, piSigErr);
+            /* destination directory ------------------------------------ */
+            fs::path subDir = fs::path("EMCal/invMassQA") / combDir;
+            fs::path baseDir = cPath(root, slice, subDir);   // cPath() already normalises “Cent_”
+            ensure_dir(baseDir);
 
-        /* ---- 2.  η‑peak (Combined only) --------------------------------- */
-        double etaMu=0, etaMuErr=0, etaSig=0, etaSigErr=0;
-        _fitEtaIfNeeded(h, slice, pTInt,
-                        etaMu, etaMuErr, etaSig, etaSigErr);
+            fs::path outPng = baseDir / (n + ".png");
+            log(Lvl::DBG,"output PNG will be " + outPng.string());
 
-        /* ---- 3.  S/B CSV for several window widths ---------------------- */
-        _writeSBcsv(ck, slice, h, piMu, piSig, poly);
+           /* --------------------------------------------------------------- *
+            * 1.  π0 PEAK – seed                                              *
+            * --------------------------------------------------------------- */
+            TH1* h = static_cast<TH1*>(o);
+            const double piFitLo = 0.05, piFitHi = 0.35;
+            const int iLoPi = binAt(h,piFitLo), iHiPi = binAt(h,piFitHi);
 
-        /* ---- 4.  Render decorated canvas + cache it --------------------- */
-        _renderAndCache(h, n, slice, pTInt, ck, outPng,
-                        piMu, piMuErr, piSig, piSigErr,
-                        etaMu, etaMuErr, etaSig, etaSigErr,
-                        total, poly);
+            int iMaxPi = iLoPi; double maxCntPi = 0.;
+            for(int i=iLoPi;i<=iHiPi;++i)
+                if (h->GetBinContent(i) > maxCntPi) { maxCntPi = h->GetBinContent(i); iMaxPi = i; }
 
-        /* ---- 5.  Post‑fit bookkeeping (CSV, maps, storedFit, …) --------- */
-        _postBookkeeping(n, ck, slice, pTInt, fitOK,
-                         piMu, piMuErr, piSig, piSigErr,
-                         etaMu, etaMuErr, etaSig, etaSigErr,
-                         total, poly, h);
+            const double piMu0  = h->GetBinCenter(iMaxPi);
+            const double piAmp0 = maxCntPi;
+            const double piSigma0 = 0.025;
+            log(Lvl::DBG,Form("π0 seed  amp=%g  mu=%g",piAmp0,piMu0));
 
-        log(Lvl::DBG,"process(): finished \"" + n + '"');
-        return true;
-    }
+           /* --------------------------------------------------------------- *
+            * 2.  gaus+pol2 composite fit                                     *
+            * --------------------------------------------------------------- */
+            TF1 total("total","gaus(0)+pol2(3)",piFitLo,piFitHi);
+            total.SetParNames("A","mu","sigma","c0","c1","c2");
+            total.SetParameters(piAmp0,piMu0,0.022,1,0,0);
+            total.SetParLimits(0,0,1e9);
+            total.SetParLimits(1,0.10,0.17);
+            total.SetParLimits(2,0.010,0.060);
 
-    /* ===================================================================== *
-     *  H‑0  :  Decode name, handle cut‑tag switches, set up directories     *
-     * ===================================================================== */
-    bool _invPrep(const std::string& n, CutKey& ck,
-                  std::string& slice, bool& pTInt, fs::path& outPng)
-    {
-        if (!decodeInvName(n, ck)) {
-            log(Lvl::WARN,"decodeInvName() failed for \"" + n + "\" – skipped");
+            ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
+            ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(3'000);
+
+            TF1 polyTmp("polyTmp","pol2",piFitLo,piFitHi);
+            for(int ip=binAt(h,0.11); ip<=binAt(h,0.16); ++ip) h->SetBinError(ip,1e9);
+            h->Fit(&polyTmp,"QRN0");
+            for(int ip=binAt(h,0.11); ip<=binAt(h,0.16); ++ip)
+                h->SetBinError(ip,std::sqrt(h->GetBinContent(ip)));
+
+            total.SetParameters(piAmp0,piMu0,0.022,
+                                polyTmp.GetParameter(0),
+                                polyTmp.GetParameter(1),
+                                polyTmp.GetParameter(2));
+
+            const bool fitOK = (h->Fit(&total,"QRN0") == 0);
+            log(Lvl::INFO,std::string("π0 fit ")+(fitOK?"succeeded":"FAILED"));
+
+            double piMu=piMu0, piSig=piSigma0, piMuErr=0, piSigErr=0;
+            if (fitOK) {
+                piMu     = total.GetParameter(1);
+                piSig    = total.GetParameter(2);
+                piMuErr  = total.GetParError (1);
+                piSigErr = total.GetParError (2);
+            }
+            log(Lvl::DBG,Form("π0  mu=%.5f±%.5f  sigma=%.5f±%.5f",piMu,piMuErr,piSig,piSigErr));
+
+           /* --------------------------------------------------------------- *
+            * 3.  η PEAK (only in Combined file)                              *
+            * --------------------------------------------------------------- */
+            double etaMu=0,etaSig=0,etaMuErr=0,etaSigErr=0;
+            if (runID == "Combined")
+            {
+                const double etaLo=0.45, etaHi=0.80, side=0.03;
+                int iLo=binAt(h,etaLo), iHi=binAt(h,etaHi);
+                int iMax=iLo; double maxCnt=0.;
+                for(int i=iLo;i<=iHi;++i)
+                    if (h->GetBinContent(i)>maxCnt) { maxCnt=h->GetBinContent(i); iMax=i; }
+
+                if (maxCnt>0)
+                {
+                    etaMu  = h->GetBinCenter(iMax);
+                    etaSig = 0.040;
+
+                    TF1 bkg("bkg","pol2",etaLo,etaHi);
+                    for(int i=iLo;i<=iHi;++i){
+                        const double x=h->GetBinCenter(i);
+                        const bool inPk=(std::fabs(x-etaMu)<side);
+                        h->SetBinError(i,inPk?1e9:std::sqrt(h->GetBinContent(i)));
+                    }
+                    h->Fit(&bkg,"QN0");
+                    for(int i=iLo;i<=iHi;++i)
+                        h->SetBinError(i,std::sqrt(h->GetBinContent(i)));
+
+                    TF1 gEta("gEta","gaus(0)+pol2(3)",etaLo,etaHi);
+                    gEta.SetParNames("A","#mu","#sigma","c0","c1","c2");
+                    gEta.SetParameters(maxCnt,etaMu,etaSig,
+                                       bkg.GetParameter(0),bkg.GetParameter(1),bkg.GetParameter(2));
+                    gEta.SetParLimits(0,0,1e9);
+                    gEta.SetParLimits(1,etaLo,etaHi);
+                    gEta.SetParLimits(2,0.020,0.090);
+                    for(int ip=3;ip<=5;++ip){
+                        const double p=bkg.GetParameter(ip-3);
+                        const double dp=std::max(std::fabs(p)*0.20,1e-3);
+                        gEta.SetParLimits(ip,p-dp,p+dp);
+                    }
+
+                    const bool etaOK=(h->Fit(&gEta,"QRN0")==0);
+                    log(Lvl::INFO,std::string("η fit ")+(etaOK?"succeeded":"FAILED"));
+                    if (etaOK) {
+                        etaMu     = gEta.GetParameter(1);
+                        etaMuErr  = gEta.GetParError (1);
+                        etaSig    = gEta.GetParameter(2);
+                        etaSigErr = gEta.GetParError (2);
+                        if (_storedEtaFit.count(slice)==0)
+                            _storedEtaFit[slice].reset(new TF1(gEta));
+                    } else {
+                        etaMu = etaSig = etaMuErr = etaSigErr = 0;
+                    }
+                }
+            }
+
+           /* --------------------------------------------------------------- *
+            * 4.  Background TF1 (clone of poly part)                         *
+            * --------------------------------------------------------------- */
+            TF1 poly("bg","pol2",piFitLo,piFitHi);
+            poly.SetParameters(total.GetParameter(3),
+                               total.GetParameter(4),
+                               total.GetParameter(5));
+            poly.SetLineColor(kAzure+2); poly.SetLineWidth(2); poly.SetLineStyle(2);
+
+           /* --------------------------------------------------------------- *
+            * 5.  Signal / Background CSV (unchanged)                         *
+            * --------------------------------------------------------------- */
+            const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
+            for (double w: ws)
+            {
+                const int i1 = binAt(h,std::max(piMu-w*piSig,piFitLo));
+                const int i2 = binAt(h,std::min(piMu+w*piSig,piFitHi));
+                double S=0,B=0,sErr=0,bErr=0;
+                for(int i=i1;i<=i2;++i){
+                    const double x  = h->GetBinCenter(i);
+                    const double bg = std::max(poly.Eval(x),0.);
+                    const double cnt= h->GetBinContent(i);
+                    B+=bg; S+=cnt-bg; sErr+=cnt; bErr+=bg;
+                }
+                bErr = std::sqrt(bErr); sErr = std::sqrt(sErr);
+                double ratio=(B>0)?S/B:0, rErr=0;
+                if (ratio>0) rErr=ratio*std::sqrt((sErr*sErr)/(S*S)+(bErr*bErr)/(B*B));
+                csvSB << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
+                      << slice << ',' << w << ',' << ratio << ',' << rErr << '\n';
+            }
+
+           /* --------------------------------------------------------------- *
+            * 6.  Pretty plot of the single spectrum                          *
+            * --------------------------------------------------------------- */
+            {
+                log(Lvl::INFO,"rendering spectrum → " + outPng.string());
+                TCanvas c; h->SetStats(0); h->Draw();
+                poly.Draw("SAME"); total.Draw("SAME");
+                if (_storedEtaFit.count(slice))
+                    _storedEtaFit[slice]->Draw("SAME");
+
+                TLatex tl; tl.SetNDC(); tl.SetTextSize(0.038); tl.SetTextAlign(13);
+                tl.DrawLatex(0.14,0.89,
+                             Form("E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
+                                  ck.E,ck.asy,ck.chi));
+
+                TLegend leg(0.55,0.64,0.88,0.88); leg.SetBorderSize(0); leg.SetTextAlign(12);
+                leg.AddEntry((TObject*)nullptr,
+                             Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV",piMu,piMuErr),"");
+                leg.AddEntry((TObject*)nullptr,
+                             Form("          #sigma = %.3f #pm %.3f GeV",piSig,piSigErr),"");
+                if (etaMu>0) {
+                    leg.AddEntry((TObject*)nullptr,
+                                 Form("#eta:    #mu = %.3f #pm %.3f GeV",etaMu,etaMuErr),"");
+                    leg.AddEntry((TObject*)nullptr,
+                                 Form("          #sigma = %.3f #pm %.3f GeV",etaSig,etaSigErr),"");
+                }
+                leg.Draw();
+                c.SaveAs(outPng.string().c_str());
+            }
+
+           /* --------------------------------------------------------------- *
+            * 7.  CSV & stored‑fit bookkeeping                                *
+            * --------------------------------------------------------------- */
+            csvFit << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
+                   << ck.pLo << ',' << ck.pHi << ','
+                   << piMu   << ',' << piMuErr  << ','
+                   << piSig  << ',' << piSigErr << ','
+                   << etaMu  << ',' << etaMuErr << ','
+                   << etaSig << ',' << etaSigErr << '\n';
+
+            _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,piMu,piSig,
+                                           total.GetChisquare(),total.GetNDF()});
+
+            if (fitOK && _storedFit.count(slice)==0) {
+                _storedFit[slice].total.reset(new TF1(total));
+                _storedFit[slice].poly .reset(new TF1(poly ));
+            }
+
+            if (fitOK) {
+                auto &m=s_runPoints[slice];
+                if (m.count(runID)==0)
+                    m[runID]={piMu,piMuErr,piSig,piSigErr};
+            }
+
+           /* --------------------------------------------------------------- *
+            * 8.  Cache for overview canvases                                 *
+            * --------------------------------------------------------------- */
+            cacheForOverview(slice,n,h,pTInt);
+
+            log(Lvl::DBG,"process(): finished \"" + n + '"');
+            return true;
+        }
+        catch (const std::exception& ex)
+        {
+            log(Lvl::ERR,std::string("process(): exception – ")+ex.what());
             return false;
         }
-
-        slice = sliceKey(n);
-        pTInt = (ck.pLo < 0 || ck.pHi < 0);
-
-        const std::string combDir = "E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy);
-        if (cutTag.empty()) {
-            cutTag = combDir;
-            log(Lvl::INFO,"cutTag initialised → " + cutTag);
-        } else if (combDir != cutTag) {
-            writeSummaryPanels();
-            if (runID == "Combined") {
-                writeRunSummary();
-                s_runPoints.clear();
-            }
-            _centralHists.clear();
-            _ptHists.clear();
-            _fitSummary.clear();
-            _storedFit.clear();
-            _storedEtaFit.clear();
-            cutTag = combDir;
-        }
-
-        fs::path subDir  = fs::path("EMCal/invMassQA") / combDir;
-        fs::path baseDir = cPath(root, slice, subDir);
-        if (!pTInt) baseDir /= ("pT_" + sf3(ck.pLo) + "_to_" + sf3(ck.pHi));
-        ensure_dir(baseDir);
-
-        outPng = baseDir / (n + ".png");
-        log(Lvl::DBG,"output PNG will be " + outPng.string());
-        return true;
     }
-
-    /* ===================================================================== *
-     *  H‑1  :  π0  composite fit (gaus+pol2)                                *
-     * ===================================================================== */
-    void _fitPi0(TH1* h, TF1& total, TF1& poly,
-                 bool& fitOK,
-                 double& piMu, double& piMuErr,
-                 double& piSig, double& piSigErr)
-    {
-        const double piFitLo = 0.05, piFitHi = 0.35;
-        const int iLoPi = binAt(h,piFitLo), iHiPi = binAt(h,piFitHi);
-        int iMaxPi = iLoPi; double maxCntPi = 0.;
-        for(int i=iLoPi;i<=iHiPi;++i)
-            if (h->GetBinContent(i) > maxCntPi) { maxCntPi = h->GetBinContent(i); iMaxPi = i; }
-
-        const double piMu0  = h->GetBinCenter(iMaxPi);
-        const double piAmp0 = maxCntPi;
-        log(Lvl::DBG,Form("π0 seed  amp=%g  mu=%g",piAmp0,piMu0));
-
-        total = TF1("total","gaus(0)+pol2(3)",piFitLo,piFitHi);
-        total.SetParNames("A","mu","sigma","c0","c1","c2");
-        total.SetParameters(piAmp0,piMu0,0.022,1,0,0);
-        total.SetParLimits(0,0,1e9);
-        total.SetParLimits(1,0.10,0.17);
-        total.SetParLimits(2,0.010,0.060);
-
-        ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
-        ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(3'000);
-
-        TF1 polyTmp("polyTmp","pol2",piFitLo,piFitHi);
-        for(int ip=binAt(h,0.11); ip<=binAt(h,0.16); ++ip) h->SetBinError(ip,1e9);
-        h->Fit(&polyTmp,"QRN0");
-        for(int ip=binAt(h,0.11); ip<=binAt(h,0.16); ++ip)
-            h->SetBinError(ip,std::sqrt(h->GetBinContent(ip)));
-
-        total.SetParameters(piAmp0,piMu0,0.022,
-                            polyTmp.GetParameter(0),
-                            polyTmp.GetParameter(1),
-                            polyTmp.GetParameter(2));
-
-        const int fitStatus = h->Fit(&total,"QRN0");
-        fitOK = (fitStatus >= 0 && fitStatus <= 4);
-        log(Lvl::INFO,std::string("π0 fit ")+(fitOK?"succeeded":"FAILED"));
-
-        const double piSigma0 = 0.025;
-        piMu  = fitOK ? total.GetParameter(1) : piMu0;
-        piSig = fitOK ? total.GetParameter(2) : piSigma0;
-        piMuErr  = fitOK ? total.GetParError(1) : 0;
-        piSigErr = fitOK ? total.GetParError(2) : 0;
-
-        log(Lvl::DBG,Form("π0  mu=%.5f±%.5f  sigma=%.5f±%.5f",piMu,piMuErr,piSig,piSigErr));
-
-        /* clone background poly for later drawing / SB ratio */
-        poly = TF1("bg","pol2",piFitLo,piFitHi);
-        poly.SetParameters(total.GetParameter(3),
-                           total.GetParameter(4),
-                           total.GetParameter(5));
-        poly.SetLineColor(kAzure+2); poly.SetLineWidth(2); poly.SetLineStyle(2);
-    }
-
-    /* ===================================================================== *
-     *  H‑2  :  η‑peak (only for Combined file)                              *
-     * ===================================================================== */
-    void _fitEtaIfNeeded(TH1* h, const std::string& slice, bool pTInt,
-                         double& etaMu, double& etaMuErr,
-                         double& etaSig, double& etaSigErr)
-    {
-        etaMu = etaSig = etaMuErr = etaSigErr = 0;
-
-        if (runID != "Combined") return;
-
-        const double etaLo=0.45, etaHi=0.80, side=0.03;
-        int iLo=binAt(h,etaLo), iHi=binAt(h,etaHi);
-        int iMax=iLo; double maxCnt=0.;
-        for(int i=iLo;i<=iHi;++i)
-            if (h->GetBinContent(i)>maxCnt) { maxCnt=h->GetBinContent(i); iMax=i; }
-
-        if (maxCnt<=0) return;
-
-        etaMu  = h->GetBinCenter(iMax);
-        etaSig = 0.040;
-
-        TF1 bkg("bkg","pol2",etaLo,etaHi);
-        for(int i=iLo;i<=iHi;++i){
-            const double x=h->GetBinCenter(i);
-            const bool inPk=(std::fabs(x-etaMu)<side);
-            h->SetBinError(i,inPk?1e9:std::sqrt(h->GetBinContent(i)));
-        }
-        h->Fit(&bkg,"QN0");
-        for(int i=iLo;i<=iHi;++i)
-            h->SetBinError(i,std::sqrt(h->GetBinContent(i)));
-
-        TF1 gEta("gEta","gaus(0)+pol2(3)",etaLo,etaHi);
-        gEta.SetParNames("A","#mu","#sigma","c0","c1","c2");
-        gEta.SetParameters(maxCnt,etaMu,etaSig,
-                           bkg.GetParameter(0),bkg.GetParameter(1),bkg.GetParameter(2));
-        gEta.SetParLimits(0,0,1e9);
-        gEta.SetParLimits(1,etaLo,etaHi);
-        gEta.SetParLimits(2,0.020,0.090);
-        for(int ip=3;ip<=5;++ip){
-            const double p=bkg.GetParameter(ip-3);
-            const double dp=std::max(std::fabs(p)*0.20,1e-3);
-            gEta.SetParLimits(ip,p-dp,p+dp);
-        }
-
-        const bool etaOK=(h->Fit(&gEta,"QRN0")==0);
-        log(Lvl::INFO,std::string("η fit ")+(etaOK?"succeeded":"FAILED"));
-        if (!etaOK) { etaMu = etaSig = etaMuErr = etaSigErr = 0; return; }
-
-        etaMu     = gEta.GetParameter(1);
-        etaMuErr  = gEta.GetParError (1);
-        etaSig    = gEta.GetParameter(2);
-        etaSigErr = gEta.GetParError (2);
-
-        if (pTInt || _storedEtaFit.count(slice)==0)
-            _storedEtaFit[slice].reset(new TF1(gEta));
-    }
-
-    /* ===================================================================== *
-     *  H‑3  :  Signal / Background CSV lines                                *
-     * ===================================================================== */
-    void _writeSBcsv(const CutKey& ck, const std::string& slice,
-                     TH1* h, double piMu, double piSig, TF1& poly)
-    {
-        const double piFitLo = poly.GetXmin();
-        const double piFitHi = poly.GetXmax();
-
-        const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
-        for (double w: ws)
-        {
-            const int i1 = binAt(h,std::max(piMu-w*piSig,piFitLo));
-            const int i2 = binAt(h,std::min(piMu+w*piSig,piFitHi));
-            double S=0,B=0,sErr=0,bErr=0;
-            for(int i=i1;i<=i2;++i){
-                const double x  = h->GetBinCenter(i);
-                const double bg = std::max(poly.Eval(x),0.);
-                const double cnt= h->GetBinContent(i);
-                B+=bg; S+=cnt-bg; sErr+=cnt; bErr+=bg;
-            }
-            bErr = std::sqrt(bErr); sErr = std::sqrt(sErr);
-            double ratio=(B>0)?S/B:0, rErr=0;
-            if (ratio>0) rErr=ratio*std::sqrt((sErr*sErr)/(S*S)+(bErr*bErr)/(B*B));
-            csvSB << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
-                  << slice << ',' << w << ',' << ratio << ',' << rErr << '\n';
-        }
-    }
-
-    /* ===================================================================== *
-     *  H‑4  :  Render decorated spectrum PNG + cache canvases               *
-     * ===================================================================== */
-    void _renderAndCache(TH1* h, const std::string& n, const std::string& slice,
-                         bool pTInt, const CutKey& ck, const fs::path& outPng,
-                         double piMu,double piMuErr,double piSig,double piSigErr,
-                         double etaMu,double etaMuErr,double etaSig,double etaSigErr,
-                         TF1& total, TF1& poly)
-    {
-        log(Lvl::INFO,"rendering spectrum → " + outPng.string());
-
-        auto cTmp = std::make_unique<TCanvas>("cTmp","",800,600);
-        h->SetStats(0); h->Draw();
-        poly.Draw("SAME"); total.Draw("SAME");
-        if (_storedEtaFit.count(slice))
-            _storedEtaFit[slice]->Draw("SAME");
-
-        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.032); tl.SetTextAlign(13);
-        std::string centLabel =
-            (slice == "Inclusive") ? "Inclusive" : Form("Cent %s %%", slice.c_str());
-
-        std::string ptLabel;
-        if (ck.pLo < -0.5 && ck.pHi < -0.5)
-            ptLabel = "pT IND";
-        else
-            ptLabel = Form("pT %.2f #minus %.2f GeV/c", ck.pLo, ck.pHi);
-
-        tl.DrawLatex(0.14, 0.88, Form("%s   %s", centLabel.c_str(), ptLabel.c_str()));
-        tl.DrawLatex(0.14, 0.85,
-                     Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
-                          ck.E, ck.asy, ck.chi));
-
-        double legY1 = 0.65, legY2 = 0.85;
-        if (pTInt && (slice == "0_10" || slice == "10_20" || slice == "20_30" || slice == "30_40")){
-            legY1 = 0.15; legY2 = 0.35;
-        }
-        TLegend leg(0.45, legY1, 0.88, legY2);
-        leg.SetBorderSize(0); leg.SetTextAlign(12); leg.SetTextSize(0.032);
-        leg.SetEntrySeparation(0.006);
-        leg.AddEntry((TObject*)nullptr,
-                     Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV",piMu,piMuErr),"");
-        leg.AddEntry((TObject*)nullptr,
-                     Form("          #sigma = %.3f #pm %.3f GeV",piSig,piSigErr),"");
-        if (etaMu>0) {
-            leg.AddEntry((TObject*)nullptr,
-                         Form("#eta:    #mu = %.3f #pm %.3f GeV",etaMu,etaMuErr),"");
-            leg.AddEntry((TObject*)nullptr,
-                         Form("          #sigma = %.3f #pm %.3f GeV",etaSig,etaSigErr),"");
-        }
-        leg.Draw();
-
-        cTmp->SaveAs(outPng.string().c_str());
-
-        if (pTInt && n.find("pt-1.0to-1.0") != std::string::npos) {
-            _centralCanvas[slice].reset(static_cast<TCanvas*>(cTmp->Clone()));
-        } else {
-            const std::string cvName =
-                Form("cPt_%s_%zu", slice.c_str(), _ptCanvas[slice].size());
-            _ptCanvas[slice].push_back(
-                std::unique_ptr<TCanvas>(static_cast<TCanvas*>(cTmp->Clone(cvName.c_str()))));
-        }
-    }
-
-    /* ===================================================================== *
-     *  H‑5  :  CSV fit line, stored‑fit caches, run‑points, overview cache  *
-     * ===================================================================== */
-    void _postBookkeeping(const std::string& n, const CutKey& ck,
-                          const std::string& slice, bool pTInt, bool fitOK,
-                          double piMu,double piMuErr,double piSig,double piSigErr,
-                          double etaMu,double etaMuErr,double etaSig,double etaSigErr,
-                          TF1& total, TF1& poly, TH1* h)
-    {
-        csvFit << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
-               << ck.pLo << ',' << ck.pHi << ','
-               << piMu   << ',' << piMuErr  << ','
-               << piSig  << ',' << piSigErr << ','
-               << etaMu  << ',' << etaMuErr << ','
-               << etaSig << ',' << etaSigErr << '\n';
-
-        _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,piMu,piSig,
-                                       total.GetChisquare(),total.GetNDF()});
-
-        if (fitOK && (pTInt || _storedFit.count(slice)==0)) {
-            _storedFit[slice].total.reset(new TF1(total));
-            _storedFit[slice].poly .reset(new TF1(poly ));
-        }
-
-        auto &m = s_runPoints[slice];
-        if (m.count(runID) == 0)
-            m[runID] = {piMu, piMuErr, piSig, piSigErr};
-
-        cacheForOverview(slice,n,h,pTInt);
-    }
-
 
  private:
     // -----------------------------------------------------------------------------
     // helper: clone histogram and cache it in the correct container
     // -----------------------------------------------------------------------------
     void cacheForOverview(const std::string& slice,
-                          const std::string& hName,
-                          TH1*               src,
-                          bool               pTIntegratedFlag)
+                          const std::string& /*hName*/,
+                          TH1* src,
+                          bool pTIntegrated)
     {
         try {
-            /* ─────────────────────────────────────────────────────────────
-             * 1.  Basic sanity checks
-             * ──────────────────────────────────────────────────────────── */
-            if (!src) {
-                log(Lvl::ERR,"cacheForOverview(): received nullptr – nothing cached");
-                return;
-            }
-            if (src->GetEntries() == 0 || src->Integral() == 0) {
-                log(Lvl::WARN,
-                    Form("cacheForOverview(): \"%s\" empty (entries = 0) – ignored",
-                         hName.c_str()));
-                return;
-            }
-
-            /* ─────────────────────────────────────────────────────────────
-             * 2.  Decide *unambiguously* which cache this histogram belongs to.
-             *
-             *     • CENTRAL table : histogram name MUST contain
-             *       \"pt-1.0to-1.0\"   **and**   pTIntegratedFlag == true
-             *
-             *     • pT‑BINNED     : everything else
-             * ──────────────────────────────────────────────────────────── */
-            const bool nameSaysCentral =
-                (hName.find("pt-1.0to-1.0") != std::string::npos);
-
-            const bool isCentralHist = (pTIntegratedFlag && nameSaysCentral);
-            const char* tag = isCentralHist ? "CENTRAL" : "pT‑Binned";
-
-            if (pTIntegratedFlag && !nameSaysCentral) {
-                /* Defensive warning – logic mismatch in higher‑level code */
-                log(Lvl::WARN,
-                    Form("cacheForOverview(): \"%s\" flagged as pT‑integrated but "
-                         "does NOT contain \"pt-1.0to-1.0\" – treated as pT‑binned",
-                         hName.c_str()));
-            }
-
-            /* clone – after we know we will keep the histogram */
+            if (!src) { log(Lvl::ERR,"cacheForOverview(): src==nullptr"); return; }
             auto* cl = static_cast<TH1*>(src->Clone());
-            if (!cl) {
-                log(Lvl::ERR,
-                    Form("cacheForOverview(): Clone() of \"%s\" failed – abort", hName.c_str()));
-                return;
-            }
+            if (!cl)  { log(Lvl::ERR,"cacheForOverview(): Clone() returned nullptr"); return; }
             cl->SetDirectory(nullptr);
-            const double newInt = cl->Integral();
 
-            /* ─────────────────────────────────────────────────────────────
-             * 3A.  Cache for CENTRAL (pT‑independent) overview
-             * ──────────────────────────────────────────────────────────── */
-            if (isCentralHist) {
-                auto it = _centralHists.find(slice);
-
-                if (it == _centralHists.end()) {
-                    _centralHists[slice] = cl;
-                    log(Lvl::INFO,
-                        Form("cacheForOverview(): [%s] stored new spectrum  "
-                             "(∫ = %.0f) for slice \"%s\"",
-                             tag, newInt, slice.c_str()));
-                } else {
-                    const double oldInt = it->second->Integral();
-                    if (newInt > oldInt) {
-                        delete it->second;         // avoid leak
-                        it->second = cl;
-                        log(Lvl::INFO,
-                            Form("cacheForOverview(): [%s] REPLACED old spectrum "
-                                 "(old ∫ = %.0f, new ∫ = %.0f) for slice \"%s\"",
-                                 tag, oldInt, newInt, slice.c_str()));
-                    } else {
-                        delete cl;
-                        log(Lvl::DBG,
-                            Form("cacheForOverview(): [%s] kept existing spectrum "
-                                 "(old ∫ = %.0f ≥ new ∫ = %.0f) for slice \"%s\"",
-                                 tag, oldInt, newInt, slice.c_str()));
-                    }
-                }
-                return;   // central hist handled – nothing more to do
+            if (pTIntegrated) {                          // centrality‑summary
+                log(Lvl::DBG,"cacheForOverview(): central cache  slice="+slice);
+                _centralHists.emplace(slice,cl);
+            } else {                                     // pT‑binned summary
+                log(Lvl::DBG,"cacheForOverview(): pT‑cache slice="+slice);
+                _ptHists[slice].push_back(cl);
             }
-
-            /* ─────────────────────────────────────────────────────────────
-             * 3B.  Cache for pT‑binned overview (first‑6‑bins & μσ‑vs‑pT plots)
-             * ──────────────────────────────────────────────────────────── */
-            _ptHists[slice].push_back(cl);
-            log(Lvl::DBG,
-                Form("cacheForOverview(): [%s] appended spectrum (∫ = %.0f) "
-                     "to slice \"%s\"   (#stored now = %zu)",
-                     tag, newInt, slice.c_str(),
-                     _ptHists[slice].size()));
         }
-        catch (const std::exception& ex) {
-            log(Lvl::ERR,
-                std::string("cacheForOverview(): EXCEPTION – ") + ex.what());
+        catch(const std::exception& ex){
+            log(Lvl::ERR,std::string("cacheForOverview(): exception – ")+ex.what());
         }
     }
 
-    /* ================================================================ *
-     *  Helper 1a – build / save the 2×3 grid of pT‑integrated    *
-     *                     spectra **and** fill the vectors needed      *
-     *                     for the μ,σ‑vs‑centrality graph.             *
-     * ================================================================ */
-    void _renderCentralityGrid(const std::string&       runLabel,
-                               std::vector<double>&     vCent,
-                               std::vector<double>&     vCentErr,
-                               std::vector<double>&     vMu,
-                               std::vector<double>&     vMuErr,
-                               std::vector<double>&     vSi,
-                               std::vector<double>&     vSiErr)
+    // -----------------------------------------------------------------------------
+    //  2×3 overview grid + μ,σ vs centrality  (plus pT‑dependent add‑ons)
+    // -----------------------------------------------------------------------------
+    void writeSummaryPanels()
     {
-        const double fitLo = 0.05, fitHi = 0.35;
+        if (_centralHists.empty()) {
+            log(Lvl::INFO,"writeSummaryPanels(): _centralHists is empty – nothing to do");
+            return;
+        }
 
-        TCanvas cGrid("c_pi0Cent", "#pi0 – all centralities", 1800, 1000);
-        gStyle->SetOptTitle(0);
-        cGrid.SetTopMargin(0.12);
-        cGrid.Divide(3, 2, 0.01, 0.01);
+        log(Lvl::INFO,"writeSummaryPanels(): building centrality overview");
 
-        int pad = 1;
-        for (const std::string& sl : slices)
-        {
-            cGrid.cd(pad++);
+        std::vector<std::string> slicesDone;          // ← for final terminal table
+        std::vector<std::string> ptPlotsDone;
 
-            /* -------------------------------------------------- *
-             * 1.  Draw the spectrum (use cached canvas if exists)
-             * -------------------------------------------------- */
-            if (auto itCv = _centralCanvas.find(sl); itCv != _centralCanvas.end()) {
-                itCv->second->DrawClonePad();
-            } else {
-                TH1* h = _centralHists.count(sl) ? _centralHists[sl] : nullptr;
-                if (!h) continue;
+        try {
+            TCanvas cGrid("c_pi0Cent","#pi0 – all centralities",1800,1000);
+            gStyle->SetOptTitle(0);
+            cGrid.SetTopMargin(0.12);
+            cGrid.Divide(3,2,0.01,0.01);
 
-                /* ---- choose best fit: stored first, else mini‑fit ---- */
-                TF1 *fTot = nullptr, *fBg = nullptr;
-                std::unique_ptr<TF1> tmpTot, tmpBg;
+            std::vector<double> vC,vCerr,vMu,vMuErr,vSi,vSiErr;
+            const double fitLo=0.05, fitHi=0.35;
+            int pad=1;
 
-                if (_storedFit.count(sl) && _storedFit[sl].total) {
-                    fTot = _storedFit[sl].total.get();
-                    fBg  = _storedFit[sl].poly .get();
+            for (const auto& sl : slices)                     /* keep slice order */
+            {
+                auto it = _centralHists.find(sl);
+                if (it == _centralHists.end()) {
+                    log(Lvl::WARN,"central slice \""+sl+"\" missing in cache");
+                    continue;
+                }
+
+                TH1* h = it->second;
+                cGrid.cd(pad++); h->SetStats(0);
+
+                /* ---- pick stored fit or fall‑back quick fit ------------------- */
+                TF1 *fTot=nullptr,*fBg=nullptr;
+                std::unique_ptr<TF1> tmpTot,tmpBg;
+                if (_storedFit.count(sl)) {
+                    fTot=_storedFit[sl].total.get();
+                    fBg =_storedFit[sl].poly .get();
                 } else {
-                    tmpTot = std::make_unique<TF1>("t","gaus(0)+pol2(3)",fitLo,fitHi);
-                    int iMax = h->GetMaximumBin();
+                    tmpTot=std::make_unique<TF1>("fTmp","gaus(0)+pol2(3)",fitLo,fitHi);
+                    int iMax=h->GetMaximumBin();
                     tmpTot->SetParameters(h->GetBinContent(iMax),
-                                          h->GetBinCenter(iMax),0.02,1,0,0);
+                                          h->GetBinCenter (iMax),0.02,1,0,0);
                     h->Fit(tmpTot.get(),"QRN0");
-
-                    tmpBg  = std::make_unique<TF1>("b","pol2",fitLo,fitHi);
+                    tmpBg=std::make_unique<TF1>("fBgTmp","pol2",fitLo,fitHi);
                     tmpBg->SetParameters(tmpTot->GetParameter(3),
                                          tmpTot->GetParameter(4),
                                          tmpTot->GetParameter(5));
-
-                    fTot = tmpTot.get();  fBg = tmpBg.get();
-                    gPad->GetListOfPrimitives()->Add(tmpTot.release());
-                    gPad->GetListOfPrimitives()->Add(tmpBg .release());
+                    fTot=tmpTot.get(); fBg=tmpBg.get();
                 }
 
-                h->SetStats(0);
-                h->SetMaximum(1.15*h->GetMaximum());
                 fTot->SetLineColor(kRed+1);   fTot->SetLineWidth(2);
-                fBg ->SetLineColor(kBlue+2);  fBg ->SetLineWidth(2); fBg->SetLineStyle(2);
+                fBg ->SetLineColor(kBlue+2);  fBg ->SetLineWidth(2);
+                fBg ->SetLineStyle(2);
 
-                h->Draw();  fBg->Draw("SAME");  fTot->Draw("SAME");
-            }
+                h->SetMaximum(1.15*h->GetMaximum());
+                h->Draw(); fBg->Draw("SAME"); fTot->Draw("SAME");
+                if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
 
-            /* -------------------------------------------------- *
-             * 2.  Extract μ,σ for this slice – always produce    *
-             *     numbers (fallback mini‑fit if no stored fit).  *
-             * -------------------------------------------------- */
-            double mu=0,dMu=0,si=0,dSi=0;
-            if (_storedFit.count(sl) && _storedFit[sl].total) {
-                const auto& f = _storedFit[sl].total;
-                mu = f->GetParameter(1);  dMu = f->GetParError(1);
-                si = f->GetParameter(2);  dSi = f->GetParError(2);
-            } else if (_centralHists.count(sl)) {
-                TH1* h = _centralHists[sl];
-                TF1 g("g","gaus(0)+pol2(3)",fitLo,fitHi);
-                g.SetParameters(h->GetMaximum(),
-                                h->GetBinCenter(h->GetMaximumBin()),0.02,1,0,0);
-                h->Fit(&g,"QRN0");
-                mu = g.GetParameter(1);  dMu = g.GetParError(1);
-                si = g.GetParameter(2);  dSi = g.GetParError(2);
-            }
+                double mu=fTot->GetParameter(1), emu=fTot->GetParError(1);
+                double si=fTot->GetParameter(2), esi=fTot->GetParError(2);
 
-            if (mu > 0 && si > 0 && sl != "Inclusive") {
-                vMu .push_back(mu);        vMuErr .push_back(dMu);
-                vSi .push_back(si);        vSiErr .push_back(dSi);
+                /* ---- ASCII‑only centrality label ----------------------------- */
+                static const auto centLabel=[](const std::string& slice){
+                    if (slice=="Inclusive") return std::string("Inclusive");
+                    const auto p=slice.find('_');
+                    return "Centrality: "+
+                           slice.substr(0,p) + "-" + slice.substr(p+1) + " %";
+                };
+                const std::string lbl=centLabel(sl);
 
-                int lo = std::stoi(sl.substr(0, sl.find('_')));
-                int hi = std::stoi(sl.substr(sl.find('_') + 1));
-                vCent   .push_back(0.5 * (lo + hi));
-                vCentErr.push_back(0.5 * (hi - lo));
-             }
-        }
+                /* ---- place text block (unchanged geometry logic) ------------- */
+                const double lm=gPad->GetLeftMargin();
+                const double rm=gPad->GetRightMargin();
+                const double tm=gPad->GetTopMargin();
+                const double bm=gPad->GetBottomMargin();
+                const bool   isTopSlice=(sl=="30_40"||sl=="40_50"||sl=="50_60");
+                const bool   putBottom=!isTopSlice;
+                const double yAnchor = putBottom ? bm+0.07 : 1.0-tm-0.05;
+                const double dy=0.063;
+                const double xText=1.0-rm-0.42;
 
-        /* header + save ------------------------------------------- */
-        TLatex t; t.SetNDC(); t.SetTextAlign(22); t.SetTextSize(0.028);
-        t.DrawLatex(0.50,0.96,runLabel.c_str());
+                std::string runShort=runID;
+                if (std::all_of(runID.begin(),runID.end(),::isdigit))
+                    runShort=std::to_string(std::stoi(runID));
 
-        fs::path p = root/"EMCal"/"invMassQA"/cutTag/"Pi0Mass_AllCentrality.png";
-        ensure_dir(p.parent_path());
-        cGrid.SaveAs(p.string().c_str());
-    }
+                std::string trigLabel=trig;
+                if (trig=="MBD_NandS_geq_2") trigLabel="MBD NS #geq 2";
 
-    /* ================================================================ *
-     * Helper 1b – draw / save the μ,σ‑vs‑centrality scatter      *
-     *                     using the vectors filled by Helper 1a.       *
-     * ================================================================ */
-    void _renderMuSigmaVsCentrality(const std::string&       runLabel,
-                                    const std::vector<double>& vCent,
-                                    const std::vector<double>& vCentErr,
-                                    const std::vector<double>& vMu,
-                                    const std::vector<double>& vMuErr,
-                                    const std::vector<double>& vSi,
-                                    const std::vector<double>& vSiErr)
-    {
-        /* silence -Wunused-parameter */
-        static_cast<void>(runLabel);
-        static_cast<void>(vCentErr);
+                TLatex tx; tx.SetNDC(); tx.SetTextSize(0.035); tx.SetTextAlign(13);
 
-        if (vCent.empty()) return;
+                if (runID!="Combined") {
+                    const double yRun = putBottom?yAnchor+4*dy:yAnchor;
+                    const double yTrig= putBottom?yAnchor+3*dy:yAnchor-dy;
+                    const double yCent= putBottom?yAnchor+2*dy:yAnchor-2*dy;
+                    const double yMu  = putBottom?yAnchor+  dy:yAnchor-3*dy;
+                    const double ySig = putBottom?yAnchor     :yAnchor-4*dy;
 
-        int n = vCent.size();
-        auto gMu = std::make_unique<TGraphErrors>(n,vCent.data(),vMu.data(),
-                                                  nullptr,vMuErr.data());
-        auto gSi = std::make_unique<TGraphErrors>(n,vCent.data(),vSi.data(),
-                                                  nullptr,vSiErr.data());
-        gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-        gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
-
-        const double padLeft=0.18,padRight=0.04,gap=0.02,fracBot=0.30;
-
-        TCanvas c("c_mu_sigma_vs_cent",
-                  "#pi^{0} peak position / width vs centrality",800,800);
-
-        /* upper pad (μ) */
-        TPad* pU = new TPad("pU","",0,gap+fracBot,1,1);
-        pU->SetBottomMargin(0.04); pU->SetLeftMargin(padLeft); pU->SetRightMargin(padRight);
-        pU->Draw(); pU->cd();
-        gMu->SetTitle("; ;#mu_{#pi^{0}}  (GeV/c^{2})");
-        gMu->Draw("AP");
-
-        c.cd();
-
-        /* lower pad (σ) */
-        TPad* pL = new TPad("pL","",0,0,1,fracBot);
-        pL->SetTopMargin(0.06); pL->SetBottomMargin(0.38);
-        pL->SetLeftMargin(padLeft); pL->SetRightMargin(padRight);
-        pL->Draw(); pL->cd();
-        gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}}  (GeV/c^{2})");
-        gSi->Draw("AP");
-
-        fs::path p = root/"EMCal"/"invMassQA"/cutTag/"Pi0Mass_Sigma_vs_Centrality.png";
-        ensure_dir(p.parent_path());
-        c.SaveAs(p.string().c_str());
-    }
-
-    /* ================================================================ *
-     *  (NEW) Wrapper – keeps the external call unchanged               *
-     * ================================================================ */
-    void _renderCentralityOverview(const std::string& runLabel,
-                                   const std::string& /*runShort – no longer needed*/)
-    {
-        std::vector<double> vC, vCerr, vMu, vMuErr, vSi, vSiErr;
-
-        _renderCentralityGrid(runLabel,
-                              vC, vCerr, vMu, vMuErr, vSi, vSiErr);
-
-        _renderMuSigmaVsCentrality(runLabel,
-                                   vC, vCerr, vMu, vMuErr, vSi, vSiErr);
-    }
-
-    /* ================================================================ *
-     *  Helper 2a – grid with the first six pT spectra for one slice    *
-     * ================================================================ */
-    void _renderPtGrid(const std::string&  slice,
-                       const fs::path&     sliceDir)
-    {
-        const int nShow = 6;
-
-        TCanvas c(Form("c_pi0_pt_%s",slice.c_str()),
-                  Form("#pi^{0} invariant mass – Cent %s %% (first six p_{T} bins)",slice.c_str()),
-                  1800,1000);
-        c.Divide(3,2,0.01,0.01);
-
-        for (int i = 0; i < nShow; ++i)
-        {
-            c.cd(i+1);
-            bool drawn = false;
-
-            if (auto itCv = _ptCanvas.find(slice);
-                itCv != _ptCanvas.end() && i < (int)itCv->second.size())
-            {
-                itCv->second[i]->DrawClonePad();
-                drawn = true;
-            }
-            else if (i < (int)_ptHists[slice].size())
-            {
-                _ptHists[slice][i]->SetStats(0);
-                _ptHists[slice][i]->Draw();
-                drawn = true;
-            }
-
-            if (!drawn) {
-                gPad->SetFrameLineColor(0);
-                TLatex tx; tx.SetNDC(); tx.SetTextAlign(22); tx.SetTextSize(0.04);
-                tx.DrawLatex(0.5,0.5,"no entries");
-            }
-        }
-
-        ensure_dir(sliceDir);
-        c.SaveAs((sliceDir / "Pi0Mass_First6pTbins.png").string().c_str());
-    }
-
-
-    /* ================================================================ *
-     *  Helper 2b – μ,σ vs pT graph for one slice                       *
-     * ================================================================ */
-    void _renderMuSigmaVsPt(const std::string&  slice,
-                            const std::string&  runLabel,
-                            const double        padLeft,
-                            const double        padRight,
-                            const fs::path&     sliceDir)
-    {
-        std::map<double,FitInfo> byPt;
-        for (const auto& [_, fi] : _fitSummary)
-            if (fi.slice == slice && fi.pLo >= 0 && fi.pHi >= 0)
-                byPt[0.5 * (fi.pLo + fi.pHi)] = fi;
-
-        if (byPt.size() < 2) return;                     // nothing to draw
-
-        int n = byPt.size();
-        std::vector<double> x(n), yMu(n), ySi(n);
-        int k = 0;
-        for (auto& [pt, fi] : byPt) {
-            x[k]  = pt;  yMu[k] = fi.mean;  ySi[k] = fi.sigma; ++k;
-        }
-
-        auto gMu = std::make_unique<TGraph>(n, x.data(), yMu.data());
-        auto gSi = std::make_unique<TGraph>(n, x.data(), ySi.data());
-        gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-        gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
-
-        TCanvas c(Form("c_mu_sigma_vs_pt_%s",slice.c_str()),
-                  "#pi^{0} peak position / width vs p_{T}",800,800);
-
-        /* upper pad (μ) */
-        TPad* pU = new TPad("pU","",0,0.35,1,1);
-        pU->SetBottomMargin(0.04);
-        pU->SetLeftMargin(padLeft);  pU->SetRightMargin(padRight);
-        pU->Draw(); pU->cd();
-        gMu->SetTitle("; ;m_{#pi^{0}} (GeV)");
-        gMu->Draw("AP");
-
-        /* banner */
-        {
-            TLatex tx; tx.SetNDC(); tx.SetTextSize(0.040); tx.SetTextAlign(13);
-            tx.DrawLatex(0.12,0.96,Form("Cent %s %%   %s",slice.c_str(),runLabel.c_str()));
-        }
-
-        /* lower pad (σ) */
-        c.cd();
-        TPad* pL = new TPad("pL","",0,0,1,0.35);
-        pL->SetTopMargin(0.06); pL->SetBottomMargin(0.38);
-        pL->SetLeftMargin(padLeft); pL->SetRightMargin(padRight);
-        pL->Draw(); pL->cd();
-        gSi->SetTitle(";p_{T} [GeV/#it{c}];#sigma_{#pi^{0}} (GeV)");
-        gSi->Draw("AP");
-
-        ensure_dir(sliceDir);
-        c.SaveAs((sliceDir / "Pi0Mass_Sigma_vs_pT.png").string().c_str());
-    }
-
-
-    /* ================================================================ *
-     *  Helper 2 – orchestrator (public interface unchanged)            *
-     * ================================================================ */
-    void _renderPtAddons(const std::string& runLabel)
-    {
-        const double padLeft  = 0.18;
-        const double padRight = 0.04;
-
-        for (const std::string& slice : slices)
-        {
-            if (slice == "Inclusive")                          continue;
-            if (!_ptHists.count(slice) || _ptHists[slice].empty()) continue;
-
-            fs::path sliceDir = cPath(root, slice,
-                                      fs::path("EMCal/invMassQA") / cutTag);
-
-            /* 2a – grid with the first six spectra */
-            _renderPtGrid(slice, sliceDir);
-
-            /* 2b – μ,σ vs pT graph */
-            _renderMuSigmaVsPt(slice, runLabel, padLeft, padRight, sliceDir);
-        }
-    }
-
-    /* ================================================================ *
-     *  New, slim orchestrator – keeps public API unchanged             *
-     * ================================================================ */
-    void writeSummaryPanels()
-    {
-        log(Lvl::INFO, "writeSummaryPanels(): ENTER");
-
-        /* (0)  rebuild central cache if missing ------------------------- */
-        if (_centralHists.empty()) {
-            for (const auto& [sl, vec] : _ptHists) {
-                if (vec.empty()) continue;
-                TH1* hSum = nullptr;
-                for (auto* h : vec) {
-                    if (!hSum) hSum = static_cast<TH1*>(h->Clone(Form("hCent_%s", sl.c_str())));
-                    else       hSum->Add(h);
+                    tx.DrawLatex(xText,yTrig,Form("Trigger: %s",trigLabel.c_str()));
+                    tx.DrawLatex(xText,yCent,lbl.c_str());
+                    tx.DrawLatex(xText,yMu ,Form("#mu = %.3f #pm %.3f GeV", mu,emu));
+                    tx.DrawLatex(xText,ySig,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
+                } else {
+                    const double y1=putBottom?yAnchor+2*dy:yAnchor;
+                    const double y2=putBottom?yAnchor+  dy:yAnchor-dy;
+                    const double y3=putBottom?yAnchor     :yAnchor-2*dy;
+                    tx.DrawLatex(xText,y1,lbl.c_str());
+                    tx.DrawLatex(xText,y2,Form("#mu = %.3f #pm %.3f GeV", mu,emu));
+                    tx.DrawLatex(xText,y3,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
                 }
-                if (hSum) _centralHists[sl] = hSum;
-            }
-        }
 
-        /* (1) prepare run‑label strings – used by both helpers ---------- */
-        std::string runShort = runID;
-        if (std::all_of(runID.begin(), runID.end(), ::isdigit))
-            runShort = std::to_string(std::stoi(runID));
-        std::string runLabel = (runID != "Combined") ? "Run " + runShort : "(combined)";
+                if (sl!="Inclusive") {
+                    int lo=std::stoi(sl.substr(0,sl.find('_')));
+                    int hi=std::stoi(sl.substr(sl.find('_')+1));
+                    vC .push_back(0.5*(lo+hi));  vCerr.push_back(0.5*(hi-lo));
+                    vMu.push_back(mu);           vMuErr.push_back(emu);
+                    vSi.push_back(si);           vSiErr.push_back(esi);
+                }
 
-        /* (2) centrality overview -------------------------------------- */
-        _renderCentralityOverview(runLabel, runShort);
+                slicesDone.push_back(sl);                   // for summary printout
+            } /* loop slices */
 
-        /* (3) pT‑dependent add‑ons ------------------------------------- */
-        _renderPtAddons(runLabel);
+            /* ---- add run + cut header, then save the 2×3 grid --------------- */
+            {
+                /* build stripped run label (no leading zeros) */
+                std::string runShort = runID;
+                if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+                    runShort = std::to_string(std::stoi(runID));
 
-        log(Lvl::INFO, "writeSummaryPanels(): EXIT");
-    }
+                /* decode the E / χ² / α cuts from cutTag */
+                double eCut = 0., chiCut = 0., asyCut = 0.;
+                std::smatch m;
+                if (std::regex_match(cutTag, m,
+                        std::regex(R"(E([0-9]+p[0-9]+)_Chi([0-9]+p[0-9]+)_Asym([0-9]+p[0-9]+))")))
+                {
+                    auto p2d = [](const std::string& s)
+                               { return std::stod(std::regex_replace(s, std::regex("p"), ".")); };
+                    eCut   = p2d(m[1]);
+                    chiCut = p2d(m[2]);
+                    asyCut = p2d(m[3]);
+                }
 
-
-    //--------------------------------------------------------------------
-    //  helper A – build all per‑slice TGraphErrors objects
-    //--------------------------------------------------------------------
-    void _buildRunGraphs(std::vector<int>&                    allRuns,
-                         std::unordered_map<int,int>&         runSlot,
-                         std::vector<TGraphErrors*>&          gMuList,
-                         std::vector<TGraphErrors*>&          gSiList,
-                         TLegend&                             leg,
-                         std::vector<std::string>&            slicesDone,
-                         const int*                           cols,
-                         int                                   nCols)
-    {
-        /* silence -Wunused-parameter */
-        static_cast<void>(allRuns);
-
-        int colourIdx = 0;
-
-        /* ------------------------------------------------------------
-         * 3)  Build one TGraphErrors per slice
-         * ---------------------------------------------------------- */
-        for (const auto& [slice, mp] : s_runPoints)
-        {
-            /* --- collect <runNumber , runID‑string> pairs ---------- */
-            std::vector<std::pair<int,std::string>> runList;
-            for (const auto& [runStr,_] : mp)
-                if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
-                    runList.emplace_back(std::stoi(runStr), runStr);
-
-            if (runList.empty()) {
-                log(Lvl::WARN,"  · slice \""+slice+"\" skipped – no numeric runs");
-                continue;
-            }
-            std::sort(runList.begin(), runList.end(),
-                      [](auto& a, auto& b){ return a.first < b.first; });
-
-            /* --- fill arrays --------------------------------------- */
-            const int n = runList.size();
-            std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
-            for (int i = 0; i < n; ++i) {
-                const int       runNum = runList[i].first;    // numeric value
-                const RunPoint& p      = mp.at(runList[i].second); // exact key
-                const double base = runSlot.at(runNum);       // 1,2,3,… categorical slot
-                const double dx   = 0.25;                     // tiny offset per slice
-                const int    sliceIdx = colourIdx;            // index before colourIdx++
-                x[i] = base + dx * (sliceIdx - (int)s_runPoints.size() / 2);
-                yMu[i]= p.mu;     eMu[i]= p.muErr;
-                ySi[i]= p.sigma;  eSi[i]= p.sigmaErr;
+                /* draw the header once – use NDC so it sits above every pad */
+                cGrid.cd();
+                TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.028);  tl.SetTextAlign(22);
+                tl.DrawLatex(0.50, 0.96,
+                    Form("Run %s   |   E > %.2f GeV, #alpha #leq %.2f, #chi^{2} #leq %.2f",
+                         runShort.c_str(), eCut, asyCut, chiCut));
             }
 
-            auto gMu = new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
-            auto gSi = new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
+            fs::path pngGrid = root/"EMCal"/"invMassQA"/cutTag
+                               /"Pi0Mass_AllCentrality.png";
+            ensure_dir(pngGrid.parent_path());
+            cGrid.SaveAs(pngGrid.string().c_str());
 
-            const int col = cols[colourIdx++ % nCols];
-            gMu->SetMarkerStyle(kFullCircle); gMu->SetMarkerSize(0.7); gMu->SetLineWidth(2);
-            gSi->SetMarkerStyle(kFullCircle); gSi->SetMarkerSize(0.7); gSi->SetLineWidth(2);
-            gMu->SetMarkerColor(col); gMu->SetLineColor(col);
-            gSi->SetMarkerColor(col); gSi->SetLineColor(col);
+            /* ----------- μ,σ vs centrality  ---------------------------------- */
+            if (!vC.empty()) {
+                int n=vC.size();
+                auto gMu=std::make_unique<TGraphErrors>(n,vC.data(),vMu.data(),
+                                                        nullptr,vMuErr.data());
+                auto gSi=std::make_unique<TGraphErrors>(n,vC.data(),vSi.data(),
+                                                        nullptr,vSiErr.data());
+                gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+                gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
-            gMuList.push_back(gMu);
-            gSiList.push_back(gSi);
+                TCanvas cGS("c_mu_sigma_vs_cent",
+                            "#pi^{0} peak position / width vs centrality",800,800);
 
-            const std::string lbl = (slice=="Inclusive") ?
-                                     "Inclusive":"Cent "+slice+" %";
-            leg.AddEntry(gMu,lbl.c_str(),"pl");
+                /* pad geometry (unchanged) */
+                const double padLeft=0.18,padRight=0.04,gapFrac=0.02,fracBot=0.30;
 
-            log(Lvl::DBG,"  · slice \""+slice+"\" – runs="+std::to_string(n)+
-                         "  colourIdx="+std::to_string(colourIdx-1));
-            slicesDone.push_back(slice);
-        }
-    }
+                TPad *p1=new TPad("p1","",0,gapFrac+fracBot,1,1);
+                p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
+                p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
+                p1->Draw(); p1->cd();
+                gMu->SetTitle("; ;#mu_{#pi^{0}} (GeV/c^{2})");
+                gMu->Draw("AP");
+                gMu->GetXaxis()->SetLabelOffset(999);
+                gMu->GetXaxis()->SetTitleOffset(999);
+                gMu->GetXaxis()->SetTickLength(0);
+                cGS.cd();
 
+                TPad *p2=new TPad("p2","",0,0,1,fracBot);
+                p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
+                p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
+                p2->Draw(); p2->cd();
+                gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
+                gSi->Draw("AP");
+                gSi->GetXaxis()->SetNdivisions(506);
+                gSi->GetXaxis()->SetTitleSize(0.09);
+                gSi->GetXaxis()->SetLabelSize(0.07);
+                gSi->GetYaxis()->SetTitleSize(0.09);
+                gSi->GetYaxis()->SetLabelSize(0.07);
+                gSi->GetYaxis()->SetTitleOffset(0.90);
+                gSi->GetYaxis()->SetTickLength(0.035);
 
-    //--------------------------------------------------------------------
-    //  helper B – draw / save canvases once the graphs exist
-    //--------------------------------------------------------------------
-    void _renderRunSummaryCanvases(const std::vector<int>&          allRuns,
-                                   const std::vector<TGraphErrors*>& gMuList,
-                                   const std::vector<TGraphErrors*>& gSiList,
-                                   const std::vector<std::string>&   slicesDone,
-                                   TLegend&                          leg,
-                                   const std::string&                runLabel,
-                                   int                               nRuns,
-                                   const std::string&                runID,
-                                   const std::string&                cutTag)
-    {
-        /* silence -Wunused-parameter */
-        static_cast<void>(runID);
-        /* ------------------------------------------------------------
-         * 4)  Draw canvas (μ upper, σ lower)  +  descriptive header
-         * ---------------------------------------------------------- */
+                {
+                    std::string runShort=runID;
+                    if (std::all_of(runID.begin(),runID.end(),::isdigit))
+                        runShort=std::to_string(std::stoi(runID));
 
-        /* ---- create canvas – leave the ROOT title blank ----------------- */
-        TCanvas cR("c_mu_sigma_vs_run_allCent","",900,800);
+                    double eCut=0,chiCut=0,asyCut=0;
+                    std::smatch m;
+                    if (std::regex_match(cutTag,m,
+                        std::regex(R"(E([0-9]+p[0-9]+)_Chi([0-9]+p[0-9]+)_Asym([0-9]+p[0-9]+))")))
+                    {
+                        auto p2d=[](const std::string& s){
+                            return std::stod(std::regex_replace(s,std::regex("p"),"."));
+                        };
+                        eCut=p2d(m[1]); chiCut=p2d(m[2]); asyCut=p2d(m[3]);
+                    }
 
-        /* μ‑pad ----------------------------------------------------------- */
-        TPad* p1 = new TPad("p1","",0,0.35,1,1);
-        p1->SetBottomMargin(0.02);
-        p1->SetTopMargin(0.08);          // room for our custom TLatex header
-        p1->Draw();
-        p1->cd();
+                    cGS.cd();
+                    TLatex tl; tl.SetNDC(); tl.SetTextSize(0.018);
+                    tl.DrawLatex(0.45,0.94,Form("Run:  %s",runShort.c_str()));
+                    tl.DrawLatex(0.45,0.88,
+                        Form("Cuts:  E > %.2f GeV, #alpha #leq %.2f, #chi^{2} #leq %.2f",
+                             eCut,asyCut,chiCut));
+                }
 
-        gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
-        for (std::size_t i = 0; i < gMuList.size(); ++i)
-            gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
-        leg.Draw();
-
-        TAxis* axMu = gMuList.front()->GetHistogram()->GetXaxis();
-        axMu->SetLimits(0.5, nRuns + 0.5);          // frame 0.5 … N+0.5
-        axMu->SetNdivisions(nRuns, 0, 0, true);     // one major tick per run
-        /* keep the tick positions but HIDE the labels – they go to the σ‑pad */
-        axMu->SetLabelOffset(999);                  // effectively invisible
-        axMu->SetTickLength(0.03);
-
-        /* ---- header: cut‑combination + run summary ---------------------- */
-        TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04); tl.SetTextAlign(13);
-        tl.DrawLatex(0.12, 0.96, Form("%s  %s", cutTag.c_str(), runLabel.c_str()));
-
-        /* ---------- auto‑range μ‑pad ---------- */
-        double yMin =  1e9, yMax = -1e9;
-        for (auto g : gMuList) {
-            const double* ey = g->GetEY();
-            for (int p = 0; p < g->GetN(); ++p) {
-                double xx, yy; g->GetPoint(p, xx, yy);
-                yMin = std::min(yMin, yy - ey[p]);
-                yMax = std::max(yMax, yy + ey[p]);
+                fs::path pngGraph = root/"EMCal"/"invMassQA"/cutTag
+                                   /"Pi0Mass_Sigma_vs_Centrality.png";
+                ensure_dir(pngGraph.parent_path());
+                cGS.SaveAs(pngGraph.string().c_str());
+                log(Lvl::INFO,"μ,σ vs centrality PNG → "+pngGraph.string());
             }
-        }
-        const double margin = 0.05 * (yMax - yMin);
-        gMuList.front()->GetYaxis()->SetRangeUser(yMin - margin, yMax + margin);
 
-        /* σ‑pad ----------------------------------------------------------- */
-        cR.cd();
-        TPad* p2 = new TPad("p2","",0,0,1,0.35);
-        p2->SetTopMargin(0.02);
-        p2->SetBottomMargin(0.55);
-        p2->Draw();
-        p2->cd();
+            /* ----------- pT‑bin overview & μ,σ vs pT -------------------------- */
+            for (const auto& sl : slices)
+            {
+                if (sl=="Inclusive") continue;
+                auto itH=_ptHists.find(sl);
+                if (itH==_ptHists.end() || itH->second.empty()) continue;
 
-        gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
-        for (std::size_t i = 0; i < gSiList.size(); ++i)
-            gSiList[i]->Draw(i == 0 ? "AP" : "P SAME");
+                /* (C1) first six spectra grid ---------------------------------- */
+                const int nShow=std::min<int>(6,itH->second.size());
+                TCanvas cGridPt(Form("c_pi0_ptGrid_%s",sl.c_str()),
+                                Form("#pi^{0} invariant mass – Cent %s %% (first six p_{T} bins)",sl.c_str()),
+                                1800,1000);
+                cGridPt.Divide(3,2,0.01,0.01);
+                for(int i=0;i<nShow;++i){
+                    cGridPt.cd(i+1);
+                    TH1* hPt=itH->second[i];
+                    hPt->SetStats(0);
+                    hPt->Draw();
+                }
+                /* ---- replace with ---- */
+                const std::string slDir = (sl == "Inclusive" || sl == "noCentralityDep" ||
+                                            sl.rfind("Cent_",0) == 0) ? sl : "Cent_" + sl;
+                fs::path pngGridPt = root/"EMCal"/"invMassQA"/cutTag/slDir
+                                     /"Pi0Mass_First6pTbins.png";
+                ensure_dir(pngGridPt.parent_path());
+                cGridPt.SaveAs(pngGridPt.string().c_str());
+                log(Lvl::DBG,"pT‑grid PNG  → "+pngGridPt.string());
+                ptPlotsDone.push_back(sl+" (grid)");
 
-        /* ------------------------------------------------------------------ *
-         *  Categorical x axis with vertically‑printed run numbers
-         * ------------------------------------------------------------------ */
-        TAxis* axSi = gSiList.front()->GetHistogram()->GetXaxis();
-        /* make the helper histogram have exactly one bin per run */
-        axSi->Set(nRuns, 0.5, nRuns + 0.5);          // <── crucial
-        axSi->SetLimits(0.5, nRuns + 0.5);
-        axSi->SetNdivisions(nRuns, 0, 0, true);
+                /* (C2) μ,σ vs pT ---------------------------------------------- */
+                std::map<double,FitInfo> byPt;
+                for (const auto& [hName,fi] : _fitSummary)
+                    if (fi.slice==sl && fi.pLo>=0 && fi.pHi>=0)
+                        byPt[0.5*(fi.pLo+fi.pHi)] = fi;
+                if (byPt.size()<2) continue;
 
-        /* if a lot of runs, show every N‑th label only (auto‑throttle) */
-        int skip = 1;
-        if      (nRuns > 100) skip = 10;
-        else if (nRuns > 60)  skip = 5;
-        else if (nRuns > 40)  skip = 2;
+                int n=byPt.size();
+                std::vector<double> x(n),yMu(n),eMu(n),ySi(n),eSi(n);
+                int k=0;
+                for (const auto& [pt,fi] : byPt){
+                    x[k]=pt; yMu[k]=fi.mean;  eMu[k]=0;
+                    ySi[k]=fi.sigma; eSi[k]=0; ++k;
+                }
 
-        for (int k = 0; k < nRuns; ++k)
-            if (k % skip == 0)
-                axSi->SetBinLabel(k + 1, Form("%d", allRuns[k]));
-            else
-                axSi->SetBinLabel(k + 1, "");        // leave blank
+                auto gMu=std::make_unique<TGraphErrors>(n,x.data(),yMu.data(),nullptr,eMu.data());
+                auto gSi=std::make_unique<TGraphErrors>(n,x.data(),ySi.data(),nullptr,eSi.data());
+                gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+                gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
 
-        axSi->LabelsOption("v");
-        axSi->SetLabelSize(0.07);                  // a bit smaller
-        axSi->SetLabelOffset(0.012);
-                
-        /* -------- auto‑scale y‑axis, but anchor lower edge at 0 -------- */
-        double ymax = -1e9;
-        for (auto g : gSiList) {
-            const double* ey = g->GetEY();
-            for (int p = 0; p < g->GetN(); ++p) {
-                double xx, yy;
-                g->GetPoint(p, xx, yy);
-                ymax = std::max(ymax, yy + ey[p]);    // highest point + error bar
-            }
-        }
-        const double marginSi = 0.05 * ymax;         // 5 % head‑room
-        gSiList.front()->GetYaxis()->SetRangeUser(0.0, ymax + marginSi);
+                TCanvas cPT(Form("c_mu_sigma_vs_pt_%s",sl.c_str()),
+                            "#pi^{0} peak position / width vs p_{T}",800,800);
 
-        /* ------------------------------------------------------------
-         * 5)  Save PNG(s)
-         *    – one “all‑centralities” overlay  +  one file per slice
-         * ---------------------------------------------------------- */
+                const double padLeft=0.18,padRight=0.04,gap=0.02,fracBot=0.30;
+                TPad* p1=new TPad("p1","",0,gap+fracBot,1,1);
+                p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
+                p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
+                p1->Draw(); p1->cd();
+                gMu->SetTitle("; ;m_{#pi^{0}}  (GeV)"); gMu->Draw("AP");
+                gMu->GetXaxis()->SetLabelOffset(999);
+                gMu->GetXaxis()->SetTitleOffset(999);
 
-        /* A) overlay of all centralities (exactly as before) */
-        fs::path pngRun = root/"EMCal"/"invMassQA"/cutTag
-                       /"Pi0Mass_Sigma_vs_Run_AllCentrality.png";
-        ensure_dir(pngRun.parent_path());
+                cPT.cd();
+                TPad* p2=new TPad("p2","",0,0,1,fracBot);
+                p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
+                p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
+                p2->Draw(); p2->cd();
+                gSi->SetTitle(";p_{T}  [GeV/#it{c}];#sigma_{#pi^{0}}  (GeV)");
+                gSi->Draw("AP");
+                gSi->GetXaxis()->SetNdivisions(506);
+                gSi->GetXaxis()->SetTitleSize(0.09); gSi->GetXaxis()->SetLabelSize(0.07);
+                gSi->GetYaxis()->SetTitleSize(0.09); gSi->GetYaxis()->SetLabelSize(0.07);
+                gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
 
-        try {
-            cR.SaveAs(pngRun.string().c_str());
-            log(Lvl::INFO,"✔ run‑summary PNG written → "+pngRun.string());
+                /* ---- replace with ---- */
+                fs::path pngPT = root/"EMCal"/"invMassQA"/cutTag/slDir
+                                 /"Pi0Mass_Sigma_vs_pT.png";
+                ensure_dir(pngPT.parent_path());
+                cPT.SaveAs(pngPT.string().c_str());
+                log(Lvl::DBG,"μ,σ vs pT PNG → "+pngPT.string());
+                ptPlotsDone.push_back(sl+" (μσ‑vs‑pT)");
+            } /* end loop slices */
+
+            /* -------------- terminal summary table ------------------------ */
+            std::ostringstream oss;
+            oss << "writeSummaryPanels(): summary\n";
+            oss << "  centrality slices rendered ("<<slicesDone.size()<<") : ";
+            for (const auto& s: slicesDone) oss << s << ' ';
+            oss << "\n  pT‑dependent canvases   ("<<ptPlotsDone.size()<<") : ";
+            for (const auto& s: ptPlotsDone) oss << s << ' ';
+            log(Lvl::INFO,oss.str());
+
         }
         catch(const std::exception& ex){
-            log(Lvl::ERR,std::string("ERROR while saving \"")+pngRun.string()+
-                          "\" – "+ex.what());
+            log(Lvl::ERR,std::string("writeSummaryPanels(): exception – ")+ex.what());
         }
-
-        /* B) one PNG per centrality slice – re‑use the already‑built graphs */
-        for (std::size_t idx = 0; idx < gMuList.size(); ++idx)
-        {
-            const std::string& sl = slicesDone[idx];        // slice key, e.g. "10_20" or "Inclusive"
-
-            TCanvas cS(Form("c_mu_sigma_vs_run_%s", sl.c_str()),"",900,800);
-
-            /* ---------- upper pad (μ) ---------- */
-            TPad* pU = new TPad("pU","",0,0.35,1,1);
-            pU->SetBottomMargin(0.02);
-            pU->SetTopMargin(0.08);
-            pU->Draw(); pU->cd();
-
-            gMuList[idx]->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
-            gMuList[idx]->Draw("AP");
-
-            /* same categorical axis settings as in the overlay */
-            TAxis* axU = gMuList[idx]->GetHistogram()->GetXaxis();
-            axU->SetLimits(0.5, nRuns + 0.5);
-            axU->SetNdivisions(nRuns, 0, 0, true);
-            axU->SetLabelOffset(999);          // hide labels in upper pad
-            axU->SetTickLength(0.03);
-
-            TLatex tlt; tlt.SetNDC(); tlt.SetTextSize(0.04); tlt.SetTextAlign(13);
-            if (sl == "Inclusive")
-                 tlt.DrawLatex(0.12,0.96,Form("%s  Inclusive  %s",cutTag.c_str(),runLabel.c_str()));
-            else tlt.DrawLatex(0.12,0.96,Form("%s  Cent %s %%  %s",
-                                              cutTag.c_str(),sl.c_str(),runLabel.c_str()));
-
-            /* ---------- lower pad (σ) ---------- */
-            cS.cd();
-            TPad* pL = new TPad("pL","",0,0,1,0.35);
-            pL->SetTopMargin(0.02);
-            pL->SetBottomMargin(0.55);
-            pL->Draw(); pL->cd();
-
-            gSiList[idx]->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
-            gSiList[idx]->Draw("AP");
-
-            TAxis* axL = gSiList[idx]->GetHistogram()->GetXaxis();
-            axL->Set(nRuns, 0.5, nRuns + 0.5);           // <── same one‑bin‑per‑run fix
-            axL->SetLimits(0.5, nRuns + 0.5);
-            axL->SetNdivisions(nRuns, 0, 0, true);
-                    
-            /* auto‑throttle label density (same rule as overlay) */
-            int skip = 1;
-            if      (nRuns > 100) skip = 10;
-            else if (nRuns > 60)  skip = 5;
-            else if (nRuns > 40)  skip = 2;
-
-            for (int k = 0; k < nRuns; ++k)
-                axL->SetBinLabel(k + 1,
-                    (k % skip == 0) ? Form("%d", allRuns[k]) : "");
-
-            axL->LabelsOption("v");
-            axL->SetLabelSize(0.07);
-            axL ->SetLabelOffset(0.012);
-
-            /* save the per‑slice PNG */
-            fs::path pngSlice = root/"EMCal"/"invMassQA"/cutTag
-                              /Form("Pi0Mass_Sigma_vs_Run_Cent_%s.png", sl.c_str());
-            ensure_dir(pngSlice.parent_path());
-
-            try {
-                cS.SaveAs(pngSlice.string().c_str());
-                log(Lvl::INFO,"  slice run‑summary written → "+pngSlice.string());
-            }
-            catch(const std::exception& ex){
-                log(Lvl::ERR,std::string("ERROR while saving \"")+pngSlice.string()+
-                              "\" – "+ex.what());
-            }
-        }
-
-        /* ------------ Recap table ---------------------------------- */
-        std::ostringstream oss;
-        oss<<"writeRunSummary(): slices plotted ("<<slicesDone.size()<<") : ";
-        for(const auto& s: slicesDone) oss<<s<<' ';
-        log(Lvl::INFO,oss.str());
     }
-
 
 
     //--------------------------------------------------------------------
@@ -1595,61 +1133,111 @@ class Pi0QA : public QA
         /*  wrap the heavy part so one failure cannot crash the program   */
         try
         {
-            /* collect all numeric run numbers --------------------------- */
-            std::vector<int> allRuns;
-            for (const auto& [sl, mp] : s_runPoints)
-                for (const auto& [runStr, _] : mp)
-                    if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
-                        allRuns.push_back(std::stoi(runStr));
-            std::sort(allRuns.begin(), allRuns.end());
-            allRuns.erase(std::unique(allRuns.begin(), allRuns.end()), allRuns.end());
-
-            std::unordered_map<int,int> runSlot;          // runNumber → slot 1…N
-            for (std::size_t k = 0; k < allRuns.size(); ++k)
-                runSlot[ allRuns[k] ] = static_cast<int>(k) + 1;
-
-            /* containers to be filled by helper A ----------------------- */
+            /* ------------------------------------------------------------
+             * 3)  Build one TGraphErrors per slice
+             * ---------------------------------------------------------- */
             std::vector<TGraphErrors*> gMuList, gSiList;
             TLegend leg(0.12,0.73,0.42,0.88); leg.SetBorderSize(0);
-            std::vector<std::string> slicesDone;
 
-            /* ---------- helper A : build graphs ------------------------ */
-            _buildRunGraphs(allRuns, runSlot,
-                            gMuList, gSiList,
-                            leg, slicesDone,
-                            cols, nCols);
+            std::vector<std::string> slicesDone;          // for final recap
+            int colourIdx = 0;
+
+            for (const auto& [slice, mp] : s_runPoints)
+            {
+                /* --- collect <runNumber , runID‑string> pairs ---------- */
+                std::vector<std::pair<int,std::string>> runList;
+                for (const auto& [runStr,_] : mp)
+                    if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
+                        runList.emplace_back(std::stoi(runStr), runStr);
+
+                if (runList.empty()) {
+                    log(Lvl::WARN,"  · slice \""+slice+"\" skipped – no numeric runs");
+                    continue;
+                }
+                std::sort(runList.begin(), runList.end(),
+                          [](auto& a, auto& b){ return a.first < b.first; });
+
+                /* --- fill arrays --------------------------------------- */
+                const int n = runList.size();
+                std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
+                for (int i = 0; i < n; ++i) {
+                    const int       runNum = runList[i].first;    // numeric value
+                    const RunPoint& p      = mp.at(runList[i].second); // exact key
+                    x[i]  = runNum;
+                    yMu[i]= p.mu;     eMu[i]= p.muErr;
+                    ySi[i]= p.sigma;  eSi[i]= p.sigmaErr;
+                }
+
+                auto gMu = new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
+                auto gSi = new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
+
+                const int col = cols[colourIdx++ % nCols];
+                gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+                gSi->SetMarkerStyle(kFullCircle); gSi->SetLineWidth(2);
+                gMu->SetMarkerColor(col); gMu->SetLineColor(col);
+                gSi->SetMarkerColor(col); gSi->SetLineColor(col);
+
+                gMuList.push_back(gMu);
+                gSiList.push_back(gSi);
+
+                const std::string lbl = (slice=="Inclusive") ?
+                                         "Inclusive":"Cent "+slice+" %";
+                leg.AddEntry(gMu,lbl.c_str(),"pl");
+
+                log(Lvl::DBG,"  · slice \""+slice+"\" – runs="+std::to_string(n)+
+                             "  colourIdx="+std::to_string(colourIdx-1));
+                slicesDone.push_back(slice);
+            }
 
             if (gMuList.empty()) {
                 log(Lvl::ERR,"writeRunSummary(): ABORT – all slices empty, no graph");
                 return;
             }
 
-            /* ----  run‑number range / count (for Combined pass) -------------- */
-            std::string runLabel;
-            {
-                std::vector<int> rNums;
-                for (const auto& [sl, mp] : s_runPoints)
-                    for (const auto& [id, _] : mp)
-                        if (std::all_of(id.begin(), id.end(), ::isdigit))
-                            rNums.push_back(std::stoi(id));
+            /* ------------------------------------------------------------
+             * 4)  Draw canvas (μ upper, σ lower)
+             * ---------------------------------------------------------- */
+            TCanvas cR("c_mu_sigma_vs_run_allCent",
+                       "#pi^{0} peak position / width vs run", 900, 800);
 
-                if (!rNums.empty()) {
-                    const auto [lo, hi] = std::minmax_element(rNums.begin(), rNums.end());
-                    std::set<int> uniq(rNums.begin(), rNums.end());
-                    runLabel = Form("(runs %d #rightarrow %d, %zu runs)",
-                                    *lo, *hi, uniq.size());
-                } else {
-                    runLabel = "(combined)";
-                }
+            // μ pad
+            TPad* p1=new TPad("p1","",0,0.35,1,1);
+            p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
+            gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
+            for (std::size_t i=0;i<gMuList.size();++i)
+                gMuList[i]->Draw(i==0 ? "AP" : "P SAME");
+            leg.Draw();
+
+            // σ pad
+            cR.cd();
+            TPad* p2=new TPad("p2","",0,0,1,0.32);
+            p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
+            p2->Draw(); p2->cd();
+            gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
+            for (std::size_t i=0;i<gSiList.size();++i)
+                gSiList[i]->Draw(i==0 ? "AP" : "P SAME");
+
+            /* ------------------------------------------------------------
+             * 5)  Save PNG
+             * ---------------------------------------------------------- */
+            fs::path pngRun = root/"EMCal"/"invMassQA"/cutTag
+                           /"Pi0Mass_Sigma_vs_Run_AllCentrality.png";
+            ensure_dir(pngRun.parent_path());
+
+            try {
+                cR.SaveAs(pngRun.string().c_str());
+                log(Lvl::INFO,"✔ run‑summary PNG written → "+pngRun.string());
+            }
+            catch(const std::exception& ex){
+                log(Lvl::ERR,std::string("ERROR while saving \"")+pngRun.string()+
+                              "\" – "+ex.what());
             }
 
-            const int nRuns = static_cast<int>(allRuns.size());
-
-            /* ---------- helper B : draw & save canvases ---------------- */
-            _renderRunSummaryCanvases(allRuns, gMuList, gSiList,
-                                      slicesDone, leg,
-                                      runLabel, nRuns,
-                                      runID, cutTag);
+            /* ------------ Recap table ---------------------------------- */
+            std::ostringstream oss;
+            oss<<"writeRunSummary(): slices plotted ("<<slicesDone.size()<<") : ";
+            for(const auto& s: slicesDone) oss<<s<<' ';
+            log(Lvl::INFO,oss.str());
         }
         catch(const std::exception& ex)
         {
@@ -1671,10 +1259,6 @@ class Pi0QA : public QA
     std::unordered_map<std::string,
                      std::vector<TH1*>>            _ptHists;
     std::unordered_map<std::string, FitInfo>         _fitSummary;
-    
-    std::unordered_map<std::string,std::unique_ptr<TCanvas>> _centralCanvas;
-    
-    std::unordered_map<std::string,std::vector<std::unique_ptr<TCanvas>>> _ptCanvas;
 
     /* run label of this instance */
     std::string runID;
@@ -1689,6 +1273,7 @@ class Pi0QA : public QA
                 std::unordered_map<std::string,RunPoint>>  s_runPoints;
     static inline bool s_summaryWritten = false;
 };
+
 
 
 
