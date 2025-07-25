@@ -65,26 +65,40 @@ export LDFLAGS="${LDFLAGS:-} -Wl,-no_warn_duplicate_libraries"
 # 3.  Build the ROOT command line
 #     • use ‑q only in non‑verbose mode
 # ────────────────────────────────────────────────────────────────────────────
-root_flags=(-l -b)                # ‑l = no splash screen
-if [[ "${verbose}" == "false" ]]; then
-    root_flags+=(-q)              # hide extra ROOT chatter
-fi
+root_flags=(-l -b -q)
 
-root_cmd=(root "${root_flags[@]}" \
-          "${macro}+Ok(${test_arg},${sample_arg})")
+# Define a dedicated build directory _once_ per run
+build_dir="$(cd "$(dirname "${macro}")" && pwd)/.aclic_build"
+mkdir -p "${build_dir}"
+
+root_cmd=(
+  root "${root_flags[@]}"
+  -e "gSystem->SetBuildDir(\"${build_dir}\", kTRUE)"          # ← key line
+  "${macro}+Ok(${test_arg},${sample_arg})"
+)
+
 
 # Optional: show the exact command we are about to run when verbose
 [[ "${verbose}" == "true" ]] && echo "+ ${root_cmd[*]}" >&2
 
 # ────────────────────────────────────────────────────────────────────────────
-# 3.5  Clean previous output so every run starts with an empty directory
+# 3.5  Clean previous output *and* stale ACLiC artefacts
 # ────────────────────────────────────────────────────────────────────────────
 output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
 
+# ❶ purge old QA PNG / CSV output
 if [[ -d "${output_root}" ]]; then
     echo "Cleaning old output under ${output_root}" >&2
     rm -rf "${output_root:?}/"*
 fi
+
+# ❷ purge every ACLiC file that may linger from earlier builds
+macro_dir="$(cd "$(dirname "${macro}")" && pwd)"
+macro_base="$(basename "${macro%.*}")_cpp"
+
+echo "Removing stale ACLiC artefacts in ${macro_dir}" >&2
+find "${macro_dir}" -maxdepth 1 -type f -name "${macro_base}_ACLiC_*" -delete
+rm -f "${macro_dir}/${macro_base}.so" "${macro_dir}/${macro_base}.d"
 
 # ────────────────────────────────────────────────────────────────────────────
 # 4.  Execute — filter only the duplicate-rpath warning
