@@ -82,6 +82,34 @@ std::set<std::string> kTriggersWanted{
     "photon_10_plus_MBD_NS_geq_2_vtx_lt_150",
     "photon_12_plus_MBD_NS_geq_2_vtx_lt_150"
 };
+inline std::string prettifyTrigger(std::string s)
+{
+    // 1.  dedicated multi‑character tokens  (order matters!)
+    s = std::regex_replace(s, std::regex(R"(_plus_)")   , " + ");
+    s = std::regex_replace(s, std::regex(R"(NS)")       , "N&S");
+    s = std::regex_replace(s, std::regex(R"(geq)")      , "#geq");
+    s = std::regex_replace(s, std::regex(R"(vtx_lt_([0-9]+))"), "vtx < $1");
+
+    // 2.  remaining underscores  →  space
+    std::replace(s.begin(), s.end(), '_', ' ');
+
+    // 3.  collapse any accidental double spaces
+    s = std::regex_replace(s, std::regex(R"(\s{2,})"), " ");
+
+    return s;
+}
+
+/* -----------------------------------------------------------------
+ *  One single map that the rest of the macro can query at will:
+ *     kPrettyTrig.at("photon_10_plus_MBD_NS_geq_2_vtx_lt_150")
+ *                              ↳  "photon 10 + MBD N&S #geq 2 vtx < 150"
+ * ----------------------------------------------------------------- */
+static const std::unordered_map<std::string,std::string> kPrettyTrig = []{
+    std::unordered_map<std::string,std::string> m;
+    for (const auto& raw : kTriggersWanted)
+        m.emplace(raw, prettifyTrigger(raw));
+    return m;                 // NB: executed once, at start‑up
+}();
 
 /* ----------  PLOT CANVAS SIZES  -----------
  * Set a value ≤0 to keep the old automatic size
@@ -765,6 +793,214 @@ class Pi0QA : public QA
             log(Lvl::ERR,std::string("cacheForOverview(): exception – ")+ex.what());
         }
     }
+    
+    // -------------------------------------------------------------------------
+    // helper: draw the 2×3 centrality grid and collect μ,σ vs centrality data
+    // -------------------------------------------------------------------------
+    void fillCentralityGrid(TCanvas& cGrid,
+                            std::vector<double>& vC,  std::vector<double>& vCerr,
+                            std::vector<double>& vMu, std::vector<double>& vMuErr,
+                            std::vector<double>& vSi, std::vector<double>& vSiErr,
+                            std::vector<std::string>& slicesDone)
+    {
+        const double fitLo = 0.05, fitHi = 0.35;
+        int pad = 1;                                         // pad counter
+
+        for (const auto& sl : slices)                        /* keep slice order */
+        {
+            auto it = _centralHists.find(sl);
+            if (it == _centralHists.end()) {
+                log(Lvl::WARN,"central slice \""+sl+"\" missing in cache");
+                continue;
+            }
+
+            TH1* h = it->second;
+            cGrid.cd(pad++);  h->SetStats(0);
+
+            /* ---- pick stored fit or fall‑back quick fit ------------------- */
+            TF1 *fTot = nullptr, *fBg = nullptr;
+            std::unique_ptr<TF1> tmpTot, tmpBg;
+
+            if (_storedFit.count(sl)) {
+                fTot = _storedFit[sl].total.get();
+                fBg  = _storedFit[sl].poly .get();
+            } else {
+                tmpTot = std::make_unique<TF1>("fTmp","gaus(0)+pol2(3)",fitLo,fitHi);
+                int iMax = h->GetMaximumBin();
+                tmpTot->SetParameters(h->GetBinContent(iMax),
+                                      h->GetBinCenter (iMax),0.02,1,0,0);
+                h->Fit(tmpTot.get(),"QRN0");
+                tmpBg  = std::make_unique<TF1>("fBgTmp","pol2",fitLo,fitHi);
+                tmpBg->SetParameters(tmpTot->GetParameter(3),
+                                     tmpTot->GetParameter(4),
+                                     tmpTot->GetParameter(5));
+                fTot = tmpTot.get();  fBg = tmpBg.get();
+            }
+
+            fTot->SetLineColor(kRed+1);   fTot->SetLineWidth(2);
+            fBg ->SetLineColor(kBlue+2);  fBg ->SetLineWidth(2);
+            fBg ->SetLineStyle(2);
+
+            h->SetMaximum(1.15 * h->GetMaximum());
+            h->Draw();  fBg->Draw("SAME");  fTot->Draw("SAME");
+            if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
+
+            double mu  = fTot->GetParameter(1), emu = fTot->GetParError(1);
+            double sig = fTot->GetParameter(2), esig = fTot->GetParError(2);
+
+            /* ---- ASCII‑only centrality label ----------------------------- */
+            static const auto centLabel = [](const std::string& slice){
+                if (slice == "Inclusive") return std::string("Inclusive");
+                const auto p = slice.find('_');
+                return "Centrality: " +
+                       slice.substr(0,p) + "-" + slice.substr(p+1) + " %";
+            };
+            const std::string lbl = centLabel(sl);
+
+            /* ---- text block ---------------------------------------------- */
+            const double lm = gPad->GetLeftMargin();
+            const double rm = gPad->GetRightMargin();
+            const double tm = gPad->GetTopMargin();
+            const double bm = gPad->GetBottomMargin();
+            const bool   isTopSlice = (sl == "30_40" || sl == "40_50" || sl == "50_60");
+            const bool   putBottom  = !isTopSlice;
+            const double yAnchor = putBottom ? bm + 0.07 : 1.0 - tm - 0.05;
+            const double dy = 0.063;
+            const double xText = 1.0 - rm - 0.42;
+
+            std::string runShort = runID;
+            if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+                runShort = std::to_string(std::stoi(runID));
+
+            std::string trigLabel;
+            if (auto it = kPrettyTrig.find(trig); it != kPrettyTrig.end())
+                trigLabel = it->second;
+            else
+                trigLabel = prettifyTrigger(trig);
+
+            TLatex tx;  tx.SetNDC();  tx.SetTextSize(0.035);  tx.SetTextAlign(13);
+
+            if (runID != "Combined") {
+                const double yRun  = putBottom ? yAnchor + 4*dy : yAnchor;
+                const double yTrig = putBottom ? yAnchor + 3*dy : yAnchor - dy;
+                const double yCent = putBottom ? yAnchor + 2*dy : yAnchor - 2*dy;
+                const double yMu   = putBottom ? yAnchor +   dy : yAnchor - 3*dy;
+                const double ySig  = putBottom ? yAnchor       : yAnchor - 4*dy;
+
+                tx.DrawLatex(xText, yTrig, Form("Trigger: %s", trigLabel.c_str()));
+                tx.DrawLatex(xText, yCent, lbl.c_str());
+                tx.DrawLatex(xText, yMu , Form("#mu = %.3f #pm %.3f GeV",   mu ,emu ));
+                tx.DrawLatex(xText, ySig, Form("#sigma = %.3f #pm %.3f GeV",sig,esig));
+            } else {
+                const double y1 = putBottom ? yAnchor + 2*dy : yAnchor;
+                const double y2 = putBottom ? yAnchor +   dy : yAnchor - dy;
+                const double y3 = putBottom ? yAnchor       : yAnchor - 2*dy;
+                tx.DrawLatex(xText, y1, lbl.c_str());
+                tx.DrawLatex(xText, y2, Form("#mu = %.3f #pm %.3f GeV",   mu ,emu ));
+                tx.DrawLatex(xText, y3, Form("#sigma = %.3f #pm %.3f GeV",sig,esig));
+            }
+
+            if (sl != "Inclusive") {
+                int lo = std::stoi(sl.substr(0, sl.find('_')));
+                int hi = std::stoi(sl.substr(sl.find('_') + 1));
+                vC .push_back(0.5 * (lo + hi));   vCerr.push_back(0.5 * (hi - lo));
+                vMu.push_back(mu);                vMuErr.push_back(emu);
+                vSi.push_back(sig);               vSiErr.push_back(esig);
+            }
+
+            slicesDone.push_back(sl);                              // summary recap
+        } /* end loop over slices */
+    }
+
+    // -------------------------------------------------------------------------
+    // helper: draw the “μ,σ versus centrality” figure and save it to disk
+    // -------------------------------------------------------------------------
+    void plotMuSigmaVsCentrality(const std::vector<double>& vC,
+                                 const std::vector<double>& vCerr,
+                                 const std::vector<double>& vMu,
+                                 const std::vector<double>& vMuErr,
+                                 const std::vector<double>& vSi,
+                                 const std::vector<double>& vSiErr)
+    {
+        (void)vCerr;
+        
+        if (vC.empty()) return;                          // nothing to do
+
+        const int n = vC.size();
+        auto gMu = std::make_unique<TGraphErrors>(n, vC.data(), vMu.data(),
+                                                  nullptr, vMuErr.data());
+
+        auto gSi = std::make_unique<TGraphErrors>(n, vC.data(), vSi.data(),
+                                                  nullptr, vSiErr.data());
+        gMu->SetMarkerStyle(kFullCircle);  gMu->SetLineWidth(2);
+        gSi->SetMarkerStyle(kOpenCircle);  gSi->SetLineWidth(2);
+
+        TCanvas cGS("c_mu_sigma_vs_cent",
+                    "#pi^{0} peak position / width vs centrality", 800, 800);
+
+        /* pad geometry (unchanged) */
+        const double padLeft = 0.18, padRight = 0.04, gapFrac = 0.02, fracBot = 0.30;
+
+        TPad* p1 = new TPad("p1","",0, gapFrac + fracBot, 1, 1);
+        p1->SetBottomMargin(0.04);  p1->SetTopMargin(0.04);
+        p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
+        p1->Draw();  p1->cd();
+        gMu->SetTitle("; ;#mu_{#pi^{0}} (GeV/c^{2})");
+        gMu->Draw("AP");
+        gMu->GetXaxis()->SetLabelOffset(999);
+        gMu->GetXaxis()->SetTitleOffset(999);
+        gMu->GetXaxis()->SetTickLength(0);
+        cGS.cd();
+
+        TPad* p2 = new TPad("p2","",0,0,1,fracBot);
+        p2->SetTopMargin(0.06);  p2->SetBottomMargin(0.38);
+        p2->SetLeftMargin(padLeft);  p2->SetRightMargin(padRight);
+        p2->Draw();  p2->cd();
+        gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
+        gSi->Draw("AP");
+        gSi->GetXaxis()->SetNdivisions(506);
+        gSi->GetXaxis()->SetTitleSize(0.09);  gSi->GetXaxis()->SetLabelSize(0.07);
+        gSi->GetYaxis()->SetTitleSize(0.09);  gSi->GetYaxis()->SetLabelSize(0.07);
+        gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
+
+        /* run / cut / trigger annotation ---------------------------------- */
+        {
+            std::string runShort = runID;
+            if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+                runShort = std::to_string(std::stoi(runID));
+
+            double eCut = 0, chiCut = 0, asyCut = 0;
+            std::smatch m;
+            if (std::regex_match(cutTag, m,
+                    std::regex(R"(E([0-9]+p[0-9]+)_Chi([0-9]+p[0-9]+)_Asym([0-9]+p[0-9]+))")))
+            {
+                auto p2d = [](const std::string& s)
+                           { return std::stod(std::regex_replace(s, std::regex("p"), ".")); };
+                eCut   = p2d(m[1]);  chiCut = p2d(m[2]);  asyCut = p2d(m[3]);
+            }
+
+            /* prettified trigger label */
+            std::string trigLabel;
+            if (auto it = kPrettyTrig.find(trig); it != kPrettyTrig.end())
+                trigLabel = it->second;
+            else
+                trigLabel = prettifyTrigger(trig);
+
+            cGS.cd();
+            TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.02);
+            tl.DrawLatex(0.55, 0.94, Form("Run:  %s", runShort.c_str()));
+            tl.DrawLatex(0.55, 0.9,
+                Form("Cuts:  E #geq %.2f GeV, #alpha < %.2f, #chi^{2} < %.2f",
+                     eCut, asyCut, chiCut));
+            tl.DrawLatex(0.55, 0.86, Form("Trigger: %s", trigLabel.c_str()));
+        }
+
+        fs::path pngGraph = root / "EMCal" / "invMassQA" / cutTag
+                           / "Pi0Mass_Sigma_vs_Centrality.png";
+        ensure_dir(pngGraph.parent_path());
+        cGS.SaveAs(pngGraph.string().c_str());
+        log(Lvl::INFO,"μ,σ vs centrality PNG → " + pngGraph.string());
+    }
 
     // -----------------------------------------------------------------------------
     //  2×3 overview grid + μ,σ vs centrality  (plus pT‑dependent add‑ons)
@@ -791,107 +1027,11 @@ class Pi0QA : public QA
             const double fitLo=0.05, fitHi=0.35;
             int pad=1;
 
-            for (const auto& sl : slices)                     /* keep slice order */
-            {
-                auto it = _centralHists.find(sl);
-                if (it == _centralHists.end()) {
-                    log(Lvl::WARN,"central slice \""+sl+"\" missing in cache");
-                    continue;
-                }
-
-                TH1* h = it->second;
-                cGrid.cd(pad++); h->SetStats(0);
-
-                /* ---- pick stored fit or fall‑back quick fit ------------------- */
-                TF1 *fTot=nullptr,*fBg=nullptr;
-                std::unique_ptr<TF1> tmpTot,tmpBg;
-                if (_storedFit.count(sl)) {
-                    fTot=_storedFit[sl].total.get();
-                    fBg =_storedFit[sl].poly .get();
-                } else {
-                    tmpTot=std::make_unique<TF1>("fTmp","gaus(0)+pol2(3)",fitLo,fitHi);
-                    int iMax=h->GetMaximumBin();
-                    tmpTot->SetParameters(h->GetBinContent(iMax),
-                                          h->GetBinCenter (iMax),0.02,1,0,0);
-                    h->Fit(tmpTot.get(),"QRN0");
-                    tmpBg=std::make_unique<TF1>("fBgTmp","pol2",fitLo,fitHi);
-                    tmpBg->SetParameters(tmpTot->GetParameter(3),
-                                         tmpTot->GetParameter(4),
-                                         tmpTot->GetParameter(5));
-                    fTot=tmpTot.get(); fBg=tmpBg.get();
-                }
-
-                fTot->SetLineColor(kRed+1);   fTot->SetLineWidth(2);
-                fBg ->SetLineColor(kBlue+2);  fBg ->SetLineWidth(2);
-                fBg ->SetLineStyle(2);
-
-                h->SetMaximum(1.15*h->GetMaximum());
-                h->Draw(); fBg->Draw("SAME"); fTot->Draw("SAME");
-                if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
-
-                double mu=fTot->GetParameter(1), emu=fTot->GetParError(1);
-                double si=fTot->GetParameter(2), esi=fTot->GetParError(2);
-
-                /* ---- ASCII‑only centrality label ----------------------------- */
-                static const auto centLabel=[](const std::string& slice){
-                    if (slice=="Inclusive") return std::string("Inclusive");
-                    const auto p=slice.find('_');
-                    return "Centrality: "+
-                           slice.substr(0,p) + "-" + slice.substr(p+1) + " %";
-                };
-                const std::string lbl=centLabel(sl);
-
-                /* ---- place text block (unchanged geometry logic) ------------- */
-                const double lm=gPad->GetLeftMargin();
-                const double rm=gPad->GetRightMargin();
-                const double tm=gPad->GetTopMargin();
-                const double bm=gPad->GetBottomMargin();
-                const bool   isTopSlice=(sl=="30_40"||sl=="40_50"||sl=="50_60");
-                const bool   putBottom=!isTopSlice;
-                const double yAnchor = putBottom ? bm+0.07 : 1.0-tm-0.05;
-                const double dy=0.063;
-                const double xText=1.0-rm-0.42;
-
-                std::string runShort=runID;
-                if (std::all_of(runID.begin(),runID.end(),::isdigit))
-                    runShort=std::to_string(std::stoi(runID));
-
-                std::string trigLabel=trig;
-                if (trig=="MBD_NandS_geq_2") trigLabel="MBD NS #geq 2";
-
-                TLatex tx; tx.SetNDC(); tx.SetTextSize(0.035); tx.SetTextAlign(13);
-
-                if (runID!="Combined") {
-                    const double yRun = putBottom?yAnchor+4*dy:yAnchor;
-                    const double yTrig= putBottom?yAnchor+3*dy:yAnchor-dy;
-                    const double yCent= putBottom?yAnchor+2*dy:yAnchor-2*dy;
-                    const double yMu  = putBottom?yAnchor+  dy:yAnchor-3*dy;
-                    const double ySig = putBottom?yAnchor     :yAnchor-4*dy;
-
-                    tx.DrawLatex(xText,yTrig,Form("Trigger: %s",trigLabel.c_str()));
-                    tx.DrawLatex(xText,yCent,lbl.c_str());
-                    tx.DrawLatex(xText,yMu ,Form("#mu = %.3f #pm %.3f GeV", mu,emu));
-                    tx.DrawLatex(xText,ySig,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
-                } else {
-                    const double y1=putBottom?yAnchor+2*dy:yAnchor;
-                    const double y2=putBottom?yAnchor+  dy:yAnchor-dy;
-                    const double y3=putBottom?yAnchor     :yAnchor-2*dy;
-                    tx.DrawLatex(xText,y1,lbl.c_str());
-                    tx.DrawLatex(xText,y2,Form("#mu = %.3f #pm %.3f GeV", mu,emu));
-                    tx.DrawLatex(xText,y3,Form("#sigma = %.3f #pm %.3f GeV",si,esi));
-                }
-
-                if (sl!="Inclusive") {
-                    int lo=std::stoi(sl.substr(0,sl.find('_')));
-                    int hi=std::stoi(sl.substr(sl.find('_')+1));
-                    vC .push_back(0.5*(lo+hi));  vCerr.push_back(0.5*(hi-lo));
-                    vMu.push_back(mu);           vMuErr.push_back(emu);
-                    vSi.push_back(si);           vSiErr.push_back(esi);
-                }
-
-                slicesDone.push_back(sl);                   // for summary printout
-            } /* loop slices */
-
+            fillCentralityGrid(cGrid,
+                               vC, vCerr,
+                               vMu, vMuErr,
+                               vSi, vSiErr,
+                               slicesDone);      // one call replaces the whole loop
             /* ---- add run + cut header, then save the 2×3 grid --------------- */
             {
                 /* build stripped run label (no leading zeros) */
@@ -925,77 +1065,10 @@ class Pi0QA : public QA
             ensure_dir(pngGrid.parent_path());
             cGrid.SaveAs(pngGrid.string().c_str());
 
-            /* ----------- μ,σ vs centrality  ---------------------------------- */
-            if (!vC.empty()) {
-                int n=vC.size();
-                auto gMu=std::make_unique<TGraphErrors>(n,vC.data(),vMu.data(),
-                                                        nullptr,vMuErr.data());
-                auto gSi=std::make_unique<TGraphErrors>(n,vC.data(),vSi.data(),
-                                                        nullptr,vSiErr.data());
-                gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-                gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+            plotMuSigmaVsCentrality(vC, vCerr,
+                                    vMu, vMuErr,
+                                    vSi, vSiErr);   // one call replaces the whole block
 
-                TCanvas cGS("c_mu_sigma_vs_cent",
-                            "#pi^{0} peak position / width vs centrality",800,800);
-
-                /* pad geometry (unchanged) */
-                const double padLeft=0.18,padRight=0.04,gapFrac=0.02,fracBot=0.30;
-
-                TPad *p1=new TPad("p1","",0,gapFrac+fracBot,1,1);
-                p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
-                p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
-                p1->Draw(); p1->cd();
-                gMu->SetTitle("; ;#mu_{#pi^{0}} (GeV/c^{2})");
-                gMu->Draw("AP");
-                gMu->GetXaxis()->SetLabelOffset(999);
-                gMu->GetXaxis()->SetTitleOffset(999);
-                gMu->GetXaxis()->SetTickLength(0);
-                cGS.cd();
-
-                TPad *p2=new TPad("p2","",0,0,1,fracBot);
-                p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
-                p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
-                p2->Draw(); p2->cd();
-                gSi->SetTitle(";Centrality [%];#sigma_{#pi^{0}} (GeV/c^{2})");
-                gSi->Draw("AP");
-                gSi->GetXaxis()->SetNdivisions(506);
-                gSi->GetXaxis()->SetTitleSize(0.09);
-                gSi->GetXaxis()->SetLabelSize(0.07);
-                gSi->GetYaxis()->SetTitleSize(0.09);
-                gSi->GetYaxis()->SetLabelSize(0.07);
-                gSi->GetYaxis()->SetTitleOffset(0.90);
-                gSi->GetYaxis()->SetTickLength(0.035);
-
-                {
-                    std::string runShort=runID;
-                    if (std::all_of(runID.begin(),runID.end(),::isdigit))
-                        runShort=std::to_string(std::stoi(runID));
-
-                    double eCut=0,chiCut=0,asyCut=0;
-                    std::smatch m;
-                    if (std::regex_match(cutTag,m,
-                        std::regex(R"(E([0-9]+p[0-9]+)_Chi([0-9]+p[0-9]+)_Asym([0-9]+p[0-9]+))")))
-                    {
-                        auto p2d=[](const std::string& s){
-                            return std::stod(std::regex_replace(s,std::regex("p"),"."));
-                        };
-                        eCut=p2d(m[1]); chiCut=p2d(m[2]); asyCut=p2d(m[3]);
-                    }
-
-                    cGS.cd();
-                    TLatex tl; tl.SetNDC(); tl.SetTextSize(0.018);
-                    tl.DrawLatex(0.45,0.94,Form("Run:  %s",runShort.c_str()));
-                    tl.DrawLatex(0.45,0.88,
-                        Form("Cuts:  E > %.2f GeV, #alpha #leq %.2f, #chi^{2} #leq %.2f",
-                             eCut,asyCut,chiCut));
-                }
-
-                fs::path pngGraph = root/"EMCal"/"invMassQA"/cutTag
-                                   /"Pi0Mass_Sigma_vs_Centrality.png";
-                ensure_dir(pngGraph.parent_path());
-                cGS.SaveAs(pngGraph.string().c_str());
-                log(Lvl::INFO,"μ,σ vs centrality PNG → "+pngGraph.string());
-            }
 
             /* ----------- pT‑bin overview & μ,σ vs pT -------------------------- */
             for (const auto& sl : slices)
@@ -1010,12 +1083,47 @@ class Pi0QA : public QA
                                 Form("#pi^{0} invariant mass – Cent %s %% (first six p_{T} bins)",sl.c_str()),
                                 1800,1000);
                 cGridPt.Divide(3,2,0.01,0.01);
-                for(int i=0;i<nShow;++i){
-                    cGridPt.cd(i+1);
-                    TH1* hPt=itH->second[i];
+                for (int i = 0; i < nShow; ++i) {
+                    cGridPt.cd(i + 1);
+
+                    TH1* hPt = itH->second[i];
                     hPt->SetStats(0);
+
+                    /* quick local fit – same recipe used in the single‑spectrum PNG -------- */
+                    const double fitLo = 0.05, fitHi = 0.35;
+                    std::unique_ptr<TF1> fTot, fBg;
+
+                    {
+                        int iMax = hPt->GetMaximumBin();
+                        fTot = std::make_unique<TF1>(Form("fTot_%d_%s", i, sl.c_str()),
+                                                     "gaus(0)+pol2(3)", fitLo, fitHi);
+                        fTot->SetParameters(hPt->GetBinContent(iMax),
+                                            hPt->GetBinCenter (iMax), 0.022, 1, 0, 0);
+                        hPt->Fit(fTot.get(), "QRN0");
+
+                        fBg  = std::make_unique<TF1>(Form("fBg_%d_%s",  i, sl.c_str()),
+                                                     "pol2", fitLo, fitHi);
+                        fBg->SetParameters(fTot->GetParameter(3),
+                                           fTot->GetParameter(4),
+                                           fTot->GetParameter(5));
+                    }
+
+                    /* draw in the same visual style as the stand‑alone plots --------------- */
                     hPt->Draw();
+
+                    fBg->SetLineColor(kBlue  + 2);
+                    fBg->SetLineStyle(2);
+                    fBg->SetLineWidth(2);
+                    fBg->Draw("SAME");
+
+                    fTot->SetLineColor(kRed + 1);
+                    fTot->SetLineWidth(2);
+                    fTot->Draw("SAME");
+
+                    if (_storedEtaFit.count(sl))
+                        _storedEtaFit[sl]->Draw("SAME");      // overlay η fit when available
                 }
+
                 /* ---- replace with ---- */
                 const std::string slDir = (sl == "Inclusive" || sl == "noCentralityDep" ||
                                             sl.rfind("Cent_",0) == 0) ? sl : "Cent_" + sl;
@@ -1093,7 +1201,6 @@ class Pi0QA : public QA
             log(Lvl::ERR,std::string("writeSummaryPanels(): exception – ")+ex.what());
         }
     }
-
 
     //--------------------------------------------------------------------
     //  Write run‑by‑run π0‑mass summary   (called once, after “Combined”)
@@ -1330,24 +1437,41 @@ static void tightenAxes(TH1* h)
     h->GetYaxis()->SetTitleOffset(1.25F);
 }
 
-/* Tighten the displayed X/Y range so that the upper edge coincides with
-   the last *non‑empty* bin, keeping the lower edge fixed at zero.       */
-static void tightenAxes(TH2* h)
+static void tightenAxes(TH2* h, double padFrac = 0.05)
 {
-    auto* axX = h->GetXaxis();
-    auto* axY = h->GetYaxis();
+    if (!h) return;
 
-    const int lastX = h->GetNbinsX();
-    const int lastY = h->GetNbinsY();
+    TAxis* axX = h->GetXaxis();
+    TAxis* axY = h->GetYaxis();
 
-    int hiX = lastX;
-    while (hiX > 1 && h->Integral(hiX, lastX, 1, lastY) == 0) --hiX;
+    const int nBX = axX->GetNbins();
+    const int nBY = axY->GetNbins();
 
-    int hiY = lastY;
-    while (hiY > 1 && h->Integral(1, lastX, hiY, lastY) == 0) --hiY;
+    /* ── locate the highest X / Y bins that still contain content ── */
+    int hiX = nBX;
+    while (hiX > 1 && h->Integral(hiX, nBX, 1, nBY) == 0) --hiX;
 
-    axX->SetRangeUser(0., axX->GetBinUpEdge(hiX));
-    axY->SetRangeUser(0., axY->GetBinUpEdge(hiY));
+    int hiY = nBY;
+    while (hiY > 1 && h->Integral(1, nBX, hiY, nBY) == 0) --hiY;
+
+    /* original lower edges (may be non‑zero for some histograms) */
+    const double xLow = axX->GetBinLowEdge(1);
+    const double yLow = axY->GetBinLowEdge(1);
+
+    /* upper edges that really contain data */
+    double xUp  = axX->GetBinUpEdge(hiX);
+    double yUp  = axY->GetBinUpEdge(hiY);
+
+    /* add a small margin (default 5 %) so nothing hugs the frame */
+    const double dx = (xUp - xLow) * padFrac;
+    const double dy = (yUp - yLow) * padFrac;
+
+    axX->SetRangeUser(xLow, xUp + dx);
+    axY->SetRangeUser(yLow, yUp + dy);
+
+    /* keep titles nicely centred */
+    axX->CenterTitle(true);   axY->CenterTitle(true);
+    axX->SetTitleOffset(1.1F); axY->SetTitleOffset(1.25F);
 }
 
 /* Draw run‑number (without leading zeroes) in the upper‑left corner.    */
@@ -1386,10 +1510,82 @@ class CorrQA : public QA
     static std::unordered_map<std::string, NameMap> s_cache;
 
     /* ------------------------------------------------------------------ *
-     *  Produce per-run correlation summary panels.
-     *  (Stub-version prevents compile errors – extend as required.)      *
+     *  Produce one (or several) 8 × 8 summary PNGs for **every run**      *
+     *  that has been cached in `s_cache`.  The routine is executed from   *
+     *  the *Combined* pass, after all individual runs have filled         *
+     *  `s_cache` via `cacheForRunSummary()`.                              *
+     *                                                                    *
+     *  – Each page hosts up to 64 correlation maps (log‑Z, auto‑tight).   *
+     *  – Output files are written to “…/<trigger>/RunSummaries/”.         *
+     *    Example:   …/Combined/MBD/RunSummaries/Run_68402_page1.png       *
+     *  – The routine is self‑contained and leaves existing logic intact.  *
      * ------------------------------------------------------------------ */
-    void writeRunSummaries() {}
+    void writeRunSummaries()
+    {
+        /* ----------------------------------------------------------------
+         * Guard‑clauses – execute the summary only once, during the
+         * “Combined” pass, and only if the cache is non‑empty.
+         * ---------------------------------------------------------------- */
+        if (root.parent_path().filename() != "Combined") return;
+        if (s_cache.empty()) return;
+        /* ── 1. collect all TH2 clones by run number ─────────────────────── */
+        using HVec = std::vector<std::shared_ptr<TH2>>;
+        std::unordered_map<std::string, HVec> byRun;     // runID → list of maps
+
+        for (auto& [group, nameMap] : s_cache)
+            for (auto& [histName, runMap] : nameMap)
+                for (auto& [runID, h] : runMap)
+                    if (runID != "Combined" && h) byRun[runID].push_back(h);
+
+        if (byRun.empty()) return;                       // only Combined entries
+
+        /* ── 2. prepare the output directory (one per trigger) ───────────── */
+        fs::path outDir = root.parent_path() / "RunSummaries";
+        ensure_dir(outDir);
+
+        /* ── 3. canvas geometry constants ────────────────────────────────── */
+        const int nCols = 8, nRows = 8;
+        const int cellW = 350,  cellH = 350;
+        const int canW  = nCols * cellW;
+        const int canH  = nRows * cellH;
+        const int perPage = nCols * nRows;               // 64 plots / page
+
+        /* ── 4. loop over runs and paginate ──────────────────────────────── */
+        for (auto& [runID, vec] : byRun)
+        {
+            if (vec.empty()) continue;
+
+            std::size_t page = 0;
+            for (std::size_t idx = 0; idx < vec.size(); idx += perPage)
+            {
+                ++page;
+                std::size_t nThis = std::min<std::size_t>(perPage,
+                                                          vec.size() - idx);
+
+                TCanvas c(Form("c_run_%s_%zu", runID.c_str(), page),
+                          "", canW, canH);
+                c.Divide(nCols, nRows, 0.001, 0.001);
+
+                for (std::size_t i = 0; i < nThis; ++i) {
+                    c.cd(static_cast<int>(i) + 1);
+                    gPad->SetLogz();
+                    tightenAxes(vec[idx + i].get());
+                    vec[idx + i]->Draw("COLZ");
+                }
+
+                /* run label once per page (upper‑left corner) */
+                drawRunLabel(stripLeadingZeros(runID));
+
+                fs::path png = outDir /
+                    (std::string("Run_") + runID +
+                     "_page" + std::to_string(page) + ".png");
+                c.SaveAs(png.string().c_str());
+            }
+        }
+
+        /* clear to free memory – no further summaries needed */
+        s_cache.clear();
+    }
 
     // ─────────────────────────────── 1. per-histogram ──────────────────────
     bool process(TObject* o) override
@@ -1513,7 +1709,7 @@ class CorrQA : public QA
             } else {                                          // explicit centrality slice “lo_hi”
                 std::smatch m;
                 if (std::regex_match(slice, m, std::regex(R"((\d{1,3})_(\d{1,3}))"))) {
-                    plotTitle += "  (Cent " + m[1].str() + "–" + m[2].str() + " %)";
+                    plotTitle += "  (Cent " + m[1].str() + "-" + m[2].str() + " %)";
                 }
             }
 
@@ -1521,19 +1717,40 @@ class CorrQA : public QA
             if (h2) {                               // 2‑D map
                 h2->SetTitle("");
 
-                /* -------- descriptive axis labels --------------------------- */
-                auto axisLabel = [](const std::string& det) -> std::string
+                auto axisLabel = [](const std::string& tok,
+                                    const std::string& det) -> std::string
                 {
-                    if (det == "EMCal")  return "#SigmaE_{CEMC}  [GeV]";
-                    if (det == "IHCal")  return "#SigmaE_{IHCal} [GeV]";
-                    if (det == "OHCal")  return "#SigmaE_{OHCal} [GeV]";
-                    if (det == "HCal")   return "#SigmaE_{HCal}  [GeV]";
-                    if (det == "MBD")    return "#SigmaQ_{MBD}   [Charge]";
-                    if (det == "sEPD")   return "#SigmaQ_{sEPD}  [Charge]";
-                    return det;                          // fallback
+                    auto hasTok = [](const std::string& str, const std::string& tag)->bool
+                    {
+                        const std::string p = "_" + tag;
+                        std::size_t pos = str.find(p);
+                        while (pos != std::string::npos) {
+                            std::size_t end = pos + p.size();
+                            if (end == str.size() || str[end] == '_') return true;
+                            pos = str.find(p, pos + 1);
+                        }
+                        return false;
+                    };
+
+                    const bool south = hasTok(tok, "South") || hasTok(tok, "S");
+                    const bool north = hasTok(tok, "North") || hasTok(tok, "N");
+
+                    if (det == "EMCal") return "#SigmaE_{CEMC}  [GeV]";
+                    if (det == "IHCal") return "#SigmaE_{IHCal} [GeV]";
+                    if (det == "OHCal") return "#SigmaE_{OHCal} [GeV]";
+                    if (det == "HCal")  return "#SigmaE_{HCal}  [GeV]";
+                    if (det == "MBD")   return "#SigmaQ_{MBD}   [Charge]";
+
+                    if (det == "sEPD") {
+                        if (south) return "#SigmaQ_{South} [Charge]";
+                        if (north) return "#SigmaQ_{North} [Charge]";
+                        return "#SigmaQ_{sEPD}  [Charge]";
+                    }
+                    return det;                                   // fallback
                 };
-                h2->GetXaxis()->SetTitle( axisLabel(detA).c_str() );
-                h2->GetYaxis()->SetTitle( axisLabel(detB).c_str() );
+
+                h2->GetXaxis()->SetTitle( axisLabel(tokA, detA).c_str() );
+                h2->GetYaxis()->SetTitle( axisLabel(tokB, detB).c_str() );
 
                 c.SetLogz();
                 tightenAxes(h2);
@@ -1545,7 +1762,12 @@ class CorrQA : public QA
                 tl.SetTextAlign(22);
                 tl.SetTextFont(42);
                 tl.SetTextSize(0.05);
-                std::string header = prettyDet(tokA) + "  vs  " + prettyDet(tokB);
+                std::string header;
+                if (detA == "sEPD" && detB == "sEPD")            // special N‑S correlation
+                    header = "sEPD North - South Correlations";
+                else
+                    header = prettyDet(tokA) + "  vs  " + prettyDet(tokB);
+
                 tl.DrawLatex(0.50, 0.96, header.c_str());
             }
             else {                                  // 1‑D spectrum (Δη / Δφ)
@@ -1648,21 +1870,31 @@ class CorrQA : public QA
     /* Pretty detector label that keeps possible North/South qualifiers */
     static std::string prettyDet(const std::string& tok)
     {
-        std::string det = canonicalDet(tok);        // EMCal / sEPD / …
-        /* helper: true only if the string really *ends* with the suffix */
-        auto endsWith = [](const std::string& s, const std::string& suf) -> bool
+        std::string det = canonicalDet(tok);    // EMCal / sEPD / …
+
+        /* match “…_North”, “…_South”, “…_N”, “…_S” only when they form
+           a complete underscore‑separated token                               */
+        auto hasToken = [](const std::string& str, const std::string& tag) -> bool
         {
-            return s.size() >= suf.size() &&
-                   s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+            const std::string pat = "_" + tag;
+            std::size_t pos = str.find(pat);
+            while (pos != std::string::npos)
+            {
+                const std::size_t end = pos + pat.size();
+                if (end == str.size() || str[end] == '_') return true; // exact token
+                pos = str.find(pat, pos + 1);
+            }
+            return false;
         };
 
-        const bool isN = (tok.find("_North") != std::string::npos) || endsWith(tok, "_N");
-        const bool isS = (tok.find("_South") != std::string::npos) || endsWith(tok, "_S");
+        const bool isN = hasToken(tok, "North") || hasToken(tok, "N");
+        const bool isS = hasToken(tok, "South") || hasToken(tok, "S");
 
         if (isN)      det += " North";
         else if (isS) det += " South";
         return det;
     }
+
 
     /* strip “…_<lo>_<hi>_<trigger>” so all centrality clones map back
        to the *same* base name                                           */
