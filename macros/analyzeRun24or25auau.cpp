@@ -430,6 +430,156 @@ class Pi0QA : public QA
 
     /* const accessor (unchanged) */
     const auto& fitSummary() const { return _fitSummary; }
+    
+    // -----------------------------------------------------------------
+    // Helper performing the π0 peak fit.
+    //  • returns true/false (= fitOK)
+    //  • fills the caller‑provided TF1 `total` and all requested values
+    // -----------------------------------------------------------------
+    bool doPi0Fit(TH1* h,              // [in]  histogram to be fitted
+                  TF1& total,          // [out] configured gaus+pol2 function
+                  double& mu,          // [out] fitted μ
+                  double& muErr,       // [out] μ error
+                  double& sigma,       // [out] fitted σ
+                  double& sigmaErr)    // [out] σ error
+    {
+        if (!h) return false;
+
+        const double piFitLo = 0.05, piFitHi = 0.35;
+
+        /* ---- seed determination -------------------------------------- */
+        const int iLo = binAt(h, piFitLo);
+        const int iHi = binAt(h, piFitHi);
+
+        int iMax = iLo; double amp0 = 0.;
+        for (int i = iLo; i <= iHi; ++i)
+            if (h->GetBinContent(i) > amp0) { amp0 = h->GetBinContent(i); iMax = i; }
+
+        const double mu0    = h->GetBinCenter(iMax);
+        const double sigma0 = 0.025;
+
+        log(Lvl::DBG, Form("π0 seed  amp=%g  mu=%g", amp0, mu0));
+
+        /* ---- configure composite model -------------------------------- */
+        total.SetRange(piFitLo, piFitHi);
+        total.SetParNames("A","mu","sigma","c0","c1","c2");
+        total.SetParameters(amp0, mu0, 0.022, 1, 0, 0);
+        total.SetParLimits(0, 0, 1e9);
+        total.SetParLimits(1, 0.10, 0.17);
+        total.SetParLimits(2, 0.010, 0.060);
+
+        ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
+        ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(3'000);
+
+        /* ---- pre‑fit background *only* -------------------------------- */
+        TF1 polyTmp("polyTmp", "pol2", piFitLo, piFitHi);
+        for (int ip = binAt(h, 0.11); ip <= binAt(h, 0.16); ++ip) h->SetBinError(ip, 1e9);
+        h->Fit(&polyTmp, "QRN0");
+        for (int ip = binAt(h, 0.11); ip <= binAt(h, 0.16); ++ip)
+            h->SetBinError(ip, std::sqrt(h->GetBinContent(ip)));
+
+        total.SetParameters(amp0, mu0, 0.022,
+                            polyTmp.GetParameter(0),
+                            polyTmp.GetParameter(1),
+                            polyTmp.GetParameter(2));
+
+        /* ---- final composite fit ------------------------------------- */
+        const bool ok = (h->Fit(&total, "QRN0") == 0);
+        log(Lvl::INFO, std::string("π0 fit ") + (ok ? "succeeded" : "FAILED"));
+
+        if (ok)
+        {
+            mu       = total.GetParameter(1);
+            sigma    = total.GetParameter(2);
+            muErr    = total.GetParError (1);
+            sigmaErr = total.GetParError (2);
+        }
+        else
+        {
+            mu = mu0; muErr = 0.;
+            sigma = sigma0; sigmaErr = 0.;
+        }
+
+        log(Lvl::DBG, Form("π0  mu=%.5f±%.5f  sigma=%.5f±%.5f",
+                           mu, muErr, sigma, sigmaErr));
+        return ok;
+    }
+    
+
+    bool doEtaFit(TH1* h,                    // [in]  invariant‑mass histogram
+                  const std::string& slice,  // [in]  current cent‑slice key
+                  double& mu, double& muErr, // [out] η‑peak μ and error
+                  double& sigma, double& sigmaErr)          // [out] σ and error
+    {
+        mu = muErr = sigma = sigmaErr = 0.;          // default outputs
+
+        if (runID != "Combined" || !h)               // only do it once per macro
+            return false;
+
+        const double etaLo = 0.45, etaHi = 0.80, side = 0.03;
+
+        int iLo  = binAt(h, etaLo);
+        int iHi  = binAt(h, etaHi);
+        int iMax = iLo;  double maxCnt = 0.;
+
+        for (int i = iLo; i <= iHi; ++i)
+            if (h->GetBinContent(i) > maxCnt) { maxCnt = h->GetBinContent(i); iMax = i; }
+
+        if (maxCnt <= 0) return false;               // nothing to fit
+
+        const double mu0    = h->GetBinCenter(iMax);
+        const double sigma0 = 0.040;
+
+        /* --- local background pre‑fit ---------------------------------- */
+        TF1 bkg("bkg","pol2",etaLo,etaHi);
+        for (int i = iLo; i <= iHi; ++i)
+        {
+            const double x = h->GetBinCenter(i);
+            const bool inPk = (std::fabs(x - mu0) < side);
+            h->SetBinError(i, inPk ? 1e9 : std::sqrt(h->GetBinContent(i)));
+        }
+        h->Fit(&bkg,"QN0");
+        for (int i = iLo; i <= iHi; ++i)
+            h->SetBinError(i, std::sqrt(h->GetBinContent(i)));
+
+        /* --- composite η‑model ----------------------------------------- */
+        TF1 gEta("gEta","gaus(0)+pol2(3)",etaLo,etaHi);
+        gEta.SetParNames("A","#mu","#sigma","c0","c1","c2");
+        gEta.SetParameters(maxCnt, mu0, sigma0,
+                           bkg.GetParameter(0),
+                           bkg.GetParameter(1),
+                           bkg.GetParameter(2));
+        gEta.SetParLimits(0, 0, 1e9);
+        gEta.SetParLimits(1, etaLo, etaHi);
+        gEta.SetParLimits(2, 0.020, 0.090);
+        for (int ip = 3; ip <= 5; ++ip)
+        {
+            const double p  = bkg.GetParameter(ip - 3);
+            const double dp = std::max(std::fabs(p) * 0.20, 1e-3);
+            gEta.SetParLimits(ip, p - dp, p + dp);
+        }
+
+        const bool ok = (h->Fit(&gEta, "QRN0") == 0);
+        log(Lvl::INFO, std::string("η fit ") + (ok ? "succeeded" : "FAILED"));
+
+        if (ok)
+        {
+            mu       = gEta.GetParameter(1);
+            muErr    = gEta.GetParError (1);
+            sigma    = gEta.GetParameter(2);
+            sigmaErr = gEta.GetParError (2);
+
+            // store first successful fit per slice
+            if (_storedEtaFit.count(slice) == 0)
+                _storedEtaFit[slice].reset(new TF1(gEta));
+        }
+        else
+        {
+            mu = muErr = sigma = sigmaErr = 0.;
+        }
+
+        return ok;
+    }
 
     // -----------------------------------------------------------------------
     //  MAIN ENTRY – called once per histogram
@@ -559,125 +709,32 @@ class Pi0QA : public QA
             fs::path outPng = baseDir / (n + ".png");
             log(Lvl::DBG,"output PNG will be " + outPng.string());
 
-           /* --------------------------------------------------------------- *
-            * 1.  π0 PEAK – seed                                              *
-            * --------------------------------------------------------------- */
             TH1* h = static_cast<TH1*>(o);
-            const double piFitLo = 0.05, piFitHi = 0.35;
-            const int iLoPi = binAt(h,piFitLo), iHiPi = binAt(h,piFitHi);
 
-            int iMaxPi = iLoPi; double maxCntPi = 0.;
-            for(int i=iLoPi;i<=iHiPi;++i)
-                if (h->GetBinContent(i) > maxCntPi) { maxCntPi = h->GetBinContent(i); iMaxPi = i; }
+            const double piFitLo = 0.05, piFitHi = 0.35;          // still needed later
+            double piMu    = 0.,  piMuErr  = 0.;
+            double piSig   = 0.,  piSigErr = 0.;
 
-            const double piMu0  = h->GetBinCenter(iMaxPi);
-            const double piAmp0 = maxCntPi;
-            const double piSigma0 = 0.025;
-            log(Lvl::DBG,Form("π0 seed  amp=%g  mu=%g",piAmp0,piMu0));
+            TF1 total("total","gaus(0)+pol2(3)",piFitLo,piFitHi); // will be configured inside
+            const bool fitOK = doPi0Fit(h, total,
+                                        piMu, piMuErr,
+                                        piSig, piSigErr);          // helper returns fit status
+            
+            
+            double etaMu = 0., etaMuErr = 0.;
+            double etaSig = 0., etaSigErr = 0.;
 
-           /* --------------------------------------------------------------- *
-            * 2.  gaus+pol2 composite fit                                     *
-            * --------------------------------------------------------------- */
-            TF1 total("total","gaus(0)+pol2(3)",piFitLo,piFitHi);
-            total.SetParNames("A","mu","sigma","c0","c1","c2");
-            total.SetParameters(piAmp0,piMu0,0.022,1,0,0);
-            total.SetParLimits(0,0,1e9);
-            total.SetParLimits(1,0.10,0.17);
-            total.SetParLimits(2,0.010,0.060);
+            const bool etaOK = doEtaFit(h, slice,
+                                        etaMu, etaMuErr,
+                                        etaSig, etaSigErr);   // helper returns fit status
 
-            ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
-            ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(3'000);
-
-            TF1 polyTmp("polyTmp","pol2",piFitLo,piFitHi);
-            for(int ip=binAt(h,0.11); ip<=binAt(h,0.16); ++ip) h->SetBinError(ip,1e9);
-            h->Fit(&polyTmp,"QRN0");
-            for(int ip=binAt(h,0.11); ip<=binAt(h,0.16); ++ip)
-                h->SetBinError(ip,std::sqrt(h->GetBinContent(ip)));
-
-            total.SetParameters(piAmp0,piMu0,0.022,
-                                polyTmp.GetParameter(0),
-                                polyTmp.GetParameter(1),
-                                polyTmp.GetParameter(2));
-
-            const bool fitOK = (h->Fit(&total,"QRN0") == 0);
-            log(Lvl::INFO,std::string("π0 fit ")+(fitOK?"succeeded":"FAILED"));
-
-            double piMu=piMu0, piSig=piSigma0, piMuErr=0, piSigErr=0;
-            if (fitOK) {
-                piMu     = total.GetParameter(1);
-                piSig    = total.GetParameter(2);
-                piMuErr  = total.GetParError (1);
-                piSigErr = total.GetParError (2);
-            }
-            log(Lvl::DBG,Form("π0  mu=%.5f±%.5f  sigma=%.5f±%.5f",piMu,piMuErr,piSig,piSigErr));
-
-           /* --------------------------------------------------------------- *
-            * 3.  η PEAK (only in Combined file)                              *
-            * --------------------------------------------------------------- */
-            double etaMu=0,etaSig=0,etaMuErr=0,etaSigErr=0;
-            if (runID == "Combined")
-            {
-                const double etaLo=0.45, etaHi=0.80, side=0.03;
-                int iLo=binAt(h,etaLo), iHi=binAt(h,etaHi);
-                int iMax=iLo; double maxCnt=0.;
-                for(int i=iLo;i<=iHi;++i)
-                    if (h->GetBinContent(i)>maxCnt) { maxCnt=h->GetBinContent(i); iMax=i; }
-
-                if (maxCnt>0)
-                {
-                    etaMu  = h->GetBinCenter(iMax);
-                    etaSig = 0.040;
-
-                    TF1 bkg("bkg","pol2",etaLo,etaHi);
-                    for(int i=iLo;i<=iHi;++i){
-                        const double x=h->GetBinCenter(i);
-                        const bool inPk=(std::fabs(x-etaMu)<side);
-                        h->SetBinError(i,inPk?1e9:std::sqrt(h->GetBinContent(i)));
-                    }
-                    h->Fit(&bkg,"QN0");
-                    for(int i=iLo;i<=iHi;++i)
-                        h->SetBinError(i,std::sqrt(h->GetBinContent(i)));
-
-                    TF1 gEta("gEta","gaus(0)+pol2(3)",etaLo,etaHi);
-                    gEta.SetParNames("A","#mu","#sigma","c0","c1","c2");
-                    gEta.SetParameters(maxCnt,etaMu,etaSig,
-                                       bkg.GetParameter(0),bkg.GetParameter(1),bkg.GetParameter(2));
-                    gEta.SetParLimits(0,0,1e9);
-                    gEta.SetParLimits(1,etaLo,etaHi);
-                    gEta.SetParLimits(2,0.020,0.090);
-                    for(int ip=3;ip<=5;++ip){
-                        const double p=bkg.GetParameter(ip-3);
-                        const double dp=std::max(std::fabs(p)*0.20,1e-3);
-                        gEta.SetParLimits(ip,p-dp,p+dp);
-                    }
-
-                    const bool etaOK=(h->Fit(&gEta,"QRN0")==0);
-                    log(Lvl::INFO,std::string("η fit ")+(etaOK?"succeeded":"FAILED"));
-                    if (etaOK) {
-                        etaMu     = gEta.GetParameter(1);
-                        etaMuErr  = gEta.GetParError (1);
-                        etaSig    = gEta.GetParameter(2);
-                        etaSigErr = gEta.GetParError (2);
-                        if (_storedEtaFit.count(slice)==0)
-                            _storedEtaFit[slice].reset(new TF1(gEta));
-                    } else {
-                        etaMu = etaSig = etaMuErr = etaSigErr = 0;
-                    }
-                }
-            }
-
-           /* --------------------------------------------------------------- *
-            * 4.  Background TF1 (clone of poly part)                         *
-            * --------------------------------------------------------------- */
             TF1 poly("bg","pol2",piFitLo,piFitHi);
             poly.SetParameters(total.GetParameter(3),
                                total.GetParameter(4),
                                total.GetParameter(5));
             poly.SetLineColor(kAzure+2); poly.SetLineWidth(2); poly.SetLineStyle(2);
 
-           /* --------------------------------------------------------------- *
-            * 5.  Signal / Background CSV (unchanged)                         *
-            * --------------------------------------------------------------- */
+
             const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
             for (double w: ws)
             {
@@ -709,7 +766,7 @@ class Pi0QA : public QA
 
                 TLatex tl; tl.SetNDC(); tl.SetTextSize(0.038); tl.SetTextAlign(13);
                 tl.DrawLatex(0.14,0.89,
-                             Form("E > %.2f GeV   Asym #leq %.2f   #chi^{2} #leq %.2f",
+                             Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
                                   ck.E,ck.asy,ck.chi));
 
                 TLegend leg(0.55,0.64,0.88,0.88); leg.SetBorderSize(0); leg.SetTextAlign(12);
@@ -963,12 +1020,14 @@ class Pi0QA : public QA
         gSi->GetYaxis()->SetTitleSize(0.09);  gSi->GetYaxis()->SetLabelSize(0.07);
         gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
 
-        /* run / cut / trigger annotation ---------------------------------- */
+        /* run / cut / trigger annotation */
         {
+            /* short run ID ------------------------------------------------- */
             std::string runShort = runID;
             if (std::all_of(runID.begin(), runID.end(), ::isdigit))
                 runShort = std::to_string(std::stoi(runID));
 
+            /* numeric cuts from the tag ----------------------------------- */
             double eCut = 0, chiCut = 0, asyCut = 0;
             std::smatch m;
             if (std::regex_match(cutTag, m,
@@ -979,21 +1038,42 @@ class Pi0QA : public QA
                 eCut   = p2d(m[1]);  chiCut = p2d(m[2]);  asyCut = p2d(m[3]);
             }
 
-            /* prettified trigger label */
+            /* prettified trigger label ------------------------------------ */
             std::string trigLabel;
             if (auto it = kPrettyTrig.find(trig); it != kPrettyTrig.end())
                 trigLabel = it->second;
             else
                 trigLabel = prettifyTrigger(trig);
 
+            p1->cd();                    /* ensure we query the correct pad   */
+            const double yMin = gMu->GetHistogram()->GetMinimum();
+            const double yMax = gMu->GetHistogram()->GetMaximum();
+
+            double yDataTop = *std::max_element(vMu.begin(), vMu.end());
+            if (!vMuErr.empty())
+                yDataTop += *std::max_element(vMuErr.begin(), vMuErr.end());
+
+            const double headroom = (yMax - yDataTop) / (yMax - yMin);
+            const bool   useBottomRight = (headroom < 0.12);   /* 12 % threshold */
+
+            /* anchor coordinates (NDC)                                      */
+            const double x0 = 0.55;                /* fixed x – stays on right */
+            const double yStart = useBottomRight ? 0.33 : 0.94;
+            const double dy = 0.04;                /* line spacing             */
+
+            /* draw the three lines ---------------------------------------- */
             cGS.cd();
             TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.02);
-            tl.DrawLatex(0.55, 0.94, Form("Run:  %s", runShort.c_str()));
-            tl.DrawLatex(0.55, 0.9,
+
+            tl.DrawLatex(x0, yStart,
+                Form("Run:  %s", runShort.c_str()));
+            tl.DrawLatex(x0, yStart - dy,
                 Form("Cuts:  E #geq %.2f GeV, #alpha < %.2f, #chi^{2} < %.2f",
                      eCut, asyCut, chiCut));
-            tl.DrawLatex(0.55, 0.86, Form("Trigger: %s", trigLabel.c_str()));
+            tl.DrawLatex(x0, yStart - 2*dy,
+                Form("Trigger: %s", trigLabel.c_str()));
         }
+
 
         fs::path pngGraph = root / "EMCal" / "invMassQA" / cutTag
                            / "Pi0Mass_Sigma_vs_Centrality.png";
@@ -1471,7 +1551,7 @@ static void tightenAxes(TH2* h, double padFrac = 0.05)
 
     /* keep titles nicely centred */
     axX->CenterTitle(true);   axY->CenterTitle(true);
-    axX->SetTitleOffset(1.1F); axY->SetTitleOffset(1.25F);
+    axX->SetTitleOffset(1.1F); axY->SetTitleOffset(1.45F);
 }
 
 /* Draw run‑number (without leading zeroes) in the upper‑left corner.    */
@@ -1510,80 +1590,73 @@ class CorrQA : public QA
     static std::unordered_map<std::string, NameMap> s_cache;
 
     /* ------------------------------------------------------------------ *
-     *  Produce one (or several) 8 × 8 summary PNGs for **every run**      *
-     *  that has been cached in `s_cache`.  The routine is executed from   *
-     *  the *Combined* pass, after all individual runs have filled         *
-     *  `s_cache` via `cacheForRunSummary()`.                              *
-     *                                                                    *
-     *  – Each page hosts up to 64 correlation maps (log‑Z, auto‑tight).   *
-     *  – Output files are written to “…/<trigger>/RunSummaries/”.         *
-     *    Example:   …/Combined/MBD/RunSummaries/Run_68402_page1.png       *
-     *  – The routine is self‑contained and leaves existing logic intact.  *
+     *  Produce 8 × 8 summary PNGs for every **detector‑pair directory**   *
+     *  and every run cached in `s_cache`.  Pages are written right next   *
+     *  to the ordinary correlation maps:                                 *
+     *      …/<trigger>/correlations/<DetA_DetB>/Run_<runID>_page#.png     *
      * ------------------------------------------------------------------ */
     void writeRunSummaries()
     {
-        /* ----------------------------------------------------------------
-         * Guard‑clauses – execute the summary only once, during the
-         * “Combined” pass, and only if the cache is non‑empty.
-         * ---------------------------------------------------------------- */
+        /* run the summary only once – in the “Combined” pass */
         if (root.parent_path().filename() != "Combined") return;
         if (s_cache.empty()) return;
-        /* ── 1. collect all TH2 clones by run number ─────────────────────── */
-        using HVec = std::vector<std::shared_ptr<TH2>>;
-        std::unordered_map<std::string, HVec> byRun;     // runID → list of maps
 
-        for (auto& [group, nameMap] : s_cache)
-            for (auto& [histName, runMap] : nameMap)
+        using HVec   = std::vector<std::shared_ptr<TH2>>;
+        using RunMap = std::unordered_map<std::string, HVec>;          // runID → vec
+        std::unordered_map<std::string, RunMap> groupRun;              // groupDir → …
+
+        /* gather all cached histograms, preserving their detector‑pair folder */
+        for (auto& [groupDir, nameMap] : s_cache)
+            for (auto& [_, runMap] : nameMap)
                 for (auto& [runID, h] : runMap)
-                    if (runID != "Combined" && h) byRun[runID].push_back(h);
+                    if (runID != "Combined" && h)
+                        groupRun[groupDir][runID].push_back(h);
 
-        if (byRun.empty()) return;                       // only Combined entries
+        if (groupRun.empty()) return;
 
-        /* ── 2. prepare the output directory (one per trigger) ───────────── */
-        fs::path outDir = root.parent_path() / "RunSummaries";
-        ensure_dir(outDir);
+        /* canvas geometry */
+        constexpr int nCols = 8, nRows = 8;
+        constexpr int canW  = nCols * 350, canH = nRows * 350;
+        constexpr int perPage = nCols * nRows;
 
-        /* ── 3. canvas geometry constants ────────────────────────────────── */
-        const int nCols = 8, nRows = 8;
-        const int cellW = 350,  cellH = 350;
-        const int canW  = nCols * cellW;
-        const int canH  = nRows * cellH;
-        const int perPage = nCols * nRows;               // 64 plots / page
-
-        /* ── 4. loop over runs and paginate ──────────────────────────────── */
-        for (auto& [runID, vec] : byRun)
+        /* iterate over detector‑pair folders, then over runs */
+        for (auto& [groupDir, runMap] : groupRun)
         {
-            if (vec.empty()) continue;
+            fs::path baseDir = root / "correlations" / groupDir;
+            ensure_dir(baseDir);
 
-            std::size_t page = 0;
-            for (std::size_t idx = 0; idx < vec.size(); idx += perPage)
+            for (auto& [runID, vec] : runMap)
             {
-                ++page;
-                std::size_t nThis = std::min<std::size_t>(perPage,
-                                                          vec.size() - idx);
+                if (vec.empty()) continue;
 
-                TCanvas c(Form("c_run_%s_%zu", runID.c_str(), page),
-                          "", canW, canH);
-                c.Divide(nCols, nRows, 0.001, 0.001);
+                std::size_t page = 0;
+                for (std::size_t idx = 0; idx < vec.size(); idx += perPage)
+                {
+                    ++page;
+                    std::size_t nThis = std::min<std::size_t>(perPage,
+                                                              vec.size() - idx);
 
-                for (std::size_t i = 0; i < nThis; ++i) {
-                    c.cd(static_cast<int>(i) + 1);
-                    gPad->SetLogz();
-                    tightenAxes(vec[idx + i].get());
-                    vec[idx + i]->Draw("COLZ");
+                    TCanvas c(Form("c_%s_%s_%zu",
+                                   runID.c_str(), groupDir.c_str(), page),
+                              "", canW, canH);
+                    c.Divide(nCols, nRows, 0.001, 0.001);
+
+                    for (std::size_t i = 0; i < nThis; ++i) {
+                        c.cd(static_cast<int>(i) + 1);
+                        gPad->SetLogz();
+                        tightenAxes(vec[idx + i].get());
+                        vec[idx + i]->Draw("COLZ");
+                    }
+                    drawRunLabel(stripLeadingZeros(runID));
+
+                    fs::path png = baseDir /
+                        (std::string("Run_") + runID +
+                         "_page" + std::to_string(page) + ".png");
+                    c.SaveAs(png.string().c_str());
                 }
-
-                /* run label once per page (upper‑left corner) */
-                drawRunLabel(stripLeadingZeros(runID));
-
-                fs::path png = outDir /
-                    (std::string("Run_") + runID +
-                     "_page" + std::to_string(page) + ".png");
-                c.SaveAs(png.string().c_str());
             }
         }
-
-        /* clear to free memory – no further summaries needed */
+        /* free memory */
         s_cache.clear();
     }
 
@@ -2098,10 +2171,32 @@ class CorrQA : public QA
                 nRows = static_cast<int>(std::ceil(double(n)/nCols));
             }
             TCanvas c("c_overview","", nCols*550, nRows*500);
+
+            /* leave room for a one‑line header */
+            c.SetTopMargin(0.12);
+
+            /* split the canvas into regular pads */
             c.Divide(nCols, nRows, 0.001, 0.001);
+
+            /* ── global header centred above the grid ───────────────────────── */
+            {
+                c.cd();                       /* main canvas pad (not a sub‑pad) */
+                TLatex hdr;  hdr.SetNDC();
+                hdr.SetTextAlign(22);         /* centre */
+                hdr.SetTextFont(42);
+                hdr.SetTextSize(0.05);
+
+                /* “EMCal vs MBD – Centrality overview”, etc. */
+                const std::string title =
+                    std::regex_replace(groupDir, std::regex("_"), " vs ") +
+                    "  –  Centrality overview";
+
+                hdr.DrawLatex(0.50, 0.97, title.c_str());
+            }
 
             for (int i = 0; i < n; ++i) {
                 c.cd(i+1);  setupPad(gPad);
+                gPad->SetTopMargin(0.15);
                 gPad->SetLogz();
                 tightenAxes(vec[i].second.get());
                 vec[i].second->Draw("COLZ");
@@ -2118,7 +2213,7 @@ class CorrQA : public QA
                         const int lo = std::stoi(m[1].str());
                         const int hi = std::stoi(m[2].str());
                         std::ostringstream oss;
-                        oss << lo << " %  #leq centrality <  " << hi << " %";
+                        oss << "Centrality: " << lo << " #minus " << hi << " %";
                         label = oss.str();
                     } else {
                         label = vec[i].first;            // fallback – unexpected slice key
@@ -4445,7 +4540,7 @@ QaMaps runQaProduction(TFile*              in,
         /* ------------------- QA module instantiation ---------------- */
         std::vector<std::unique_ptr<QA>> qa;
         fs::path base = fs::path(outBase) / trg;
-
+        
         qa.emplace_back(std::make_unique<CorrQA>(trg, base, slices));
         qa.emplace_back(std::make_unique<HcalQA >(trg, base, slices));
         qa.emplace_back(std::make_unique<MbdQA  >(trg, base, slices, mbdCache));
