@@ -324,9 +324,6 @@ protected:
   }
 };
 
-
-
-
 // ╔══════════════════════════════════════════════╗
 // ║     #pi0   I N V A R I A N T ‑ M A S S   QA  ║
 // ╚══════════════════════════════════════════════╝
@@ -764,10 +761,38 @@ class Pi0QA : public QA
                 if (_storedEtaFit.count(slice))
                     _storedEtaFit[slice]->Draw("SAME");
 
-                TLatex tl; tl.SetNDC(); tl.SetTextSize(0.038); tl.SetTextAlign(13);
-                tl.DrawLatex(0.14,0.89,
+                TLatex tl;                   // common style
+                tl.SetNDC();
+                tl.SetTextSize(0.038);
+                tl.SetTextAlign(13);
+
+                /* ---------- centrality label -------------------------------- */
+                std::string centStr;
+                if (slice == "Inclusive") {
+                    centStr = "Inclusive";
+                } else {
+                    std::smatch m;
+                    if (std::regex_match(slice,m,std::regex(R"((\d{1,3})_(\d{1,3}))")))
+                        centStr = "Cent " + m[1].str() + "-" + m[2].str() + " %";
+                    else
+                        centStr = slice;                       // fallback
+                }
+
+                /* ---------- pT label --------------------------------------- */
+                std::string pTStr;
+                if (pTInt || (ck.pLo < 0 && ck.pHi < 0)) {
+                    pTStr = "p_{T} IND";
+                } else {
+                    pTStr = Form("%.2f < p_{T} < %.2f GeV/c", ck.pLo, ck.pHi);
+                }
+
+                /* first line: centrality + pT information                      */
+                tl.DrawLatex(0.14, 0.93, (centStr + "   " + pTStr).c_str());
+
+                /* second line: analysis cuts                                   */
+                tl.DrawLatex(0.14, 0.89,
                              Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
-                                  ck.E,ck.asy,ck.chi));
+                                  ck.E, ck.asy, ck.chi));
 
                 TLegend leg(0.55,0.64,0.88,0.88); leg.SetBorderSize(0); leg.SetTextAlign(12);
                 leg.AddEntry((TObject*)nullptr,
@@ -1056,22 +1081,22 @@ class Pi0QA : public QA
             const double headroom = (yMax - yDataTop) / (yMax - yMin);
             const bool   useBottomRight = (headroom < 0.12);   /* 12 % threshold */
 
-            /* anchor coordinates (NDC)                                      */
-            const double x0 = 0.55;                /* fixed x – stays on right */
-            const double yStart = useBottomRight ? 0.33 : 0.94;
-            const double dy = 0.04;                /* line spacing             */
+            /* anchor coordinates (NDC, relative to the μ–pad only)          */
+            const double x0 = 0.80;                // safely inside right margin
+            const double yStart = useBottomRight ? 0.15 : 0.85;
+            const double dy = 0.04;                // line spacing
 
             /* draw the three lines ---------------------------------------- */
-            cGS.cd();
+            p1->cd();                              // draw inside the upper pad
             TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.02);
 
             tl.DrawLatex(x0, yStart,
-                Form("Run:  %s", runShort.c_str()));
+                         Form("Run:  %s", runShort.c_str()));
             tl.DrawLatex(x0, yStart - dy,
-                Form("Cuts:  E #geq %.2f GeV, #alpha < %.2f, #chi^{2} < %.2f",
-                     eCut, asyCut, chiCut));
+                         Form("Cuts:  E #geq %.2f GeV, #alpha < %.2f, #chi^{2} < %.2f",
+                              eCut, asyCut, chiCut));
             tl.DrawLatex(x0, yStart - 2*dy,
-                Form("Trigger: %s", trigLabel.c_str()));
+                         Form("Trigger: %s", trigLabel.c_str()));
         }
 
 
@@ -1571,6 +1596,14 @@ static inline std::unordered_map<std::string, NSPair> g_nsCache;
 
 class CorrQA : public QA
 {
+    
+ enum class Lvl { DBG, INFO, WARN, ERR };
+ static inline void log(Lvl lvl, const std::string& msg)
+ {
+    static const char* tag[]{"DBG","INF","WRN","ERR"};
+    std::ostream& os = (lvl == Lvl::ERR) ? std::cerr : std::cout;
+    os << "[CorrQA] " << tag[static_cast<int>(lvl)] << "  " << msg << '\n';
+ }
  public:
     /* ---------- static run-summary cache --------------------------- */
     using RunMap  = std::unordered_map<std::string, std::shared_ptr<TH2>>;
@@ -1592,75 +1625,115 @@ class CorrQA : public QA
     static std::unordered_map<std::string, NameMap> s_cache;
 
     /* ------------------------------------------------------------------ *
-     *  Produce 8 × 8 summary PNGs for every **detector‑pair directory**   *
-     *  and every run cached in `s_cache`.  Pages are written right next   *
-     *  to the ordinary correlation maps:                                 *
-     *      …/<trigger>/correlations/<DetA_DetB>/Run_<runID>_page#.png     *
+     *  Produce 8 × 8 overview pages for every detector‑pair folder.       *
+     *  ─ Diagnostic verbosity ─                                           *
+     *      – informs about empty caches / folders                         *
+     *      – prints page‑by‑page progress and file names                  *
+     *      – catches all ROOT exceptions so the macro never hard‑crashes *
      * ------------------------------------------------------------------ */
     void writeRunSummaries()
     {
-        /* run the summary only once – in the “Combined” pass */
-        if (root.parent_path().filename() != "Combined") return;
-        if (s_cache.empty()) return;
+        const std::string pass = root.parent_path().filename().string();
+
+        /* execute only once – during the Combined pass */
+        if (pass != "Combined") {
+            log(Lvl::DBG,"writeRunSummaries(): pass = \"" + pass +
+                          "\" – skipped (only runs in Combined)");
+            return;
+        }
+        if (s_cache.empty()) {
+            log(Lvl::DBG,"writeRunSummaries(): s_cache empty – nothing to summarise");
+            return;
+        }
 
         using HVec   = std::vector<std::shared_ptr<TH2>>;
-        using RunMap = std::unordered_map<std::string, HVec>;          // runID → vec
-        std::unordered_map<std::string, RunMap> groupRun;              // groupDir → …
+        using RunMap = std::unordered_map<std::string, HVec>;     // runID → vec
+        std::unordered_map<std::string, RunMap> groupRun;         // groupDir → …
 
-        /* gather all cached histograms, preserving their detector‑pair folder */
+        /* ---------------- collect all TH2 clones --------------------- */
         for (auto& [groupDir, nameMap] : s_cache)
-            for (auto& [_, runMap] : nameMap)
+            for (auto& [hName, runMap] : nameMap)
                 for (auto& [runID, h] : runMap)
                     if (runID != "Combined" && h)
                         groupRun[groupDir][runID].push_back(h);
 
-        if (groupRun.empty()) return;
+        if (groupRun.empty()) {
+            log(Lvl::WARN,"writeRunSummaries(): no non‑empty histogram sets found");
+            return;
+        }
 
-        /* canvas geometry */
+        /* ---------------- static geometry constants ------------------ */
         constexpr int nCols = 8, nRows = 8;
         constexpr int canW  = nCols * 350, canH = nRows * 350;
         constexpr int perPage = nCols * nRows;
 
-        /* iterate over detector‑pair folders, then over runs */
+        log(Lvl::INFO,"writeRunSummaries(): starting – "
+                      + std::to_string(groupRun.size()) + " detector‑pair folders");
+
+        /* ---------------- iterate over folders ----------------------- */
         for (auto& [groupDir, runMap] : groupRun)
         {
             fs::path baseDir = root / "correlations" / groupDir;
             ensure_dir(baseDir);
+            log(Lvl::INFO,"   ↳ folder \"" + groupDir + "\"  (" +
+                          std::to_string(runMap.size()) + " runs)");
 
             for (auto& [runID, vec] : runMap)
             {
-                if (vec.empty()) continue;
+                if (vec.empty()) {
+                    log(Lvl::WARN,"      • run " + runID + " – zero histograms, skipped");
+                    continue;
+                }
 
                 std::size_t page = 0;
                 for (std::size_t idx = 0; idx < vec.size(); idx += perPage)
                 {
                     ++page;
-                    std::size_t nThis = std::min<std::size_t>(perPage,
-                                                              vec.size() - idx);
+                    const std::size_t nThis = std::min<std::size_t>(perPage,
+                                                                    vec.size() - idx);
 
-                    TCanvas c(Form("c_%s_%s_%zu",
-                                   runID.c_str(), groupDir.c_str(), page),
-                              "", canW, canH);
-                    c.Divide(nCols, nRows, 0.001, 0.001);
+                    log(Lvl::INFO,Form("      • run %s  page %zu  (%zu plots)",
+                                       runID.c_str(), page, nThis));
 
-                    for (std::size_t i = 0; i < nThis; ++i) {
-                        c.cd(static_cast<int>(i) + 1);
-                        gPad->SetLogz();
-                        tightenAxes(vec[idx + i].get());
-                        vec[idx + i]->Draw("COLZ");
+                    try {
+                        TCanvas c(Form("c_%s_%s_%zu",
+                                       runID.c_str(), groupDir.c_str(), page),
+                                  "", canW, canH);
+                        c.Divide(nCols, nRows, 0.001, 0.001);
+
+                        for (std::size_t i = 0; i < nThis; ++i) {
+                            c.cd(static_cast<int>(i) + 1);
+                            gPad->SetLogz();
+                            tightenAxes(vec[idx + i].get());
+                            vec[idx + i]->Draw("COLZ");
+                        }
+                        drawRunLabel(stripLeadingZeros(runID));
+
+                        fs::path png = baseDir /
+                            (std::string("Run_") + runID +
+                             "_page" + std::to_string(page) + ".png");
+                        c.SaveAs(png.string().c_str());
+
+                        log(Lvl::INFO,"         ↳ saved " + png.string());
                     }
-                    drawRunLabel(stripLeadingZeros(runID));
-
-                    fs::path png = baseDir /
-                        (std::string("Run_") + runID +
-                         "_page" + std::to_string(page) + ".png");
-                    c.SaveAs(png.string().c_str());
+                    catch (const std::exception& ex) {
+                        log(Lvl::ERR,"         ✖ ROOT exception on run " + runID +
+                                     " page " + std::to_string(page) +
+                                     " – " + ex.what());
+                    }
+                    catch (...) {
+                        log(Lvl::ERR,"         ✖ unknown exception on run " + runID +
+                                     " page " + std::to_string(page));
+                    }
                 }
             }
         }
-        /* free memory */
+
+        /* clear cache to free memory */
+        log(Lvl::DBG,"writeRunSummaries(): clearing s_cache");
         s_cache.clear();
     }
+
 
     // ─────────────────────────────── 1. per-histogram ──────────────────────
     bool process(TObject* o) override
@@ -2056,21 +2129,58 @@ class CorrQA : public QA
     }
 
     /* ==================================================================== *
-     * §2  Combined run-summary cache (unchanged, moved to helper)          *
+     * §2  Combined run‑summary cache – verbose, exception‑safe             *
      * ==================================================================== */
     void cacheForRunSummary(const std::string& groupDir,
                             const std::string& hName,
                             TObject* o)
     {
         const std::string runID = root.parent_path().filename().string();
-        if (runID == "Combined") return;
 
-        auto* cl = static_cast<TH2*>(o->Clone());
-        cl->SetDirectory(nullptr);                // detach from any TDirectory
-        cl->SetBit(kCanDelete,false);             // prevent ROOT from double‑deleting
-        tidyAxes(cl);  styleAxes(cl,true);
+        /* never cache the synthetic “Combined” pass itself */
+        if (runID == "Combined") {
+            log(Lvl::DBG,"cacheForRunSummary(): Combined pass – histogram \"" +
+                          hName + "\" ignored");
+            return;
+        }
 
-        s_cache[groupDir][hName][runID].reset(cl);
+        /* guard against non‑TH2 objects – should never happen, but better safe */
+        if (!o || !o->InheritsFrom(TH2::Class())) {
+            const char* what = o ? o->IsA()->GetName() : "nullptr";
+            log(Lvl::WARN,"cacheForRunSummary(): object \"" + hName +
+                           "\" is " + what + ", expected TH2 – skipped");
+            return;
+        }
+
+        try {
+            auto* cl = static_cast<TH2*>(o->Clone());
+
+            if (!cl) {
+                log(Lvl::ERR,"cacheForRunSummary(): Clone() returned nullptr – \"" +
+                              hName + "\" not cached");
+                return;
+            }
+
+            cl->SetDirectory(nullptr);            /* detach from any TDirectory  */
+            cl->SetBit(kCanDelete,false);         /* ROOT ownership protection   */
+
+            tidyAxes(cl);
+            styleAxes(cl,true);
+
+            /* store in 3‑level cache:  detPair ▸ histName ▸ runID             */
+            s_cache[groupDir][hName][runID].reset(cl);
+
+            log(Lvl::DBG,"cacheForRunSummary(): cached \"" + hName +
+                          "\" for run " + runID + " under \"" + groupDir + '"');
+        }
+        catch (const std::exception& ex) {
+            log(Lvl::ERR,"cacheForRunSummary(): std::exception while cloning \"" +
+                          hName + "\" – " + ex.what());
+        }
+        catch (...) {
+            log(Lvl::ERR,"cacheForRunSummary(): unknown exception while cloning \"" +
+                          hName + '"');
+        }
     }
 
     /* ==================================================================== *
@@ -2581,8 +2691,8 @@ class HcalQA : public QA
 
           // cosmetics …
           rot->SetMinimum(1.);
-          rot->GetXaxis()->SetTitle("#eta index");
-          rot->GetYaxis()->SetTitle("#phi index");
+          rot->GetXaxis()->SetTitle("#eta");
+          rot->GetYaxis()->SetTitle("#phi");
 
           // 1.3 canvas & save ---------------------------------------
           const int cw = (kHCalCanvasW > 0) ? kHCalCanvasW : nEta * px;
@@ -3456,9 +3566,9 @@ public:
                 h->Draw();
                 if (fitOK) g.Draw("SAME");
 
-                TLatex tx; tx.SetNDC(); tx.SetTextSize(0.04);
-                tx.DrawLatex(0.15,0.86,Form("#mu = %.2f #pm %.2f cm", mu,  muErr));
-                tx.DrawLatex(0.15,0.80,Form("#sigma = %.2f #pm %.2f cm", sigma, sigErr));
+                TLatex tx; tx.SetNDC(); tx.SetTextSize(0.038);
+                tx.DrawLatex(0.15,0.4,Form("#mu = %.2f #pm %.2f cm", mu,  muErr));
+                tx.DrawLatex(0.15,0.36,Form("#sigma = %.2f #pm %.2f cm", sigma, sigErr));
                 c.SaveAs(outPng.string().c_str());
             }
 
@@ -4796,16 +4906,6 @@ void runOneQaPass(const std::string& inFile,
     printAllSummaries(in.get(), maps);
 }
 
-
-
-/* ------------------------------------------------------------------ *
- *  Helpers – lifted verbatim from the former analyzeRun24or25auau()  *
- *           (only indentation / surrounding braces changed)          *
- * ------------------------------------------------------------------ */
-
-/* ------------------------------------------------------------------ */
-/* H‑0 : discover all input ROOT files                                */
-/* ------------------------------------------------------------------ */
 static std::vector<fs::path> discoverInputRuns()
 {
     std::vector<fs::path> runFiles = listRunFiles(kInputDir);
@@ -4814,9 +4914,7 @@ static std::vector<fs::path> discoverInputRuns()
     return runFiles;                        // calling code checks empty()
 }
 
-/* ------------------------------------------------------------------ */
-/* H‑1 : optional Top‑N sampling based on h_vertexZ statistics        */
-/* ------------------------------------------------------------------ */
+
 static void selectTopNRuns(int                     nSample,
                            std::vector<fs::path>&  runFiles)
 {
@@ -4896,9 +4994,7 @@ static void selectTopNRuns(int                     nSample,
     for (auto& r : ranked) runFiles.push_back( std::move(r.file) );
 }
 
-/* ------------------------------------------------------------------ */
-/* H‑2 : run QA for every file (sequential executor, unchanged code)  */
-/* ------------------------------------------------------------------ */
+
 static void processRunsSequentially(const std::vector<fs::path>& runFiles,
                                     bool                         testRun)
 {
@@ -4943,9 +5039,7 @@ static void processRunsSequentially(const std::vector<fs::path>& runFiles,
     exec.Map(worker, ROOT::TSeqI(runs.size()));
 }
 
-/* ------------------------------------------------------------------ */
-/* H‑3 : optional merge (hadd) with MissingSEB.txt veto – verbatim    */
-/* ------------------------------------------------------------------ */
+
 static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
                                   bool                         testRun)
 {
@@ -5055,9 +5149,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
                  (kOutputDir / "Combined").string());
 }
 
-/* ------------------------------------------------------------------ */
-/*  MAIN wrapper – fan‑out over all runs with a preforked pool        */
-/* ------------------------------------------------------------------ */
+
 void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
 {
     /* 0. discover input ROOT files --------------------------------- */
@@ -5068,7 +5160,7 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
     selectTopNRuns(nSample, runFiles);
     if (runFiles.empty()) return;          // sampling aborted due to no stats
 
-    /* 2. process every run sequentially (identical to old behaviour) */
+    /* 2. process every run sequentially */
     processRunsSequentially(runFiles, testRun);
 
     /* 3. optional merge + re‑run on combined file ------------------ */
