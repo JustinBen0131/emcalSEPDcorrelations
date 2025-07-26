@@ -2363,7 +2363,6 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
             fill2D("Minv_vs_Eavg", eLead,   mInvPair, t); // now leading‑cluster E
           }
       }
-      /* ---------- NEW ◄ end 2‑D fills -------------------------------- */
 
       /* ---- helper that fills both histogram flavours ---------------- */
       auto fillBoth = [&](const std::string& baseKey,
@@ -2916,11 +2915,15 @@ emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
         if (auto* p = dynamic_cast<TProfile*>(H[k3])) p->Fill(ptCtr, v3, 1.0);
       }
 
-      /* (3a) verbose per‑tower dump (fine‑grained) ------------------- */
-      if (Verbosity() >= 7)
-        LOG(7, CLR_MAGENTA, "  det=" << det << "  ib=" << ib << "  pT=" << ptCtr
-                        << "  v=( " << v1 << ", " << v2 << ", " << v3 << " )"
-                        << "  Σw=" << a.sumW);
+        if (Verbosity() >= 7)
+        {
+            const double ptLo = m_ptBins[ib].first;   // lower edge of this pT bin
+            const double ptHi = m_ptBins[ib].second;  // upper edge of this pT bin
+            LOG(7, CLR_MAGENTA, "  det=" << det << "  ib=" << ib
+                            << "  pT=(" << ptLo << "–" << ptHi << ")"
+                            << "  v=( " << v1 << ", " << v2 << ", " << v3 << " )"
+                            << "  Σw=" << a.sumW);
+        }
     }
   }
 

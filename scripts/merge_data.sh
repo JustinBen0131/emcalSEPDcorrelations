@@ -412,7 +412,16 @@ root -l -b <<'EOF' 2>&1 | tee "$ROOT_LOG"
           if (!obj || !obj->InheritsFrom("TH1")) { delete obj; continue; }
           TH1 *h = static_cast<TH1*>(obj);
 
-          if (hname.rfind("cnt_",0)==0 || hname=="h_MB_vs_Trigger")
+          /*  Histograms to exclude from scaling
+           *  – all counters   :  cnt_*              (unchanged)
+           *  – master trigger :  h_MB_vs_Trigger    (unchanged)
+           *  – any spectrum whose name **contains** “doNotScale_”
+           *    e.g.  h_maxClusterEnergy_doNotScale_MBD_NS_geq_2_vtx_lt_150
+           *           ↑───────────────────────────── added test
+           */
+          if (hname.rfind("cnt_",0)==0 ||
+              hname=="h_MB_vs_Trigger" ||
+              hname.find("doNotScale_")!=std::string::npos)
           {   delete h;  continue;   }
 
           double oldInt = h->Integral();

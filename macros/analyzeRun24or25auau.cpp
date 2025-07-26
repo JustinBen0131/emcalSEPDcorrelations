@@ -2295,17 +2295,25 @@ class CorrQA : public QA
             /* ── global header centred above the grid ───────────────────────── */
             {
                 c.cd();                       /* main canvas pad (not a sub‑pad) */
-                TLatex hdr;  hdr.SetNDC();
-                hdr.SetTextAlign(22);         /* centre */
-                hdr.SetTextFont(42);
-                hdr.SetTextSize(0.05);
+                /* centred title -------------------------------------------------- */
+                TLatex titleTx;  titleTx.SetNDC();
+                titleTx.SetTextAlign(22);           /* centred */
+                titleTx.SetTextFont(42);
+                titleTx.SetTextSize(0.05);
 
-                /* “EMCal vs MBD – Centrality overview”, etc. */
                 const std::string title =
                     std::regex_replace(groupDir, std::regex("_"), " vs ") +
                     "  –  Centrality overview";
 
-                hdr.DrawLatex(0.50, 0.97, title.c_str());
+                titleTx.DrawLatex(0.50, 0.97, title.c_str());
+
+                /* single, larger run label (top‑left, once per canvas) ----------- */
+                TLatex runTx; runTx.SetNDC();
+                runTx.SetTextAlign(11);             /* left‑aligned */
+                runTx.SetTextFont(42);
+                runTx.SetTextSize(0.05);
+                runTx.DrawLatex(0.02, 0.97,
+                    ("Run " + stripLeadingZeros(root.parent_path().filename().string())).c_str());
             }
 
             for (int i = 0; i < n; ++i) {
@@ -2314,7 +2322,6 @@ class CorrQA : public QA
                 gPad->SetLogz();
                 tightenAxes(vec[i].second.get());
                 vec[i].second->Draw("COLZ");
-                drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
                 TLatex tl; tl.SetNDC(); tl.SetTextSize(0.04);
 
                 /* build human‑readable label  “low %  ≤ centrality < high %” */
