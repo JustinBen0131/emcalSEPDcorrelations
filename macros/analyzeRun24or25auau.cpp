@@ -1082,13 +1082,13 @@ class Pi0QA : public QA
             const bool   useBottomRight = (headroom < 0.12);   /* 12 % threshold */
 
             /* anchor coordinates (NDC, relative to the μ–pad only)          */
-            const double x0 = 0.80;                // safely inside right margin
-            const double yStart = useBottomRight ? 0.15 : 0.85;
+            const double x0 = 0.5;                // safely inside right margin
+            const double yStart = 0.85;
             const double dy = 0.04;                // line spacing
 
             /* draw the three lines ---------------------------------------- */
             p1->cd();                              // draw inside the upper pad
-            TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.02);
+            TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.03);
 
             tl.DrawLatex(x0, yStart,
                          Form("Run:  %s", runShort.c_str()));
@@ -4481,6 +4481,14 @@ public:
         auto* h1 = dynamic_cast<TH1*>(o);
         if (!h1) return false;
 
+        /* keep a shallow copy of every   h_maxClusterEnergy_doNotScale_<trg>
+         * so that we can build the turn‑on overlays once, in the destructor   */
+        if (n.rfind("h_maxClusterEnergy_doNotScale_",0)==0) {
+            /* the trigger name is the part after the last underscore */
+            const std::string trgName = n.substr(n.rfind('_')+1);
+            _spectra[trgName] = h1;          // pointer is still owned by ROOT
+        }
+
         std::string subdir;
         if (n.find("_raw")    != std::string::npos) subdir = "bitCounts/raw";
         else if (n.find("_live")   != std::string::npos) subdir = "bitCounts/live";
@@ -4502,18 +4510,84 @@ public:
         return true;
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // 2. destructor – no combined overlay needed, but emit recap
-    // ────────────────────────────────────────────────────────────────
     ~TriggerQA() override
     {
-        if (_emitted || root.parent_path().parent_path().filename()!="Combined")
-            return;
-        _emitted = true;
-        log(Lvl::INF,"Combined run – TriggerQA finished (no overlays requested)");
-    }
+        /* run‑level output directory (…/output/<run>/triggerQA) */
+        const fs::path outDir = root.parent_path() / "triggerQA";
+        ensure_dir(outDir);
 
+        /* groups to be plotted ------------------------------------------------ */
+        static const std::vector<std::string> grp150 = {
+            "MBD_NS_geq_2_vtx_lt_150",
+            "photon_6_plus_MBD_NS_geq_2_vtx_lt_150",
+            "photon_8_plus_MBD_NS_geq_2_vtx_lt_150",
+            "photon_10_plus_MBD_NS_geq_2_vtx_lt_150",
+            "photon_12_plus_MBD_NS_geq_2_vtx_lt_150"
+        };
+        static const std::vector<std::string> grp10  = {
+            "MBD_NS_geq_2_vtx_lt_10",
+            "photon_6_plus_MBD_NS_geq_2_vtx_lt_10",
+            "photon_8_plus_MBD_NS_geq_2_vtx_lt_10",
+            "photon_10_plus_MBD_NS_geq_2_vtx_lt_10",
+            "photon_12_plus_MBD_NS_geq_2_vtx_lt_10"
+        };
+
+        auto makeOverlay = [&](const std::vector<std::string>& trgList,
+                               const std::string& outName)
+        {
+            /* sanity – need all five spectra */
+            for (auto& t : trgList)
+                if (!_spectra.count(t)) return;
+
+            TCanvas c("c_turnOn","Trigger turn‑on",1400,600);
+            c.Divide(2,1);
+
+            /* left pad – log‑Z overlay of the five spectra ------------------ */
+            c.cd(1); gPad->SetLogy();
+            int col[5]={kBlack,kBlue+2,kGreen+2,kRed+1,kMagenta+2};
+
+            double globalMax = 0;
+            for (auto& t : trgList)
+                globalMax = std::max(globalMax, _spectra[t]->GetMaximum());
+            for (std::size_t i=0;i<trgList.size();++i) {
+                TH1* h = _spectra[trgList[i]];
+                h->SetLineColor(col[i]); h->SetLineWidth(2);
+                h->SetMaximum(1.15*globalMax);
+                h->Draw(i==0 ? "HIST" : "HIST SAME");
+            }
+            TLegend leg(0.50,0.65,0.88,0.88); leg.SetBorderSize(0);
+            for (std::size_t i=0;i<trgList.size();++i)
+                leg.AddEntry(_spectra[trgList[i]], trgList[i].c_str(), "l");
+            leg.Draw();
+
+            /* right pad – ratio to the first (non‑photon) trigger ----------- */
+            c.cd(2); gPad->SetGridy();
+            TH1* href = _spectra[trgList.front()];
+            std::unique_ptr<TH1> hRatio[4];
+
+            for (std::size_t i=1;i<trgList.size();++i) {
+                hRatio[i-1].reset( static_cast<TH1*>(_spectra[trgList[i]]->Clone()) );
+                hRatio[i-1]->Divide(href);
+                hRatio[i-1]->SetLineColor(col[i]); hRatio[i-1]->SetLineWidth(2);
+                hRatio[i-1]->SetTitle(";E_{max}^{cluster}  [GeV];Ratio to MB trigger");
+                hRatio[i-1]->SetMaximum(1.2); hRatio[i-1]->SetMinimum(0);
+                hRatio[i-1]->Draw(i==1 ? "HIST" : "HIST SAME");
+            }
+            TLegend leg2(0.50,0.15,0.88,0.38); leg2.SetBorderSize(0);
+            for (std::size_t i=1;i<trgList.size();++i)
+                leg2.AddEntry(hRatio[i-1].get(), trgList[i].c_str(), "l");
+            leg2.Draw();
+
+            c.SaveAs( (outDir/outName).string().c_str() );
+            log(Lvl::INF,"wrote overlay " + (outDir/outName).string());
+        };
+
+        makeOverlay(grp150, "TurnOn_vtx_lt_150.png");
+        makeOverlay(grp10 , "TurnOn_vtx_lt_10.png");
+    }
 private:
+    /* one‑per‑trigger cache of the “doNotScale” spectra */
+    static inline std::unordered_map<std::string,TH1*> _spectra;
     static inline bool _emitted = false;   // only once in Combined pass
 };
 

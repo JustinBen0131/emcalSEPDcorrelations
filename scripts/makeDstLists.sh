@@ -1,58 +1,53 @@
-#!/usr/bin/env bash
 ###############################################################################
-#  makeDstLists.sh
+#  makeDstLists.sh  –  unified DST‑list generator for Run‑24/25 Au+Au
 #
-#  Purpose
-#  -------
-#  Build one “*.list” file per run containing the absolute paths to DST ROOT
-#  files.  These lists are subsequently consumed by downstream analysis or
-#  GRID production tools.
+#  WHAT THE SCRIPT DOES
+#  --------------------
+#  • Scans the official DST repositories and writes one ASCII “*.list” file
+#    per run.  Every list contains the *absolute* path(s) to all DST segments
+#    belonging to that run.  Down‑stream analysis and GRID tools can then
+#    operate on a trivial text file rather than thousands of individual paths.
 #
-#  High-level Workflow
-#  -------------------
-#    1.  Scan one or more DST repositories for files whose names encode the
-#        run-number (e.g.   DST_JET-00068542-00017.root).
-#    2.  For every run discovered, write a list file
-#        $list_dir/<PREFIX>-<run>.list  containing all matching paths.
-#    3.  (optional)  “caloFitting” workflow
-#          • Retrieve Run-3 Au+Au run numbers that have CALOFITTING output.
-#          • Perform a quick QA (runtime ≥ 5 min **and** GL1 events ≥ 1 × 10⁵).
-#          • Keep the *golden* subset and create CALOFITTING list files.
-#          • Optionally bypass CreateDstList.pl and build these lists by
-#            traversing the raw production tree (see **forceFileList** mode).
+#  • Optionally performs a *CALOFITTING* quality‑assurance pass for Run‑3
+#    Au+Au data and, from the “golden” subset of runs, creates additional
+#    DST_CALOFITTING lists.
 #
-#  Command-line Syntax
-#  -------------------
-#    ./makeDstLists.sh <mode> [caloFitting [forceFileList]]
+#  QUICK MAP OF MODES & THEIR OUTPUT
+#  ---------------------------------
+#      ./makeDstLists.sh run24auau
+#          └─ Searches the Run‑24 CALO‑DST tree
+#             (/sphenix/lustre01/sphnxpro/physics/run2auau/…)
+#             →   $list_dir/DST_CALO_run2auau_new_2024p007‑<run>.list
 #
-#      <mode>            Required.  Selects the DST repositories to scan.
-#                        ├─ run24auau   →  Run-24 Au+Au  CALO-DSTs
-#                        └─ run25auau   →  Run-25 Au+Au  JET and JETCALO DSTs
+#      ./makeDstLists.sh run25auau
+#          └─ Searches the Run‑25 jet production
+#             (/sphenix/tg/tg01/jets/vbailey/run25_jet_dsts/new_newcdbtag_v005)
+#             →   $list_dir/DST_JET‑<run>.list
+#                 $list_dir/DST_JETCALO‑<run>.list
 #
-#      caloFitting       Optional.  Enables the extended QA + CALOFITTING
-#                        pipeline described above.
+#      ./makeDstLists.sh run25auau caloFitting [v006|v007] [forceFileList]
+#          • First, everything in “run25auau” above.
+#          • Then CALOFITTING workflow:
+#                – pull Run‑3 Au+Au run numbers that have
+#                  DST_CALOFITTING_run3auau_<tag> output (default tag v006;
+#                  pass “v007” to override).
+#                – keep runs with runtime ≥ 5 min *and* GL1 ≥ 1 × 10⁵.
+#                  These are written to   $list_dir/run3goldenruns.txt
+#                – create one list per golden run:
+#                     $list_dir/DST_CALOFITTING_run3auau_<tag>-<run>.list
 #
-#      forceFileList     Optional **third** argument that is only honoured
-#                        when *caloFitting* is also specified.  Instead of
-#                        calling CreateDstList.pl, the script walks the
-#                        directory
-#                          /sphenix/lustre01/sphnxpro/production/run3auau/\
-#                          physics/caloy2fitting/<tag>
-#                        creates one list per run, and writes them to
-#                        $list_dir with the same naming convention.
+#          • If the optional keyword *forceFileList* is present the script
+#            bypasses *CreateDstList.pl* and instead walks the production tree
+#            directly:
+#                 /sphenix/lustre01/sphnxpro/production/run3auau/physics/ \
+#                 caloy2fitting/<tag>/run_<000NNN00>_<000NNN00>/…
 #
-#  Typical Examples
-#  ----------------
-#    # Standard list building for Run-24 Au+Au CALO-DSTs
-#    ./makeDstLists.sh run24auau
+#  NOTES FOR THE v007 production
+#  ---------------------------
+#  To build the full set of CALOFITTING lists for the *new_newcdbtag_v007*
+#  production simply run
 #
-#    # Build Run-25 JET / JETCALO lists **plus** CALOFITTING QA & lists
-#    ./makeDstLists.sh run25auau caloFitting
-#
-#    # Same as above, but force the CALOFITTING list files to be built from
-#    # the production tree rather than via CreateDstList.pl
-#    ./makeDstLists.sh run25auau caloFitting forceFileList
-#
+#        ./makeDstLists.sh run25auau caloFitting v007
 ###############################################################################
 set -euo pipefail
 IFS=$'\n\t' ; shopt -s nullglob              # strict mode
