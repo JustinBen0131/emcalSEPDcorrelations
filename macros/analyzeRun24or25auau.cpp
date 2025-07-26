@@ -1489,11 +1489,6 @@ class Pi0QA : public QA
 };
 
 
-
-
-
-
-
 // ─── Minimal fall‑back style helpers ────────────────────────────────────
 inline void tidyAxes(TH1* h)
 {
@@ -2301,10 +2296,28 @@ class CorrQA : public QA
                 titleTx.SetTextFont(42);
                 titleTx.SetTextSize(0.05);
 
-                const std::string title =
-                    std::regex_replace(groupDir, std::regex("_"), " vs ") +
-                    "  –  Centrality overview";
+                /* build the title from the *original* detector tokens so that any
+                 * “North / South” qualifier survives the canonicalisation step      */
+                std::string tokA, tokB;
+                {
+                    /* baseHist still carries the full detector tag, e.g.
+                     *   h_SEPD_N_vs_CEMC_North    or   h_SEPD_S_vs_CEMC_South         */
+                    const std::size_t vsPos = baseHist.find("_vs_");
+                    if (vsPos != std::string::npos) {
+                        tokA = baseHist.substr(2, vsPos - 2);   // drop leading “h_”
+                        tokB = baseHist.substr(vsPos + 4);      // text after “_vs_”
+                    } else {                                    // very rare fall‑back
+                        const std::size_t us = groupDir.find('_');
+                        tokA = groupDir.substr(0, us);
+                        tokB = groupDir.substr(us + 1);
+                    }
+                }
 
+                /* prettyDet() keeps possible “North / South” suffixes intact         */
+                const std::string title =
+                    prettyDet(tokA) + "  vs  " + prettyDet(tokB) +
+                    "  –  Centrality overview";
+                
                 titleTx.DrawLatex(0.50, 0.97, title.c_str());
 
                 /* single, larger run label (top‑left, once per canvas) ----------- */
