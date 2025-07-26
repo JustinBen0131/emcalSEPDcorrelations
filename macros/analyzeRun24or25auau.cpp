@@ -1082,6 +1082,122 @@ class Pi0QA : public QA
         log(Lvl::INFO,"μ,σ vs centrality PNG → " + pngGraph.string());
     }
 
+    void buildPtPanels(std::vector<std::string>& ptPlotsDone)
+    {
+        for (const auto& sl : slices)
+        {
+            if (sl == "Inclusive") continue;
+
+            auto itH = _ptHists.find(sl);
+            if (itH == _ptHists.end() || itH->second.empty()) continue;
+
+            /* (C1)  grid with the first six pT‑binned spectra ------------------ */
+            const int nShow = std::min<int>(6, itH->second.size());
+            TCanvas cGridPt(Form("c_pi0_ptGrid_%s", sl.c_str()),
+                            Form("#pi^{0} invariant mass – Cent %s %% (first six p_{T} bins)",
+                                 sl.c_str()),
+                            1800, 1000);
+            cGridPt.Divide(3, 2, 0.01, 0.01);
+
+            for (int i = 0; i < nShow; ++i)
+            {
+                cGridPt.cd(i + 1);
+                TH1* hPt = itH->second[i];
+                hPt->SetStats(0);
+
+                const double fitLo = 0.05, fitHi = 0.35;
+                std::unique_ptr<TF1> fTot, fBg;
+
+                int iMax = hPt->GetMaximumBin();
+                fTot = std::make_unique<TF1>(Form("fTot_%d_%s", i, sl.c_str()),
+                                             "gaus(0)+pol2(3)", fitLo, fitHi);
+                fTot->SetParameters(hPt->GetBinContent(iMax),
+                                    hPt->GetBinCenter (iMax), 0.022, 1, 0, 0);
+                hPt->Fit(fTot.get(), "QRN0");
+
+                fBg  = std::make_unique<TF1>(Form("fBg_%d_%s",  i, sl.c_str()),
+                                             "pol2", fitLo, fitHi);
+                fBg->SetParameters(fTot->GetParameter(3),
+                                   fTot->GetParameter(4),
+                                   fTot->GetParameter(5));
+
+                hPt->Draw();
+                fBg->SetLineColor(kBlue  + 2); fBg->SetLineStyle(2); fBg->SetLineWidth(2);
+                fBg->Draw("SAME");
+                fTot->SetLineColor(kRed + 1);  fTot->SetLineWidth(2);
+                fTot->Draw("SAME");
+
+                if (_storedEtaFit.count(sl))
+                    _storedEtaFit[sl]->Draw("SAME");
+            }
+
+            const std::string slDir = (sl == "Inclusive" || sl == "noCentralityDep" ||
+                                       sl.rfind("Cent_",0) == 0) ? sl : "Cent_" + sl;
+            fs::path pngGridPt = root / "EMCal" / "invMassQA" / cutTag / slDir /
+                                 "Pi0Mass_First6pTbins.png";
+            ensure_dir(pngGridPt.parent_path());
+            cGridPt.SaveAs(pngGridPt.string().c_str());
+            log(Lvl::DBG, "pT‑grid PNG  → " + pngGridPt.string());
+            ptPlotsDone.push_back(sl + " (grid)");
+
+            /* (C2)  μ,σ versus pT ------------------------------------------- */
+            std::map<double, FitInfo> byPt;
+            for (const auto& [hName, fi] : _fitSummary)
+                if (fi.slice == sl && fi.pLo >= 0 && fi.pHi >= 0)
+                    byPt[0.5 * (fi.pLo + fi.pHi)] = fi;
+
+            if (byPt.size() < 2) continue;
+
+            int n = byPt.size();
+            std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
+            int k = 0;
+            for (const auto& [pt, fi] : byPt)
+            {
+                x[k]  = pt;        yMu[k] = fi.mean;   eMu[k] = 0;
+                ySi[k] = fi.sigma; eSi[k] = 0;         ++k;
+            }
+
+            auto gMu = std::make_unique<TGraphErrors>(n, x.data(), yMu.data(),
+                                                      nullptr, eMu.data());
+            auto gSi = std::make_unique<TGraphErrors>(n, x.data(), ySi.data(),
+                                                      nullptr, eSi.data());
+            gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
+            gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
+
+            TCanvas cPT(Form("c_mu_sigma_vs_pt_%s", sl.c_str()),
+                        "#pi^{0} peak position / width vs p_{T}", 800, 800);
+
+            const double padLeft = 0.18, padRight = 0.04, gap = 0.02, fracBot = 0.30;
+            TPad* p1 = new TPad("p1","",0, gap + fracBot, 1, 1);
+            p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
+            p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
+            p1->Draw(); p1->cd();
+            gMu->SetTitle("; ;m_{#pi^{0}}  (GeV)"); gMu->Draw("AP");
+            gMu->GetXaxis()->SetLabelOffset(999);
+            gMu->GetXaxis()->SetTitleOffset(999);
+
+            cPT.cd();
+            TPad* p2 = new TPad("p2","",0,0,1,fracBot);
+            p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
+            p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
+            p2->Draw(); p2->cd();
+            gSi->SetTitle(";p_{T}  [GeV/#it{c}];#sigma_{#pi^{0}}  (GeV)");
+            gSi->Draw("AP");
+            gSi->GetXaxis()->SetNdivisions(506);
+            gSi->GetXaxis()->SetTitleSize(0.09);  gSi->GetXaxis()->SetLabelSize(0.07);
+            gSi->GetYaxis()->SetTitleSize(0.09);  gSi->GetYaxis()->SetLabelSize(0.07);
+            gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
+
+            fs::path pngPT = root / "EMCal" / "invMassQA" / cutTag / slDir /
+                             "Pi0Mass_Sigma_vs_pT.png";
+            ensure_dir(pngPT.parent_path());
+            cPT.SaveAs(pngPT.string().c_str());
+            log(Lvl::DBG, "μ,σ vs pT PNG → " + pngPT.string());
+            ptPlotsDone.push_back(sl + " (μσ‑vs‑pT)");
+        }
+    }
+
+
     // -----------------------------------------------------------------------------
     //  2×3 overview grid + μ,σ vs centrality  (plus pT‑dependent add‑ons)
     // -----------------------------------------------------------------------------
@@ -1151,121 +1267,7 @@ class Pi0QA : public QA
 
 
             /* ----------- pT‑bin overview & μ,σ vs pT -------------------------- */
-            for (const auto& sl : slices)
-            {
-                if (sl=="Inclusive") continue;
-                auto itH=_ptHists.find(sl);
-                if (itH==_ptHists.end() || itH->second.empty()) continue;
-
-                /* (C1) first six spectra grid ---------------------------------- */
-                const int nShow=std::min<int>(6,itH->second.size());
-                TCanvas cGridPt(Form("c_pi0_ptGrid_%s",sl.c_str()),
-                                Form("#pi^{0} invariant mass – Cent %s %% (first six p_{T} bins)",sl.c_str()),
-                                1800,1000);
-                cGridPt.Divide(3,2,0.01,0.01);
-                for (int i = 0; i < nShow; ++i) {
-                    cGridPt.cd(i + 1);
-
-                    TH1* hPt = itH->second[i];
-                    hPt->SetStats(0);
-
-                    /* quick local fit – same recipe used in the single‑spectrum PNG -------- */
-                    const double fitLo = 0.05, fitHi = 0.35;
-                    std::unique_ptr<TF1> fTot, fBg;
-
-                    {
-                        int iMax = hPt->GetMaximumBin();
-                        fTot = std::make_unique<TF1>(Form("fTot_%d_%s", i, sl.c_str()),
-                                                     "gaus(0)+pol2(3)", fitLo, fitHi);
-                        fTot->SetParameters(hPt->GetBinContent(iMax),
-                                            hPt->GetBinCenter (iMax), 0.022, 1, 0, 0);
-                        hPt->Fit(fTot.get(), "QRN0");
-
-                        fBg  = std::make_unique<TF1>(Form("fBg_%d_%s",  i, sl.c_str()),
-                                                     "pol2", fitLo, fitHi);
-                        fBg->SetParameters(fTot->GetParameter(3),
-                                           fTot->GetParameter(4),
-                                           fTot->GetParameter(5));
-                    }
-
-                    /* draw in the same visual style as the stand‑alone plots --------------- */
-                    hPt->Draw();
-
-                    fBg->SetLineColor(kBlue  + 2);
-                    fBg->SetLineStyle(2);
-                    fBg->SetLineWidth(2);
-                    fBg->Draw("SAME");
-
-                    fTot->SetLineColor(kRed + 1);
-                    fTot->SetLineWidth(2);
-                    fTot->Draw("SAME");
-
-                    if (_storedEtaFit.count(sl))
-                        _storedEtaFit[sl]->Draw("SAME");      // overlay η fit when available
-                }
-
-                /* ---- replace with ---- */
-                const std::string slDir = (sl == "Inclusive" || sl == "noCentralityDep" ||
-                                            sl.rfind("Cent_",0) == 0) ? sl : "Cent_" + sl;
-                fs::path pngGridPt = root/"EMCal"/"invMassQA"/cutTag/slDir
-                                     /"Pi0Mass_First6pTbins.png";
-                ensure_dir(pngGridPt.parent_path());
-                cGridPt.SaveAs(pngGridPt.string().c_str());
-                log(Lvl::DBG,"pT‑grid PNG  → "+pngGridPt.string());
-                ptPlotsDone.push_back(sl+" (grid)");
-
-                /* (C2) μ,σ vs pT ---------------------------------------------- */
-                std::map<double,FitInfo> byPt;
-                for (const auto& [hName,fi] : _fitSummary)
-                    if (fi.slice==sl && fi.pLo>=0 && fi.pHi>=0)
-                        byPt[0.5*(fi.pLo+fi.pHi)] = fi;
-                if (byPt.size()<2) continue;
-
-                int n=byPt.size();
-                std::vector<double> x(n),yMu(n),eMu(n),ySi(n),eSi(n);
-                int k=0;
-                for (const auto& [pt,fi] : byPt){
-                    x[k]=pt; yMu[k]=fi.mean;  eMu[k]=0;
-                    ySi[k]=fi.sigma; eSi[k]=0; ++k;
-                }
-
-                auto gMu=std::make_unique<TGraphErrors>(n,x.data(),yMu.data(),nullptr,eMu.data());
-                auto gSi=std::make_unique<TGraphErrors>(n,x.data(),ySi.data(),nullptr,eSi.data());
-                gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
-                gSi->SetMarkerStyle(kOpenCircle); gSi->SetLineWidth(2);
-
-                TCanvas cPT(Form("c_mu_sigma_vs_pt_%s",sl.c_str()),
-                            "#pi^{0} peak position / width vs p_{T}",800,800);
-
-                const double padLeft=0.18,padRight=0.04,gap=0.02,fracBot=0.30;
-                TPad* p1=new TPad("p1","",0,gap+fracBot,1,1);
-                p1->SetBottomMargin(0.04); p1->SetTopMargin(0.04);
-                p1->SetLeftMargin(padLeft); p1->SetRightMargin(padRight);
-                p1->Draw(); p1->cd();
-                gMu->SetTitle("; ;m_{#pi^{0}}  (GeV)"); gMu->Draw("AP");
-                gMu->GetXaxis()->SetLabelOffset(999);
-                gMu->GetXaxis()->SetTitleOffset(999);
-
-                cPT.cd();
-                TPad* p2=new TPad("p2","",0,0,1,fracBot);
-                p2->SetTopMargin(0.06); p2->SetBottomMargin(0.38);
-                p2->SetLeftMargin(padLeft); p2->SetRightMargin(padRight);
-                p2->Draw(); p2->cd();
-                gSi->SetTitle(";p_{T}  [GeV/#it{c}];#sigma_{#pi^{0}}  (GeV)");
-                gSi->Draw("AP");
-                gSi->GetXaxis()->SetNdivisions(506);
-                gSi->GetXaxis()->SetTitleSize(0.09); gSi->GetXaxis()->SetLabelSize(0.07);
-                gSi->GetYaxis()->SetTitleSize(0.09); gSi->GetYaxis()->SetLabelSize(0.07);
-                gSi->GetYaxis()->SetTitleOffset(0.90); gSi->GetYaxis()->SetTickLength(0.035);
-
-                /* ---- replace with ---- */
-                fs::path pngPT = root/"EMCal"/"invMassQA"/cutTag/slDir
-                                 /"Pi0Mass_Sigma_vs_pT.png";
-                ensure_dir(pngPT.parent_path());
-                cPT.SaveAs(pngPT.string().c_str());
-                log(Lvl::DBG,"μ,σ vs pT PNG → "+pngPT.string());
-                ptPlotsDone.push_back(sl+" (μσ‑vs‑pT)");
-            } /* end loop slices */
+            buildPtPanels(ptPlotsDone);
 
             /* -------------- terminal summary table ------------------------ */
             std::ostringstream oss;
@@ -2064,7 +2066,9 @@ class CorrQA : public QA
         if (runID == "Combined") return;
 
         auto* cl = static_cast<TH2*>(o->Clone());
-        cl->SetDirectory(nullptr); tidyAxes(cl); styleAxes(cl,true);
+        cl->SetDirectory(nullptr);                // detach from any TDirectory
+        cl->SetBit(kCanDelete,false);             // prevent ROOT from double‑deleting
+        tidyAxes(cl);  styleAxes(cl,true);
 
         s_cache[groupDir][hName][runID].reset(cl);
     }
