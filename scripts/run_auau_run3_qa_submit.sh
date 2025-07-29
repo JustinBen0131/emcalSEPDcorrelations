@@ -56,7 +56,7 @@
 #  │ run25…   │ dstjet | dstjetcalo   → JET / JETCALO lists (Run-25)        │
 #  │ run25…   │ caloFitting           → CALOFITTING lists (Run-3) *and*     │
 #  │          │                        golden-run selector switches to      │
-#  │          │                        **run3GoldenRuns.txt**               │
+#  │          │                        **run3goldenRuns.txt**               │
 #  └──────────┴──────────────────────────────────────────────────────────────┘
 #
 #  Modes in detail
@@ -292,7 +292,7 @@ fi
 if [[ "$DATASET" == run25auau && -z "$runListFile" ]]; then
   if (( CALOFIT )); then
     for p in "${PROJECT_BASE}" .; do
-      [[ -f "$p/run3GoldenRuns.txt" ]] && runListFile="$p/run3GoldenRuns.txt" && break
+      [[ -f "$p/run3goldenRuns.txt" ]] && runListFile="$p/run3goldenRuns.txt" && break
     done
     [[ -n "$runListFile" ]] && \
       say "run25auau(caloFitting) – using golden run list $(basename "$runListFile")"

@@ -1348,12 +1348,11 @@ class Pi0QA : public QA
         try
         {
             /* ------------------------------------------------------------
-             * 3)  Build one TGraphErrors per slice
+             * 3) Build graphs – *and* write an extra PNG for every slice
              * ---------------------------------------------------------- */
             std::vector<TGraphErrors*> gMuList, gSiList;
             TLegend leg(0.12,0.73,0.42,0.88); leg.SetBorderSize(0);
-
-            std::vector<std::string> slicesDone;          // for final recap
+            std::vector<std::string> slicesDone;
             int colourIdx = 0;
 
             for (const auto& [slice, mp] : s_runPoints)
@@ -1365,7 +1364,7 @@ class Pi0QA : public QA
                         runList.emplace_back(std::stoi(runStr), runStr);
 
                 if (runList.empty()) {
-                    log(Lvl::WARN,"  · slice \""+slice+"\" skipped – no numeric runs");
+                    log(Lvl::WARN," · slice \""+slice+"\" skipped – no numeric runs");
                     continue;
                 }
                 std::sort(runList.begin(), runList.end(),
@@ -1375,16 +1374,16 @@ class Pi0QA : public QA
                 const int n = runList.size();
                 std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
                 for (int i = 0; i < n; ++i) {
-                    const int       runNum = runList[i].first;    // numeric value
-                    const RunPoint& p      = mp.at(runList[i].second); // exact key
+                    const int runNum = runList[i].first;
+                    const RunPoint& p = mp.at(runList[i].second);
                     x[i]  = runNum;
-                    yMu[i]= p.mu;     eMu[i]= p.muErr;
-                    ySi[i]= p.sigma;  eSi[i]= p.sigmaErr;
+                    yMu[i]= p.mu;    eMu[i]= p.muErr;
+                    ySi[i]= p.sigma; eSi[i]= p.sigmaErr;
                 }
 
+                /* --- graphs for the big overlay ------------------------ */
                 auto gMu = new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
                 auto gSi = new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
-
                 const int col = cols[colourIdx++ % nCols];
                 gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
                 gSi->SetMarkerStyle(kFullCircle); gSi->SetLineWidth(2);
@@ -1395,12 +1394,51 @@ class Pi0QA : public QA
                 gSiList.push_back(gSi);
 
                 const std::string lbl = (slice=="Inclusive") ?
-                                         "Inclusive":"Cent "+slice+" %";
+                                        "Inclusive" : "Cent "+slice+" %";
                 leg.AddEntry(gMu,lbl.c_str(),"pl");
-
-                log(Lvl::DBG,"  · slice \""+slice+"\" – runs="+std::to_string(n)+
-                             "  colourIdx="+std::to_string(colourIdx-1));
                 slicesDone.push_back(slice);
+
+                /* --------------------------------------------------------
+                 * NEW  ➜  per‑centrality canvas (μ top / σ bottom)
+                 * ------------------------------------------------------ */
+                {
+                    TCanvas cS(Form("c_mu_sigma_vs_run_%s",slice.c_str()),
+                               "#pi^{0} peak position / width vs run",900,800);
+
+                    /* μ pad */
+                    TPad *pTop = new TPad("pTop","",0,0.35,1,1);
+                    pTop->SetBottomMargin(0.02); pTop->Draw(); pTop->cd();
+                    gMu->SetTitle(";Run number;m_{#pi^{0}} (GeV)");
+                    gMu->Draw("AP");
+
+                    /* σ pad */
+                    cS.cd();
+                    TPad *pBot = new TPad("pBot","",0,0,1,0.32);
+                    pBot->SetTopMargin(0.02); pBot->SetBottomMargin(0.30);
+                    pBot->Draw(); pBot->cd();
+                    gSi->SetTitle(";Run number;#sigma_{#pi^{0}} (GeV)");
+                    gSi->Draw("AP");
+
+                    /* destination path ---------------------------------- */
+                    const std::string slDir = (slice=="Inclusive" || slice=="noCentralityDep"
+                                               || slice.rfind("Cent_",0)==0)
+                                                ? slice : "Cent_"+slice;
+                    fs::path pngSlice = root / "EMCal" / "invMassQA" / cutTag /
+                                        slDir / "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
+                    ensure_dir(pngSlice.parent_path());
+
+                    try {
+                        cS.SaveAs(pngSlice.string().c_str());
+                        log(Lvl::DBG,"   per‑centrality PNG → "+pngSlice.string());
+                    }
+                    catch(const std::exception& ex){
+                        log(Lvl::ERR,std::string("ERROR saving per‑centrality <")
+                                      +pngSlice.string()+"> – "+ex.what());
+                    }
+                }
+
+                log(Lvl::DBG," · slice \""+slice+"\" – runs="+std::to_string(n)+
+                              " colourIdx="+std::to_string(colourIdx-1));
             }
 
             if (gMuList.empty()) {
@@ -2294,7 +2332,7 @@ class CorrQA : public QA
                 TLatex titleTx;  titleTx.SetNDC();
                 titleTx.SetTextAlign(22);           /* centred */
                 titleTx.SetTextFont(42);
-                titleTx.SetTextSize(0.05);
+                titleTx.SetTextSize(0.038);
 
                 /* build the title from the *original* detector tokens so that any
                  * “North / South” qualifier survives the canonicalisation step      */
@@ -2313,10 +2351,9 @@ class CorrQA : public QA
                     }
                 }
 
-                /* prettyDet() keeps possible “North / South” suffixes intact         */
                 const std::string title =
                     prettyDet(tokA) + "  vs  " + prettyDet(tokB) +
-                    "  –  Centrality overview";
+                    "  -  Centrality overview";
                 
                 titleTx.DrawLatex(0.50, 0.97, title.c_str());
 
@@ -2324,8 +2361,8 @@ class CorrQA : public QA
                 TLatex runTx; runTx.SetNDC();
                 runTx.SetTextAlign(11);             /* left‑aligned */
                 runTx.SetTextFont(42);
-                runTx.SetTextSize(0.05);
-                runTx.DrawLatex(0.02, 0.97,
+                runTx.SetTextSize(0.042);
+                runTx.DrawLatex(0.02, 0.95,
                     ("Run " + stripLeadingZeros(root.parent_path().filename().string())).c_str());
             }
 
@@ -2925,11 +2962,19 @@ TH2* makeSepdHitmap(const std::string& name, bool bigTile0 = false)
    *  For tile‑0 we need   12   φ bins (30°) → pass flag */
   const Int_t nbPhi  = bigTile0 ? 12 : 24;
   const Int_t nbRing = 16;             // hardware rings
-  const Double_t rMin = 0.15;          // cm
-  const Double_t rMax = 3.50;          // cm
-  return new TH2F(name.c_str(), name.c_str(),
-                  nbPhi,    0., 2.*TMath::Pi(),
-                  nbRing, rMin,  rMax);
+    /* ----------- variable‑width radial bins: 16 rings × 0.21 cm -------- */
+    static const Double_t rEdge[17] =   // cm – inner radius of each ring
+    {
+      0.15,                       // ring 0
+      0.36, 0.57, 0.78, 0.99,     // rings 1 ‑ 4
+      1.20, 1.41, 1.62, 1.83,     // rings 5 ‑ 8
+      2.04, 2.25, 2.46, 2.67,     // rings 9 ‑12
+      2.88, 3.09, 3.30, 3.51      // rings 13‑15 + outer edge
+    };
+
+    return new TH2F(name.c_str(), name.c_str(),
+                    nbPhi, 0., 2.*TMath::Pi(),   // φ bins (unchanged)
+                    16,    rEdge);              // *** variable r‑bins ***
 }
 
 
@@ -3223,20 +3268,73 @@ class NSDetectorQA : public QA
             const double z = h->GetBinContent(ix,iy);
             if (z > 0.0 && z < zMin) zMin = z;
           }
-        if (zMin == std::numeric_limits<double>::max()) zMin = 1.0;   // completely empty
-
-        h->SetMinimum(zMin);
+         /*  A — tidy( ) helper  */
         h->SetLineColor(kBlack);
         h->SetLineWidth(1);
+        h->GetZaxis()->SetNdivisions(510);    // major + minor ticks on colour bar
+
+
+        /* keep only local cosmetics – no external variables here */
+        h->SetLineColor(kBlack);
+        h->SetLineWidth(1);
+        h->GetZaxis()->SetNdivisions(510);   // major + minor ticks
       };
       tidy(in.s); tidy(in.n);
 
-      /* share the larger of the two maxima (plus 5 % head‑room) */
-      const double zMax = std::max(in.s->GetMaximum(), in.n->GetMaximum());
-      in.s->SetMaximum(1.05 * zMax);
-      in.n->SetMaximum(1.05 * zMax);
+      /* ------------------------------------------------------------- *
+       * Robust colour‑scale upper bound:
+       *   – collect all positive bin contents
+       *   – take the 99.5‑percentile (ignores the top 0.5 % outliers)
+       *   – add 5 % head‑room
+       * ------------------------------------------------------------- */
+      auto quantile99 = [](TH2* h) -> double
+      {
+          std::vector<double> v;                          // positive entries only
+          v.reserve(h->GetNbinsX() * h->GetNbinsY());
 
+          for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+              for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                  double z = h->GetBinContent(ix, iy);
+                  if (z > 0.0) v.push_back(z);
+              }
 
+          if (v.empty()) return 1.0;                      // completely empty map
+          const std::size_t k = static_cast<std::size_t>(0.995 * v.size());
+          std::nth_element(v.begin(), v.begin() + k, v.end());
+          return v[k];
+      };
+
+      auto tinyPositive = [](TH2* h)->double
+      {
+          double m = std::numeric_limits<double>::max();
+          for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+              for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                  double z = h->GetBinContent(ix,iy);
+                  if (z > 0.0 && z < m) m = z;
+              }
+          return (m == std::numeric_limits<double>::max()) ? 1.0 : m;
+      };
+
+      /* --- pick common colour‑scale limits -------------------------------- */
+      const bool isHex = in.s->InheritsFrom(TH2Poly::Class());   // both histos same type
+
+      double zMin, zMax;
+
+      if (isHex) {                                   /* MBD hexagonal maps */
+          /* full range: start at zero, top = 105 % of real per‑arm maximum  */
+          zMin = 0.0;
+          zMax = 1.05 * std::max(in.s->GetMaximum(), in.n->GetMaximum());
+          if (zMax <= zMin) zMax = zMin + 1.0;       // safety for empty maps
+      } else {                                       /* regular TH2 (sEPD etc.) */
+          zMin = std::min(tinyPositive(in.s), tinyPositive(in.n));
+          zMax = 1.05 * std::max(quantile99(in.s), quantile99(in.n));
+      }
+
+      in.s->SetMinimum(zMin);
+      in.n->SetMinimum(zMin);
+      in.s->SetMaximum(zMax);
+      in.n->SetMaximum(zMax);
+      
       /* ------------------------------------------------------------------ *
        *  finished S–N canvas                                               *
        * ------------------------------------------------------------------ */
@@ -3288,16 +3386,19 @@ class NSDetectorQA : public QA
                   gPad->SetLeftMargin (0.12);
                   gPad->SetBottomMargin(0.12);
                   gPad->SetTopMargin  (0.08);
-                  gPad->SetLogz();
 
-                  h->SetTitle(ttl);
+                  h->SetTitle("");
                   h->GetZaxis()->SetTitle("Counts");
                   h->GetZaxis()->SetTitleOffset(1.30);
                   h->Draw("POLZ");
               }
               else                                /* ---------- sEPD polar view ---------- */
+              /* ---------- sEPD polar view ---------- */
               {
-                  constexpr double Rmax = 3.8;     // outermost ring radius (cm)
+                  /* ❶ convert to the *displayed* radius: subtract inner offset (0.15 cm) */
+                  const double rMin  = h->GetYaxis()->GetXmin();          // 0.15 cm
+                  const double rMaxY = h->GetYaxis()->GetXmax();          // 3.51 cm  (outer ring edge)
+                  const double edge  = rMaxY;                             // use the true detector radius
 
                   gPad->SetLeftMargin (0.10);
                   gPad->SetBottomMargin(0.10);
@@ -3309,62 +3410,47 @@ class NSDetectorQA : public QA
                   const char* optFirst = withZ ? "COLZ POL AH"      : "COL POL AH";
                   const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
 
-                  h->SetTitle(ttl);
+                  h->SetTitle("");
                   h->GetZaxis()->SetTitle("Counts");
                   h->GetZaxis()->SetTitleOffset(1.30);
                   h->Draw(optFirst);
 
-                  if (withZ)                      /* relocate palette right pad */
-                  {
-                      gPad->Update();
-                      if (auto* pal = static_cast<TPaletteAxis*>(
-                              h->GetListOfFunctions()->FindObject("palette")))
-                      {
-                          const double x2 = 1.0 - 0.5 * gPad->GetRightMargin();
-                          pal->SetX1NDC(x2 - 0.04);
-                          pal->SetX2NDC(x2);
-                          pal->SetY1NDC(0.20);
-                          pal->SetY2NDC(0.85);
-                          pal->SetLabelSize(0.030);
-                      }
-                  }
-
-                  gPad->DrawFrame(-Rmax, -Rmax, Rmax, Rmax);
+                  gPad->DrawFrame(-edge, -edge, edge, edge);
+                  /* ❸ spokes up to the same radius */
+                  const double rStop = edge;
+                  
                   h->Draw(optSame);
 
-                  /* φ‑sector spokes ------------------------------------------- */
+                  /* φ‑sector spokes ---------------------------------------------------- */
                   static std::vector<TLine> spokes;
                   if (spokes.empty())
                   {
                       const double dPhi  = 2.0 * TMath::Pi() / 24.0;   // 15°
-                      const double rStop = h->GetYaxis()->GetXmax();   // 3.50 cm
+                      const double rStop = edge;                   // same as outer edge
                       for (int i = 0; i < 24; ++i)
                       {
                           const double a = i * dPhi;
-                          spokes.emplace_back(0., 0.,
-                                              rStop * std::cos(a),
-                                              rStop * std::sin(a));
+                          spokes.emplace_back(0., 0., rStop * std::cos(a), rStop * std::sin(a));
                           spokes.back().SetLineColor(kBlack);
                           spokes.back().SetLineWidth(1);
                       }
                   }
                   for (auto& l : spokes) l.Draw();
               }
-
               /* ----------- common augmented title (both styles) ----------------- */
               const unsigned long long nEvt =
                   static_cast<unsigned long long>( h->GetEntries() );
 
               char buf[128];
-              snprintf(buf, sizeof(buf), "%s  (run %d, N = %llu)",
+              snprintf(buf, sizeof(buf), "%s  (run %d, nEvents = %llu)",
                        ttl, runNumber, nEvt);
 
               TLatex lbl;
               lbl.SetNDC();
               lbl.SetTextAlign(22);
               lbl.SetTextFont(42);
-              lbl.SetTextSize(0.045);
-              lbl.DrawLatex(0.50, 0.94, buf);
+              lbl.SetTextSize(0.038);
+              lbl.DrawLatex(0.50, 0.955, buf);
           };
 
           /* draw both pads ------------------------------------------------ */
@@ -3587,8 +3673,8 @@ public:
                 if (fitOK) g.Draw("SAME");
 
                 TLatex tx; tx.SetNDC(); tx.SetTextSize(0.038);
-                tx.DrawLatex(0.15,0.4,Form("#mu = %.2f #pm %.2f cm", mu,  muErr));
-                tx.DrawLatex(0.15,0.36,Form("#sigma = %.2f #pm %.2f cm", sigma, sigErr));
+                tx.DrawLatex(0.15,0.88,Form("#mu = %.2f #pm %.2f cm", mu,  muErr));
+                tx.DrawLatex(0.15,0.84,Form("#sigma = %.2f #pm %.2f cm", sigma, sigErr));
                 c.SaveAs(outPng.string().c_str());
             }
 
