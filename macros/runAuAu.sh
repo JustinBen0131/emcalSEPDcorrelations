@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-#!/usr/bin/env bash
 ##############################################################################
 #  runAuAu.sh — build & execute analyzeRun24or25auau.cpp
 #

@@ -2846,16 +2846,17 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
           const int    nC   = static_cast<int>(j->size_comp());
           const double area = areaFallback;                    // FastJet area not stored
 
-          const double aOK  = std::clamp(area , 0.0, 2.0);
+          const double aOK  = std::clamp(area , 0.0, 0.80);
           const double nCOK = std::clamp<double>(nC, 0.0, 200);
 
           /* area–Nconst shape (existing) */
           fill3(b3 + "_" + trg, et, aOK, nCOK);               // global
           if (hasSlice) fill3(b3 + sliceTag + '_' + trg, et, aOK, nCOK);
 
-          /* NEW ►  E_{T} × η × φ mapping */
           const double eta = j->get_eta();
-          const double phi = j->get_phi();                    // [-π,π]
+          double phi = j->get_phi();                          // [-π,π] inclusive ⇒ make upper edge exclusive
+          if (phi >= M_PI) phi -= 2.0 * M_PI;                 // shift +π into the first bin (−π)
+
 
           fill3(b4 + "_" + trg, eta, phi, et);                // global
           if (hasSlice) fill3(b4 + sliceTag + '_' + trg, eta, phi, et);
