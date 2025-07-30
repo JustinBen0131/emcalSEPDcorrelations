@@ -818,60 +818,77 @@ void emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
 
   for (const auto& r : kJetRadii)              // r.first = "r02", …
   {
-    /* ----------------------------------------------------------------
-     * (A) – (C)   GLOBAL histograms (no centrality tag)
-     * ----------------------------------------------------------------*/
-    const std::string base1 = "h_maxJetEt_"            + std::string(r.first);
-    const std::string base2 = "h_leadEt_vs_subEt_"     + std::string(r.first);
-    const std::string base3 = "h_jetEt_area_nConst_"   + std::string(r.first);
+      const std::string base1 = "h_maxJetEt_"            + std::string(r.first);
+      const std::string base2 = "h_leadEt_vs_subEt_"     + std::string(r.first);
+      const std::string base3 = "h_jetEt_area_nConst_"   + std::string(r.first);
+      const std::string base4 = "h_jetEtEtaPhi_"         + std::string(r.first);   // NEW
 
-    H[base1 + "_" + trig] = new TH1F(
-        (base1 + "_" + trig).c_str(),
-        ("max jet E_{T} (" + std::string(r.first) + ");E_{T} [GeV]").c_str(),
-        nbEt, 0, etMax);
-
-    H[base2 + "_" + trig] = new TH2F(
-        (base2 + "_" + trig).c_str(),
-        ("Leading vs sub‑leading jet E_{T} (" + std::string(r.first) +
-         ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
-        nbEt, 0, etMax, nbEt, 0, etMax);
-
-    H[base3 + "_" + trig] = new TH3F(
-        (base3 + "_" + trig).c_str(),
-        ("Jet E_{T} vs area vs N_{const} (" + std::string(r.first) +
-         ");E_{T} [GeV];Area;N_{const}").c_str(),
-        nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
-
-    /* ----------------------------------------------------------------
-     * (A) – (C)   ONE clone per user‑defined centrality slice
-     * ----------------------------------------------------------------*/
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-    {
-      const int lo = m_centEdges[i]   ;
-      const int hi = m_centEdges[i+1] ;
-
-      std::ostringstream n1,n2,n3;
-      n1 << base1 << '_' << lo << '_' << hi << '_' << trig;
-      n2 << base2 << '_' << lo << '_' << hi << '_' << trig;
-      n3 << base3 << '_' << lo << '_' << hi << '_' << trig;
-
-      H[n1.str()] = new TH1F(
-          n1.str().c_str(),
+      /* ---------- global histograms ---------- */
+      H[base1 + "_" + trig] = new TH1F(
+          (base1 + "_" + trig).c_str(),
           ("max jet E_{T} (" + std::string(r.first) + ");E_{T} [GeV]").c_str(),
           nbEt, 0, etMax);
 
-      H[n2.str()] = new TH2F(
-          n2.str().c_str(),
+      H[base2 + "_" + trig] = new TH2F(
+          (base2 + "_" + trig).c_str(),
           ("Leading vs sub‑leading jet E_{T} (" + std::string(r.first) +
            ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
           nbEt, 0, etMax, nbEt, 0, etMax);
 
-      H[n3.str()] = new TH3F(
-          n3.str().c_str(),
+      H[base3 + "_" + trig] = new TH3F(
+          (base3 + "_" + trig).c_str(),
           ("Jet E_{T} vs area vs N_{const} (" + std::string(r.first) +
            ");E_{T} [GeV];Area;N_{const}").c_str(),
           nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
-    }
+
+      /* NEW ►  E_{T} × η × φ */
+      const int nbEta = 120;  const double etaMin = -6.0, etaMax = 6.0;
+      const int nbPhi = 128;  const double phiMin = -TMath::Pi(), phiMax =  TMath::Pi();
+      H[base4 + "_" + trig] = new TH3F(
+          (base4 + "_" + trig).c_str(),
+          ("Jet E_{T} vs #eta vs #phi (" + std::string(r.first) +
+           ");#eta;#phi [rad];E_{T} [GeV]").c_str(),
+          nbEta, etaMin, etaMax,
+          nbPhi, phiMin, phiMax,
+          nbEt , 0      , etMax);
+
+      /* ----------------------------------------------------------------
+       * (A) – (D)   ONE clone per user‑defined centrality slice
+       * ----------------------------------------------------------------*/
+      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      {
+        const int lo = m_centEdges[i];
+        const int hi = m_centEdges[i + 1];
+
+        std::ostringstream n1,n2,n3,n4;
+        n1 << base1 << '_' << lo << '_' << hi << '_' << trig;
+        n2 << base2 << '_' << lo << '_' << hi << '_' << trig;
+        n3 << base3 << '_' << lo << '_' << hi << '_' << trig;
+        n4 << base4 << '_' << lo << '_' << hi << '_' << trig;   // NEW
+
+        H[n1.str()] = new TH1F(n1.str().c_str(),
+            ("max jet E_{T} (" + std::string(r.first) + ");E_{T} [GeV]").c_str(),
+            nbEt, 0, etMax);
+
+        H[n2.str()] = new TH2F(n2.str().c_str(),
+            ("Leading vs sub‑leading jet E_{T} (" + std::string(r.first) +
+             ");E_{T}^{lead} [GeV];E_{T}^{sub} [GeV]").c_str(),
+            nbEt, 0, etMax, nbEt, 0, etMax);
+
+        H[n3.str()] = new TH3F(n3.str().c_str(),
+            ("Jet E_{T} vs area vs N_{const} (" + std::string(r.first) +
+             ");E_{T} [GeV];Area;N_{const}").c_str(),
+            nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
+
+        /* clone of the NEW histogram */
+        H[n4.str()] = new TH3F(n4.str().c_str(),
+            ("Jet E_{T} vs #eta vs #phi (" + std::string(r.first) +
+             ");#eta;#phi [rad];E_{T} [GeV]").c_str(),
+            nbEta, etaMin, etaMax,
+            nbPhi, phiMin, phiMax,
+            nbEt , 0      , etMax);
+      }
+
 
     /* ----------------------------------------------------------------
      * (D)  v_n^{jet}(p_T)  – one profile per {n, cent‑slice, trigger}
@@ -2773,69 +2790,104 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
                         << "  maxE_T=" << maxEt[radKey]);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 2.  Histogram fills                                                */
-  /* ------------------------------------------------------------------ */
-  for (const auto& [radKey, etMax] : maxEt)
-  {
-    const std::string b1 = "h_maxJetEt_"          + radKey;
-    const std::string b2 = "h_leadEt_vs_subEt_"   + radKey;
-    const std::string b3 = "h_jetEt_area_nConst_" + radKey;
+    /* ------------------------------------------------------------------ */
+    /* 2.  Histogram fills  +  verbose geometry diagnostics               */
+    /* ------------------------------------------------------------------ */
+    constexpr double etaMinDbg = -6.0, etaMaxDbg = 6.0;
+    constexpr double phiMinDbg = -M_PI, phiMaxDbg =  M_PI;
 
-    const TwoJets& J = bestPair.at(radKey);
-
-    /* fallback jet area if FastJet did not store one ----------------- */
-    const double Rguess        = (radKey.size()>1 && radKey[0]=='r')
-                               ? 0.1 * std::stod(radKey.substr(1)) : 0.4;
-    const double areaFallback  = M_PI * Rguess * Rguess;   // π R²
-
-    for (const std::string& trg : trig)
+    for (const auto& [radKey, etMax] : maxEt)
     {
-      auto& H = qaHistogramsByTrigger[trg];
+      LOG(4, CLR_CYAN,
+          "    [JetQA] radius " << radKey
+          << "  maxE_T=" << etMax
+          << "  (η range " << etaMinDbg << " … " << etaMaxDbg
+          << ", φ range " << phiMinDbg << " … " << phiMaxDbg << " rad)");
 
-      /* ---- 2.1  max‑E_T histograms -------------------------------- */
-      safeFillH1(H[b1 + "_" + trg], etMax);                 // global
-      if (hasSlice) safeFillH1(H[b1 + sliceTag + '_' + trg], etMax);
+      const std::string b1 = "h_maxJetEt_"          + radKey;
+      const std::string b2 = "h_leadEt_vs_subEt_"   + radKey;
+      const std::string b3 = "h_jetEt_area_nConst_" + radKey;
+      const std::string b4 = "h_jetEtEtaPhi_"       + radKey;   // NEW
 
-      /* ---- helpers for TH2 / TH3 ---------------------------------- */
-      auto fill3 = [&](const std::string& key,double et,double a,double nC)
+      const TwoJets& J = bestPair.at(radKey);
+
+      /* fallback jet area if FastJet did not store one ----------------- */
+      const double Rguess       = (radKey.size()>1 && radKey[0]=='r')
+                                ? 0.1 * std::stod(radKey.substr(1)) : 0.4;
+      const double areaFallback = M_PI * Rguess * Rguess;   // π R²
+
+      for (const std::string& trg : trig)
       {
-        TObject* o = H.count(key) ? H[key] : nullptr;
-        if (auto* h = dynamic_cast<TH3F*>(o)) h->Fill(et,a,nC); else warnOnce(key);
-      };
-      auto fill2 = [&](const std::string& key,double x,double y)
-      {
-        TObject* o = H.count(key) ? H[key] : nullptr;
-        if (auto* h = dynamic_cast<TH2F*>(o)) h->Fill(x,y); else warnOnce(key);
-      };
+        auto& H = qaHistogramsByTrigger[trg];
 
-      /* ---- 2.2  jet‑shape histograms ------------------------------ */
-      for (const Jet* j : {J.lead, J.sub})
-      {
-        if (!j) continue;
+        /* ---- 2.1  max‑E_T histograms -------------------------------- */
+        safeFillH1(H[b1 + "_" + trg], etMax);                 // global
+        if (hasSlice) safeFillH1(H[b1 + sliceTag + '_' + trg], etMax);
 
-        const double et   = j->get_et();
-        const int    nC   = static_cast<int>(j->size_comp());
-        const double area = areaFallback;      // FastJet area not stored
+        /* ---- helpers for TH2 / TH3 ---------------------------------- */
+        auto fill3 = [&](const std::string& key,double x,double y,double z)
+        {
+          TObject* o = H.count(key) ? H[key] : nullptr;
+          if (auto* h = dynamic_cast<TH3F*>(o)) h->Fill(x,y,z); else warnOnce(key);
+        };
+        auto fill2 = [&](const std::string& key,double x,double y)
+        {
+          TObject* o = H.count(key) ? H[key] : nullptr;
+          if (auto* h = dynamic_cast<TH2F*>(o)) h->Fill(x,y); else warnOnce(key);
+        };
 
-        const double aOK  = std::clamp(area , 0.0, 2.0);
-        const double nCOK = std::clamp<double>(nC, 0.0, 200);
+        /* ---- 2.2  jet‑shape histograms ------------------------------ */
+        for (const Jet* j : {J.lead, J.sub})
+        {
+          if (!j) continue;
 
-        fill3(b3 + "_" + trg, et, aOK, nCOK);          // global
-        if (hasSlice) fill3(b3 + sliceTag + '_' + trg, et, aOK, nCOK);
-      }
+          const bool isLead = (j == J.lead);
+          const double et   = j->get_et();
+          const int    nC   = static_cast<int>(j->size_comp());
+          const double area = areaFallback;                    // FastJet area not stored
 
-      /* ---- 2.3  leading‑vs‑sub‑leading correlation ---------------- */
-      if (J.lead && J.sub)
-      {
-        const double lEt = J.lead->get_et();
-        const double sEt = J.sub ->get_et();
+          const double aOK  = std::clamp(area , 0.0, 2.0);
+          const double nCOK = std::clamp<double>(nC, 0.0, 200);
 
-        fill2(b2 + "_" + trg, lEt, sEt);               // global
-        if (hasSlice) fill2(b2 + sliceTag + '_' + trg, lEt, sEt);
-      }
-    } // trigger loop
-  }   // radius loop
+          /* area–Nconst shape (existing) */
+          fill3(b3 + "_" + trg, et, aOK, nCOK);               // global
+          if (hasSlice) fill3(b3 + sliceTag + '_' + trg, et, aOK, nCOK);
+
+          /* NEW ►  E_{T} × η × φ mapping */
+          const double eta = j->get_eta();
+          const double phi = j->get_phi();                    // [-π,π]
+
+          fill3(b4 + "_" + trg, eta, phi, et);                // global
+          if (hasSlice) fill3(b4 + sliceTag + '_' + trg, eta, phi, et);
+
+          /* -------- additional diagnostics (controlled by Verbosity) -------- */
+          LOG(5, CLR_MAGENTA,
+              "        " << (isLead ? "[lead] " : "[sub ] ")
+              << "E_T=" << et << " GeV"
+              << "  η="  << eta
+              << "  φ="  << phi
+              << "  area=" << aOK
+              << "  nConst=" << nC);
+          if (eta < etaMinDbg || eta > etaMaxDbg || phi < phiMinDbg || phi > phiMaxDbg)
+            LOG(5, CLR_YELLOW,
+                "        ↳ WARNING: (η,φ) outside booking range – histogram under/overflow");
+        } // jet loop
+
+        /* ---- 2.3  leading‑vs‑sub‑leading correlation ---------------- */
+        if (J.lead && J.sub)
+        {
+          const double lEt = J.lead->get_et();
+          const double sEt = J.sub ->get_et();
+
+          fill2(b2 + "_" + trg, lEt, sEt);               // global
+          if (hasSlice) fill2(b2 + sliceTag + '_' + trg, lEt, sEt);
+
+          LOG(6, CLR_GREEN,
+              "        Lead–Sub pair filled  (E_T^lead=" << lEt
+              << ",  E_T^sub=" << sEt << ")");
+        }
+      } // trigger loop
+    }   // radius loop
 
   LOG(3, CLR_GREEN, "  [doJetQA] – completed OK");
   return Fun4AllReturnCodes::EVENT_OK;

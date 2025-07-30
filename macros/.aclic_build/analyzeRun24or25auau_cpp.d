@@ -357,6 +357,7 @@
 .aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TPave.h
 .aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TBox.h
 .aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TGaxis.h
+.aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/TEllipse.h
 .aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/ROOT/TProcessExecutor.hxx
 .aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/MPCode.h
 .aclic_build/analyzeRun24or25auau_cpp.so: /Users/patsfan753/Desktop/analysis/env/include/MPSendRecv.h

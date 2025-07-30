@@ -28,8 +28,10 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <TEllipse.h>
 #include <ROOT/TProcessExecutor.hxx>
 #include <ROOT/TSequentialExecutor.hxx>    // defines ROOT::TSequentialExecutor
+#include <ROOT/TProcessExecutor.hxx>
 #include <Math/MinimizerOptions.h>         // defines ROOT::Math::MinimizerOptions
 #include <TLegend.h>                       // full definition of TLegend
 #include <iostream>
@@ -1470,11 +1472,12 @@ class Pi0QA : public QA
                     gSi->SetTitle(";Run number;#sigma_{#pi^{0}} (GeV)");
                     gSi->Draw("AP");
 
-                    /* destination path ---------------------------------- */
                     const std::string slDir = (slice=="Inclusive" || slice=="noCentralityDep"
                                                || slice.rfind("Cent_",0)==0)
                                                 ? slice : "Cent_"+slice;
-                    fs::path pngSlice = root / "EMCal" / "invMassQA" / cutTag /
+
+                    /* store slice‑level run summary directly under “…/Combined/…” */
+                    fs::path pngSlice = root.parent_path() / "EMCal" / "invMassQA" / cutTag /
                                         slDir / "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
                     ensure_dir(pngSlice.parent_path());
 
@@ -1523,8 +1526,9 @@ class Pi0QA : public QA
             /* ------------------------------------------------------------
              * 5)  Save PNG
              * ---------------------------------------------------------- */
-            fs::path pngRun = root/"EMCal"/"invMassQA"/cutTag
-                           /"Pi0Mass_Sigma_vs_Run_AllCentrality.png";
+            /* same fix – use the parent of <trigger> so the file is not hidden */
+            fs::path pngRun = root.parent_path() / "EMCal" / "invMassQA" / cutTag /
+                              "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
             ensure_dir(pngRun.parent_path());
 
             try {
@@ -1767,53 +1771,72 @@ class CorrQA : public QA
             log(Lvl::INFO,"   ↳ folder \"" + groupDir + "\"  (" +
                           std::to_string(runMap.size()) + " runs)");
 
+            /* ---------------------------------------------------------- *
+             *  Build *one* flat list that contains exactly one histogram *
+             *  per run (the first entry of every vec) and then paginate  *
+             *  this list.  Result:  page1.png, page2.png, … where every  *
+             *  sub‑pad shows a *different run*.                          *
+             * ---------------------------------------------------------- */
+            using RunH = std::pair<std::string /*runID*/, std::shared_ptr<TH2>>;
+            std::vector<RunH> runs;
             for (auto& [runID, vec] : runMap)
+                if (!vec.empty())
+                    runs.emplace_back(runID, vec.front());      // take the first map for the run
+
+            if (runs.empty()) {
+                log(Lvl::WARN,"      • folder \"" + groupDir + "\" – no runs, skipped");
+                continue;
+            }
+
+            std::size_t page = 0;
+            for (std::size_t idx = 0; idx < runs.size(); idx += perPage)
             {
-                if (vec.empty()) {
-                    log(Lvl::WARN,"      • run " + runID + " – zero histograms, skipped");
-                    continue;
+                ++page;
+                const std::size_t nThis = std::min<std::size_t>(perPage,
+                                                                runs.size() - idx);
+
+                log(Lvl::INFO,Form("      • page %zu  (%zu runs)", page, nThis));
+
+                try {
+                    TCanvas c(Form("c_%s_page%zu", groupDir.c_str(), page),
+                              "", canW, canH);
+                    c.Divide(nCols, nRows, 0.001, 0.001);
+
+                    for (std::size_t i = 0; i < nThis; ++i) {
+                        c.cd(static_cast<int>(i) + 1);
+                        gPad->SetLogz();
+                        tightenAxes(runs[idx + i].second.get());
+                        runs[idx + i].second->Draw("COLZ");
+
+                        /* tiny run‑label centred below each sub‑pad ---------------- */
+                        TLatex lab; lab.SetNDC();
+                        lab.SetTextFont(42);
+                        lab.SetTextAlign(23);      // centred horizontally
+                        lab.SetTextSize(0.032);
+                        lab.DrawLatex(0.50, 0.02,
+                                      stripLeadingZeros(runs[idx + i].first).c_str());
+                    }
+
+                    /* global folder label (upper‑left‑hand corner) ------------------- */
+                    TLatex header; header.SetNDC();
+                    header.SetTextFont(42);
+                    header.SetTextAlign(11);
+                    header.SetTextSize(0.040);
+                    header.DrawLatex(0.02, 0.97, groupDir.c_str());
+
+                    fs::path png = baseDir /
+                        (std::string("page") + std::to_string(page) + ".png");
+                    c.SaveAs(png.string().c_str());
+
+                    log(Lvl::INFO,"         ↳ saved " + png.string());
                 }
-
-                std::size_t page = 0;
-                for (std::size_t idx = 0; idx < vec.size(); idx += perPage)
-                {
-                    ++page;
-                    const std::size_t nThis = std::min<std::size_t>(perPage,
-                                                                    vec.size() - idx);
-
-                    log(Lvl::INFO,Form("      • run %s  page %zu  (%zu plots)",
-                                       runID.c_str(), page, nThis));
-
-                    try {
-                        TCanvas c(Form("c_%s_%s_%zu",
-                                       runID.c_str(), groupDir.c_str(), page),
-                                  "", canW, canH);
-                        c.Divide(nCols, nRows, 0.001, 0.001);
-
-                        for (std::size_t i = 0; i < nThis; ++i) {
-                            c.cd(static_cast<int>(i) + 1);
-                            gPad->SetLogz();
-                            tightenAxes(vec[idx + i].get());
-                            vec[idx + i]->Draw("COLZ");
-                        }
-                        drawRunLabel(stripLeadingZeros(runID));
-
-                        fs::path png = baseDir /
-                            (std::string("Run_") + runID +
-                             "_page" + std::to_string(page) + ".png");
-                        c.SaveAs(png.string().c_str());
-
-                        log(Lvl::INFO,"         ↳ saved " + png.string());
-                    }
-                    catch (const std::exception& ex) {
-                        log(Lvl::ERR,"         ✖ ROOT exception on run " + runID +
-                                     " page " + std::to_string(page) +
-                                     " – " + ex.what());
-                    }
-                    catch (...) {
-                        log(Lvl::ERR,"         ✖ unknown exception on run " + runID +
-                                     " page " + std::to_string(page));
-                    }
+                catch (const std::exception& ex) {
+                    log(Lvl::ERR,"         ✖ ROOT exception on page "
+                                 + std::to_string(page) + " – " + ex.what());
+                }
+                catch (...) {
+                    log(Lvl::ERR,"         ✖ unknown exception on page "
+                                 + std::to_string(page));
                 }
             }
         }
@@ -3123,18 +3146,15 @@ class sEPDotherQA : public QA
          *  ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
          *  Collect the four ring histograms (Occ/Q  ×  South/North) that
          *  belong to the same trigger + centrality slice.  When all four
-         *  are available create **one** summary canvas:
+         *  are available create **one** summary canvas with **two pads only**:
          *
          *    pad 1 :  Occupancy  (South + North overlaid, legend)
          *    pad 2 :  ΣQ         (South + North overlaid, legend)
-         *    pad 3 :  Occupancy  South   (for detailed inspection)
-         *    pad 4 :  ΣQ         South
          *
          *  Non‑tile histograms (event‑plane QA) are still saved with save1D().
          * ------------------------------------------------------------------ */
         if (isTile)
         {
-            /* ---- unique cache key = "<slice>|<trigger>" ---------------- */
             const std::string slice   = sliceKey(n);                    // "Inclusive", "0_10", …
             const std::size_t usPos   = n.rfind('_');
             const std::string trigger = (usPos==std::string::npos) ? "UNKNOWN"
@@ -3145,20 +3165,18 @@ class sEPDotherQA : public QA
             static std::unordered_map<std::string,
                                       std::array<std::shared_ptr<TH1>,4>> cache;
 
-            /* ---- store a clone in the appropriate slot ---------------- */
             auto& set = cache[key];
             if      (n.find("RingOcc_South")!=std::string::npos) set[OCC_S].reset( static_cast<TH1*>(o->Clone()) );
             else if (n.find("RingOcc_North")!=std::string::npos) set[OCC_N].reset( static_cast<TH1*>(o->Clone()) );
             else if (n.find("RingQ_South")  !=std::string::npos) set[Q_S  ].reset( static_cast<TH1*>(o->Clone()) );
             else if (n.find("RingQ_North")  !=std::string::npos) set[Q_N  ].reset( static_cast<TH1*>(o->Clone()) );
 
-            /* ---- wait until all four pieces are present ---------------- */
             if (!std::all_of(set.begin(), set.end(),
                              [](const auto& p){ return bool(p); }))
-                return true;                     // nothing to draw yet
+                return true;                     // still waiting for missing arms
 
-            /* ---- style helper ------------------------------------------ */
-            auto prep = [](TH1* h, int col) {
+            auto prep = [](TH1* h, int col)
+            {
                 h->SetDirectory(nullptr);
                 h->SetLineColor(col);
                 h->SetMarkerColor(col);
@@ -3166,17 +3184,16 @@ class sEPDotherQA : public QA
                 h->SetStats(0);
             };
 
-            /* ---- build 2×2 summary canvas ------------------------------ */
-            TCanvas c("c_ringQA", "sEPD ring QA", 1600, 800);
-            c.Divide(2,2,0.02,0.02);
+            /* ---------- build 1×2 summary canvas (bottom pads removed) ----- */
+            TCanvas c("c_ringQA", "sEPD ring QA", 1200, 600);
+            c.Divide(2,1,0.02,0.02);                       // two pads only
 
             const int clrS = kRed+1,  clrN = kBlue+2;
 
-            /* pad 1 : occupancy overlaid – normalise each arm to unit area */
+            /* pad 1 : Occupancy overlay ------------------------------------ */
             c.cd(1); gPad->SetGridy();
             prep(set[OCC_S].get(), clrS); prep(set[OCC_N].get(), clrN);
 
-            /* ----------- simple per‑histogram normalisation ------------------ */
             double occIntS = set[OCC_S]->Integral();
             double occIntN = set[OCC_N]->Integral();
             if (occIntS > 0.) set[OCC_S]->Scale(1.0 / occIntS);
@@ -3186,12 +3203,12 @@ class sEPDotherQA : public QA
             set[OCC_S]->GetYaxis()->SetTitle("normalised hits");
             set[OCC_S]->Draw("hist");
             set[OCC_N]->Draw("hist same");
-            TLegend leg1(0.55,0.2,0.88,0.45);
+            TLegend leg1(0.55,0.2,0.88,0.4); leg1.SetBorderSize(0);
             leg1.AddEntry(set[OCC_S].get(),"South","l");
             leg1.AddEntry(set[OCC_N].get(),"North","l");
             leg1.Draw();
 
-            /* pad 2 : ΣQ overlaid – normalise each arm to unit area */
+            /* pad 2 : ΣQ overlay ------------------------------------------- */
             c.cd(2); gPad->SetGridy();
             prep(set[Q_S].get(), clrS); prep(set[Q_N].get(), clrN);
 
@@ -3204,36 +3221,29 @@ class sEPDotherQA : public QA
             set[Q_S]->GetYaxis()->SetTitle("normalised #SigmaQ");
             set[Q_S]->Draw("hist");
             set[Q_N]->Draw("hist same");
-            TLegend leg2(0.55,0.2,0.88,0.45);
+            TLegend leg2(0.55,0.2,0.88,0.4); leg2.SetBorderSize(0);
             leg2.AddEntry(set[Q_S].get(),"South","l");
             leg2.AddEntry(set[Q_N].get(),"North","l");
             leg2.Draw();
 
-            /* pad 3 : South occupancy alone ----------------------------- */
-            c.cd(3); gPad->SetGridy();
-            set[OCC_S]->Draw("hist");
-
-            /* pad 4 : South ΣQ alone ------------------------------------ */
-            c.cd(4); gPad->SetGridy();
-            set[Q_S]->Draw("hist");
-
-            /* global header --------------------------------------------- */
+            /* global header ------------------------------------------------- */
             c.cd(0);
             TLatex tl; tl.SetNDC(); tl.SetTextAlign(22); tl.SetTextFont(42);
             tl.SetTextSize(0.045);
-            tl.DrawLatex(0.5, 0.96,
+            tl.DrawLatex(0.5, 0.94,
                 Form("sEPD ring QA:  %s  ,  %s", trigger.c_str(), slice.c_str()));
 
-            /* ---- output ----------------------------------------------- */
+            /* output -------------------------------------------------------- */
             fs::path dst = cPath(root, slice, "sEPD/tileQA")
                          / ("sEPD_RingQA_" + slice + "_" + trigger + ".png");
             ensure_dir(dst.parent_path());
             c.SaveAs(dst.string().c_str());
             log::ok("[sEPDotherQA] Saved combined tile QA → " + dst.string());
 
-            cache.erase(key);                  // free memory
+            cache.erase(key);                               // free memory
             return true;
         }
+
 
         /* ------------------------------------------------------------------
          *  Event‑plane (non‑tile) histograms – keep original behaviour
@@ -3466,13 +3476,13 @@ class NSDetectorQA : public QA
                   const double dPhi   = 2.0 * TMath::Pi() / nPhi;
                   const double dR     = (rOuter - rInner) / nRing;
 
-                  log::dbg("      sEPD polar view:");
-                  log::dbg("         nPhi  = " + std::to_string(nPhi)  +
-                           "  (Δφ = " + std::to_string(TMath::RadToDeg() * dPhi) + "°)");
-                  log::dbg("         nRing = " + std::to_string(nRing) +
-                           "  (ΔR = " + std::to_string(dR) + " cm)");
-                  log::dbg("         rInner = " + std::to_string(rInner) + " cm"
-                           "  |  rOuter = " + std::to_string(rOuter) + " cm");
+                  log::trace("      sEPD polar view:");
+                  log::trace("         nPhi  = " + std::to_string(nPhi)  +
+                             "  (Δφ = " + std::to_string(TMath::RadToDeg() * dPhi) + "°)");
+                  log::trace("         nRing = " + std::to_string(nRing) +
+                             "  (ΔR = " + std::to_string(dR) + " cm)");
+                  log::trace("         rInner = " + std::to_string(rInner) + " cm"
+                             "  |  rOuter = " + std::to_string(rOuter) + " cm");
 
                   //--------------------------------------------------------------------
                   // ❷  Pad style
@@ -3575,12 +3585,12 @@ class NSDetectorQA : public QA
                   //--------------------------------------------------------------------
                   if (auto* c = gPad->GetCanvas())
                   {
-                      log::dbg("         canvas  WxH = "
-                               + std::to_string(c->GetWw()) + " × "
-                               + std::to_string(c->GetWh()) + " px");
-                      log::dbg("         pad      WxH = "
-                               + std::to_string(gPad->GetWw()) + " × "
-                               + std::to_string(gPad->GetWh()) + " px");
+                      log::trace("         canvas  WxH = "
+                                 + std::to_string(c->GetWw()) + " × "
+                                 + std::to_string(c->GetWh()) + " px");
+                      log::trace("         pad      WxH = "
+                                 + std::to_string(gPad->GetWw()) + " × "
+                                 + std::to_string(gPad->GetWh()) + " px");
                   }
               }
 
@@ -4466,19 +4476,26 @@ class JetQA : public QA
         h->SetTitle("");
 
         /* --- auto‑range: first & last non‑empty bins ------------------- */
-        int fx = h->GetNbinsX()+1, lx = 0;
-        int fy = h->GetNbinsY()+1, ly = 0;
+        int fx = h->GetNbinsX()+1;                  // first   non‑empty X bin
+        int fy = h->GetNbinsY()+1, ly = 0;          // full Y auto‑range
         double zMin = std::numeric_limits<double>::max();
+
         for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
-            for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
-                const double c = h->GetBinContent(ix,iy);
-                if (c <= 0) continue;
-                if (ix < fx) fx = ix;  if (ix > lx) lx = ix;
-                if (iy < fy) fy = iy;  if (iy > ly) ly = iy;
-                if (c  < zMin) zMin = c;
-            }
-        if (fx < lx) h->GetXaxis()->SetRange(fx,lx);
-        if (fy < ly) h->GetYaxis()->SetRange(fy,ly);
+              for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                  const double c = h->GetBinContent(ix,iy);
+                  if (c <= 0) continue;
+                  if (ix < fx) fx = ix;
+                  if (iy < fy) fy = iy;  if (iy > ly) ly = iy;
+                  if (c  < zMin) zMin = c;
+              }
+
+        /* X‑axis: keep full width on the right (lx = NbinsX) */
+        if (fx <= h->GetNbinsX()) h->GetXaxis()->SetRange(fx, h->GetNbinsX());
+
+        /* Y‑axis: still trim empty margins top & bottom */
+        if (fy < ly) h->GetYaxis()->SetRange(fy, ly);
+
+        /* Z‑axis minimum (colour scale) */
         if (zMin < std::numeric_limits<double>::max()) h->SetMinimum(zMin);
 
         /* ---------------------------------------------------------------
@@ -5504,12 +5521,16 @@ public:
         auto* h1 = dynamic_cast<TH1*>(o);
         if (!h1) return false;
 
-        /* keep a shallow copy of every   h_maxClusterEnergy_doNotScale_<trg>
-         * so that we can build the turn‑on overlays once, in the destructor   */
+        /* cache the unscaled “doNotScale” spectra ─────────────────────────── */
         if (n.rfind("h_maxClusterEnergy_doNotScale_",0)==0) {
-            /* the trigger name is the part after the last underscore */
             const std::string trgName = n.substr(n.rfind('_')+1);
-            _spectra[trgName] = h1;          // pointer is still owned by ROOT
+            _spectra[trgName] = h1;                 // shallow copy – ROOT owns it
+        }
+
+        /* cache the per‑event / scaled spectra (if present in Combined pass) */
+        else if (n.rfind("h_maxClusterE_EMC_",0)==0) {
+            const std::string trgName = n.substr(n.rfind('_')+1);
+            _spectraScaled[trgName] = h1;           // second cache for “scaled” plots
         }
 
         std::string subdir;
@@ -5535,11 +5556,16 @@ public:
 
     ~TriggerQA() override
     {
-        /* per‑trigger output directory (…/output/<run>/<trigger>/triggerQA) */
-        const fs::path outDir = root / "triggerQA";
+        /* run ONLY once – during the Combined pass ------------------------ */
+        const std::string runID = root.parent_path().filename().string();   // "Combined", "69420", …
+        if (runID != "Combined" || _emitted) return;                       // ← early exit
+        _emitted = true;
+
+        /* unified summary directory (sits next to the trigger sub‑folders) */
+        const fs::path outDir = root.parent_path() / "turnOnCurveSummaries";
         ensure_dir(outDir);
 
-        /* groups to be plotted ------------------------------------------------ */
+        /* trigger groups -------------------------------------------------- */
         static const std::vector<std::string> grp150 = {
             "MBD_NS_geq_2_vtx_lt_150",
             "photon_6_plus_MBD_NS_geq_2_vtx_lt_150",
@@ -5555,62 +5581,86 @@ public:
             "photon_12_plus_MBD_NS_geq_2_vtx_lt_10"
         };
 
-        auto makeOverlay = [&](const std::vector<std::string>& trgList,
-                               const std::string& outName)
+        /* -------------------------------------------------------------- *
+         *  Generic overlay helper – works for *either* cache (unscaled / *
+         *  scaled).  Produces the main overlay + ratio sub‑panel.        *
+         * -------------------------------------------------------------- */
+        auto makeOverlay =
+            [&](const std::vector<std::string>& trgList,
+                const std::string& outName,
+                const std::unordered_map<std::string,TH1*>& src)
         {
-            /* sanity – need all five spectra */
+            /* need the reference MB‑trigger and ≥1 photon trigger -------- */
+            if (!src.count(trgList.front())) return;
+            bool havePhoton = false;
+            for (std::size_t i=1;i<trgList.size();++i)
+                if (src.count(trgList[i])) { havePhoton = true; break; }
+            if (!havePhoton) return;                       // nothing to compare to MB
+
+            /* build a *present*‑only list so missing photon triggers are OK */
+            std::vector<std::string> avail;
             for (auto& t : trgList)
-                if (!_spectra.count(t)) return;
+                if (src.count(t)) avail.push_back(t);
+
+            if (avail.size() < 2) return;                 // safety – should not happen
 
             TCanvas c("c_turnOn","Trigger turn‑on",1400,600);
             c.Divide(2,1);
 
-            /* left pad – log‑Z overlay of the five spectra ------------------ */
-            c.cd(1); gPad->SetLogy();
-            int col[5]={kBlack,kBlue+2,kGreen+2,kRed+1,kMagenta+2};
+            /* colour palette (up to five traces) --------------------------- */
+            const int col[5] = {kBlack,kBlue+2,kGreen+2,kRed+1,kMagenta+2};
 
-            double globalMax = 0;
-            for (auto& t : trgList)
-                globalMax = std::max(globalMax, _spectra[t]->GetMaximum());
-            for (std::size_t i=0;i<trgList.size();++i) {
-                TH1* h = _spectra[trgList[i]];
+            /* ── LEFT : overlay of absolute spectra ──────────────────────── */
+            c.cd(1); gPad->SetLogy();
+
+            double globalMax = 0.0;
+            for (auto& t : avail)
+                globalMax = std::max(globalMax, src.at(t)->GetMaximum());
+
+            for (std::size_t i=0;i<avail.size();++i) {
+                TH1* h = src.at(avail[i]);
                 h->SetLineColor(col[i]); h->SetLineWidth(2);
                 h->SetMaximum(1.15*globalMax);
                 h->Draw(i==0 ? "HIST" : "HIST SAME");
             }
             TLegend leg(0.50,0.65,0.88,0.88); leg.SetBorderSize(0);
-            for (std::size_t i=0;i<trgList.size();++i)
-                leg.AddEntry(_spectra[trgList[i]], trgList[i].c_str(), "l");
+            for (std::size_t i=0;i<avail.size();++i)
+                leg.AddEntry(src.at(avail[i]), avail[i].c_str(), "l");
             leg.Draw();
 
-            /* right pad – ratio to the first (non‑photon) trigger ----------- */
+            /* ── RIGHT : ratio to MB trigger ─────────────────────────────── */
             c.cd(2); gPad->SetGridy();
-            TH1* href = _spectra[trgList.front()];
-            std::unique_ptr<TH1> hRatio[4];
 
-            for (std::size_t i=1;i<trgList.size();++i) {
-                hRatio[i-1].reset( static_cast<TH1*>(_spectra[trgList[i]]->Clone()) );
-                hRatio[i-1]->Divide(href);
-                hRatio[i-1]->SetLineColor(col[i]); hRatio[i-1]->SetLineWidth(2);
-                hRatio[i-1]->SetTitle(";E_{max}^{cluster}  [GeV];Ratio to MB trigger");
-                hRatio[i-1]->SetMaximum(1.2); hRatio[i-1]->SetMinimum(0);
-                hRatio[i-1]->Draw(i==1 ? "HIST" : "HIST SAME");
+            TH1* href = src.at(avail.front());          // MB reference
+            std::vector<std::unique_ptr<TH1>> ratios;
+
+            for (std::size_t i=1;i<avail.size();++i) {
+                ratios.emplace_back( static_cast<TH1*>(src.at(avail[i])->Clone()) );
+                ratios.back()->Divide(href);
+                ratios.back()->SetLineColor(col[i]); ratios.back()->SetLineWidth(2);
+                ratios.back()->SetTitle(";E_{max}^{cluster}  [GeV];Ratio to MB trigger");
+                ratios.back()->SetMaximum(1.2); ratios.back()->SetMinimum(0);
+                ratios.back()->Draw(i==1 ? "HIST" : "HIST SAME");
             }
             TLegend leg2(0.50,0.15,0.88,0.38); leg2.SetBorderSize(0);
-            for (std::size_t i=1;i<trgList.size();++i)
-                leg2.AddEntry(hRatio[i-1].get(), trgList[i].c_str(), "l");
+            for (std::size_t i=1;i<avail.size();++i)
+                leg2.AddEntry(ratios[i-1].get(), avail[i].c_str(), "l");
             leg2.Draw();
 
             c.SaveAs( (outDir/outName).string().c_str() );
             log(Lvl::INF,"wrote overlay " + (outDir/outName).string());
         };
 
-        makeOverlay(grp150, "TurnOn_vtx_lt_150.png");
-        makeOverlay(grp10 , "TurnOn_vtx_lt_10.png");
+        /* ---------- emit up to four PNGs -------------------------------- */
+        makeOverlay(grp150, "TurnOn_doNotScale_vtx_lt_150.png", _spectra);
+        makeOverlay(grp10 , "TurnOn_doNotScale_vtx_lt_10.png",  _spectra);
+        makeOverlay(grp150, "TurnOn_scaled_vtx_lt_150.png",     _spectraScaled);
+        makeOverlay(grp10 , "TurnOn_scaled_vtx_lt_10.png",      _spectraScaled);
     }
 private:
     /* one‑per‑trigger cache of the “doNotScale” spectra */
-    static inline std::unordered_map<std::string,TH1*> _spectra;
+    static inline std::unordered_map<std::string,TH1*> _spectra;        // doNotScale
+    static inline std::unordered_map<std::string,TH1*> _spectraScaled;  // per‑event / scaled
     static inline bool _emitted = false;   // only once in Combined pass
 };
 
