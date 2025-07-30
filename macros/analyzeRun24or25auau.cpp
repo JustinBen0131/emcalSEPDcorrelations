@@ -4493,28 +4493,90 @@ class VnPlotQA : public QA
   // ─────────────────────────────── 1. cache every TProfile ──────────
   bool process(TObject* o) override
   {
-    if (!o->InheritsFrom(TProfile::Class())) return false;
+        /* ------------------------------------------------------------------
+         *  0. Type gate – accept *only* TProfile objects
+         * ------------------------------------------------------------------ */
+        if (!o) {
+            log(Lvl::ERR, "process(): received nullptr TObject* – aborting");
+            return false;
+        }
+        if (!o->InheritsFrom(TProfile::Class())) return false;      // ignore others
 
-    /* accepted names
-     *   – calorimeters        p_v<n>_<DET>_<lo>_<hi>_<trig>     (DET = CEMC_S …)
-     *   – jets (new)          p_v<n>_JET_rXX_<lo>_<hi>_<trig>
-     */
-    static const std::regex re(
-      R"(p_v([123])_((?:[A-Za-z0-9]+_[NS])|(?:JET_r[0-9]{2}))_([0-9]+)_([0-9]+)_(.+))");
+        /* ------------------------------------------------------------------
+         *  1. Histogram‑name validation
+         *      accepted patterns:
+         *          – calorimeters : p_v<n>_<DET>_<lo>_<hi>_<trig>   (DET = CEMC_S …)
+         *          – jets        : p_v<n>_JET_rXX_<lo>_<hi>_<trig>
+         * ------------------------------------------------------------------ */
+        static const std::regex re(
+            R"(p_v([123])_((?:[A-Za-z0-9]+_[NS])|(?:JET_r[0-9]{2}))_([0-9]+)_([0-9]+)_(.+))");
 
-    std::smatch m;
-    const std::string h = o->GetName();
-    if (!std::regex_match(h, m, re)) return false;
+        const std::string hName = o->GetName();
+        std::smatch       m;
+        if (!std::regex_match(hName, m, re)) return false;          // silently skip
 
-    const int         nHarm   = std::stoi(m[1]);        // 1 / 2 / 3
-    const std::string detTag  = m[2];                   // CEMC_S …  OR  JET_r04
-    const std::string centKey = m[3].str() + '_' + m[4].str();   // e.g. 10_20
-    const std::string trigLab = m[5];
+        /* ------------------------------------------------------------------
+         *  2. Extract metadata from regex capture groups
+         * ------------------------------------------------------------------ */
+        int         nHarm   = 0;
+        std::string detTag, centKey, trigLab;
+        try {
+            nHarm   = std::stoi(m[1]);                  // 1 / 2 / 3
+            detTag  = m[2];                             // CEMC_S …  OR  JET_r04
+            centKey = m[3].str() + '_' + m[4].str();    // e.g. 10_20
+            trigLab = m[5];
+        }
+        catch (const std::exception& ex) {
+            log(Lvl::ERR, "process(): regex‑capture conversion failed – " +
+                          std::string(ex.what()) + "  |  hist = \"" + hName + '"');
+            return false;
+        }
 
-    _raw[trigLab][detTag][nHarm][centKey]
-        .push_back(static_cast<TProfile*>(o));
-    return true;
-  }
+        /* ------------------------------------------------------------------
+         *  3. Clone the profile so the pointer stays valid after walkDir()
+         * ------------------------------------------------------------------ */
+        std::unique_ptr<TProfile> owned;
+        try {
+            owned.reset( static_cast<TProfile*>(
+                o->Clone( (hName + "_copy").c_str() )) );
+
+            if (!owned) {
+                log(Lvl::ERR, "process(): Clone() returned nullptr – hist \"" + hName + '"');
+                return false;
+            }
+
+            owned->SetDirectory(nullptr);               // detach from any TDirectory
+        }
+        catch (const std::exception& ex) {
+            log(Lvl::ERR, "process(): Clone() threw – " + std::string(ex.what()) +
+                          "  |  hist = \"" + hName + '"');
+            return false;
+        }
+
+        /* ------------------------------------------------------------------
+         *  4. Commit the stable pointer into the cache
+         * ------------------------------------------------------------------ */
+        try {
+            TProfile* pStable = owned.get();             // will remain valid
+            _ownedProfiles.push_back(std::move(owned));  // ownership kept here
+
+            auto& vec = _raw[trigLab][detTag][nHarm][centKey];
+            vec.push_back(pStable);
+
+            log(Lvl::DBG, "process(): cached \"" + hName + "\"  →  trig=" + trigLab +
+                          " det=" + detTag + " n=" + std::to_string(nHarm) +
+                          " cent=" + centKey +
+                          "   |   slice size now = " + std::to_string(vec.size()));
+        }
+        catch (const std::exception& ex) {
+            log(Lvl::ERR, "process(): exception while caching – " + std::string(ex.what()) +
+                          "  |  hist = \"" + hName + '"');
+            return false;
+        }
+
+        return true;   // histogram consumed successfully
+    }
+
 
   // ─────────────────────────────── 2. heavy lifting on exit ─────────
   ~VnPlotQA() override { writeCanvases(); }
@@ -4722,63 +4784,126 @@ class VnPlotQA : public QA
                     if (vec.empty()) { log(Lvl::WRN,"   slice "+cent+" is EMPTY"); continue; }
 
                     TCanvas c("c","",1100,850); c.SetGrid();
-                    auto g = graphFromProf(vec.front(), n, cent, trig);
+
+                    /* create the graph; skip the slice completely if it has no points */
+                    auto gHold = graphFromProf(vec.front(), n, cent, trig);
+
+                    if (!gHold || gHold->GetN() == 0)
+                    {
+                        log(Lvl::WRN, "      ↳ graph has zero points – canvas not saved for cent="
+                                      + cent);
+                        continue;                                   // nothing to draw
+                    }
+
+                    TGraphErrors* g = gHold.get();
                     g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (Cent %s %%)",
-                                     n,det.c_str(),reg.c_str(),cent.c_str()));
+                                     n, det.c_str(), reg.c_str(), cent.c_str()));
                     g->Draw("AP");
 
-                    saveCanvas(c,{det,reg,Form("v%d",n),"Cent_"+cent},
+                    gHold.release();                               // ROOT canvas owns it now
+
+
+                    saveCanvas(c, {det, reg, Form("v%d", n), "Cent_" + cent},
                                Form("v%d_%s_%s_cent%s.png",
-                                    n,det.c_str(),reg.c_str(),cent.c_str()));
-                    log(Lvl::DBG,"      saved per‑cent canvas for cent="+cent);
+                                    n, det.c_str(), reg.c_str(), cent.c_str()));
+                    log(Lvl::DBG, "      saved per‑cent canvas for cent=" + cent);
                 }
 
                 /* =========== (2)  all‑centralities overlay ======================= */
                 try
                 {
-                    TCanvas cAll("c_all","",1100,850); cAll.SetGrid();
-                    TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
+                    log(Lvl::INF, "   ▶ building all‑centrality overlay for "
+                                   + det + " " + reg + "  v" + std::to_string(n));
 
-                    int   colIdx = 0;
-                    double yMax  = 0.0;
+                    TCanvas cAll("c_all", "", 1100, 850);
+                    cAll.SetGrid();
+
+                    TLegend leg(0.15, 0.70, 0.45, 0.88);
+                    leg.SetBorderSize(0);
+
+                    int    colIdx = 0;
+                    double yMax   = 0.0;
 
                     for (const auto& [cent, vec] : centMap)
                     {
-                        if (vec.empty()) continue;
-                        auto g = graphFromProf(vec.front(), n, cent, trig);
+                        std::ostringstream msg;
+                        msg << "     • slice " << cent << "  vec.size=" << vec.size();
+                        log(Lvl::DBG, msg.str());
 
-                        const int col = colTbl[colIdx++ % nCol];
-                        g->SetLineColor(col); g->SetMarkerColor(col);
+                        if (vec.empty())
+                        {
+                            log(Lvl::WRN, "       ↳ empty slice – skipped");
+                            continue;
+                        }
+
+                        std::unique_ptr<TGraphErrors> gPtr;
+                        try
+                        {
+                            gPtr = graphFromProf(vec.front(), n, cent, trig);
+                        }
+                        catch (const std::exception& ex)
+                        {
+                            log(Lvl::ERR, "       ↳ graphFromProf failed – " + std::string(ex.what()));
+                            continue;
+                        }
+
+                        const int col = colTbl[colIdx % nCol];
+                        ++colIdx;
+
+                        TGraphErrors* g = gPtr.get();
+                        g->SetLineColor(col);
+                        g->SetMarkerColor(col);
+                        g->SetBit(kCanDelete, kFALSE);              // canvas must NOT delete it
 
                         g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (all cent)",
-                                         n,det.c_str(),reg.c_str()));
+                                         n, det.c_str(), reg.c_str()));
 
-                        g->Draw(colIdx==1 ? "APL" : "PL SAME");
-                        leg.AddEntry(g.get(),Form("Cent %s %%",cent.c_str()),"pl");
+                        log(Lvl::DBG, "       ↳ drawing, colour=" + std::to_string(col));
+                        g->Draw(colIdx == 1 ? "APL" : "PL SAME");
 
-                        const double *ys = g->GetY();
-                        yMax = std::max(yMax, *std::max_element(ys, ys + g->GetN()));
+                        leg.AddEntry(g, Form("Cent %s %%", cent.c_str()), "pl");
 
-                        _ownedGraphs.push_back(std::move(g));
+                        const double* ys = g->GetY();
+                        if (g->GetN() > 0)
+                        {
+                            const double localMax = *std::max_element(ys, ys + g->GetN());
+                            yMax = std::max(yMax, localMax);
+                        }
+
+                        _ownedGraphs.push_back(std::move(gPtr));
                     }
 
-                    if (yMax > 0)            /* raise frame top by 15 % head‑room */
+                    if (colIdx == 0)
+                    {
+                        log(Lvl::WRN, "   ⚠ no centrality slices drawn – overlay canvas skipped");
+                        return;
+                    }
+
+                    if (yMax > 0.0)      /* raise frame top by 15 % head‑room */
                     {
                         cAll.Update();
                         if (auto* fr = static_cast<TH1*>(cAll.GetPrimitive("htemp")))
+                        {
                             fr->SetMaximum(1.15 * yMax);
+                            fr->GetYaxis()->SetTitle(Form("v_%d", n));
+                        }
                     }
+
                     leg.Draw();
 
-                    saveCanvas(cAll,{det,reg,Form("v%d",n),"summaryPlots"},
+                    saveCanvas(cAll,
+                               {det, reg, Form("v%d", n), "summaryPlots"},
                                Form("v%d_%s_%s_allCent.png",
-                                    n,det.c_str(),reg.c_str()));
-                    log(Lvl::DBG,"      saved all‑cent overlay");
+                                    n, det.c_str(), reg.c_str()));
+
+                    log(Lvl::INF, "   ✔ overlay saved: v"
+                                  + std::to_string(n) + "_" + det + "_" + reg + "_allCent.png");
                 }
-                catch(const std::exception& ex)
+                catch (const std::exception& ex)
                 {
-                    log(Lvl::ERR,std::string("   overlay plot failed – ")+ex.what());
+                    log(Lvl::ERR, std::string("   ✖ overlay plot failed – ") + ex.what());
                 }
+
 
                 /* =========== (3)  pT‑integrated v̅_n versus centrality =========== */
                 try
@@ -4863,6 +4988,8 @@ class VnPlotQA : public QA
   std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs;
   std::vector<std::unique_ptr<TProfile>>     _ownedProfiles;
 };
+
+
 
 
 // ╔══════════════════════════════════════════════╗
@@ -5230,36 +5357,40 @@ QaMaps runQaProduction(TFile*              in,
                 return true;
             };
 
-            fs::path trgBase = fs::path(outBase) / trg;
-            bool     hasLive = false;
+            //------------------------------------------------------------------
+            // 2‑C. live‑trigger detection and directory routing
+            //------------------------------------------------------------------
+            auto* hCntScaled = dynamic_cast<TH1*>(
+                    trigDir->Get(Form("cnt_%s_scaled", trg.c_str())));
+            const bool hasLive = (hCntScaled && hCntScaled->GetBinContent(1) > 0);
+            if (hasLive) ++maps.runsActive[trg];
 
-            //------------------------------------------------------------------
-            // 2‑C. ensure output directory tree exists
-            //------------------------------------------------------------------
-            if (isMinimal(trigDir.get()))
+            /* inactive triggers → …/scaledTriggersOFF_generalTrigQA/<trg>/ */
+            fs::path trgBase = hasLive
+                                 ? fs::path(outBase) / trg
+                                 : fs::path(outBase) / "scaledTriggersOFF_generalTrigQA" / trg;
+
+            /* decide whether only trigger‑QA is required */
+            const bool minimal = isMinimal(trigDir.get()) || !hasLive;
+
+            if (minimal)
             {
-                log::trace("  ↳ minimal folder (MB‑only)");
+                /* MB‑only folder  or  scaled counts = 0 */
+                log::trace("  ↳ scaled counts = 0 or minimal folder – writing to "
+                           + trgBase.string());
                 ensure_dir(trgBase / "triggerQA");
             }
             else
             {
-                // live‑trigger detection
-                auto* hCntScaled = dynamic_cast<TH1*>(
-                        trigDir->Get(Form("cnt_%s_scaled", trg.c_str())));
-                hasLive = (hCntScaled && hCntScaled->GetBinContent(1) > 0);
-                if (hasLive) ++maps.runsActive[trg];
-
                 std::vector<std::string> sub = {
                     "correlations", "centrality",
                     "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
                     "MBD/otherQA", "MBD/zVertex",
                     "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
-                    "jetQA/generalHistos", "jetQA/summary", "triggerQA"
+                    "jetQA/generalHistos", "jetQA/summary", "triggerQA",
+                    "vNana", "EMCal/otherQA",
+                    "EMCal/invMassQA", "EMCal/invMassQA/cutQA"
                 };
-                if (hasLive)
-                    sub.insert(sub.end(),
-                               {"vNana","EMCal/otherQA",
-                                "EMCal/invMassQA","EMCal/invMassQA/cutQA"});
 
                 for (const auto& sd : sub)
                     try {
@@ -5271,6 +5402,7 @@ QaMaps runQaProduction(TFile*              in,
                                   "\" – " + ex.what());
                     }
             }
+
 
             //------------------------------------------------------------------
             // 2‑D. assemble QA module stack  (filter‑aware)
