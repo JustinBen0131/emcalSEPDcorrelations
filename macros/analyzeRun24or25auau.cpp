@@ -1134,8 +1134,8 @@ class Pi0QA : public QA
 
             /* anchor coordinates (NDC, relative to the μ–pad only)          */
             const double x0 = 0.5;                // safely inside right margin
-            const double yStart = 0.85;
-            const double dy = 0.04;                // line spacing
+            const double yStart = 0.45;
+            const double dy = 0.042;                // line spacing
 
             /* draw the three lines ---------------------------------------- */
             p1->cd();                              // draw inside the upper pad
@@ -1699,7 +1699,8 @@ class CorrQA : public QA
     CorrQA(const std::string& trig,
            const fs::path&    base,
            const CentList&    cent)
-      : QA(trig, base, cent)
+      : QA(trig, base, cent),
+        m_trig(trig)                // keep a local copy for later use
     {}
 
     ~CorrQA() override
@@ -1710,6 +1711,7 @@ class CorrQA : public QA
 
  private:
     static std::unordered_map<std::string, NameMap> s_cache;
+    std::string m_trig;
 
     /* ------------------------------------------------------------------ *
      *  Produce 8 × 8 overview pages for every detector‑pair folder.       *
@@ -2003,6 +2005,9 @@ class CorrQA : public QA
                 else
                     header = prettyDet(tokA) + "  vs  " + prettyDet(tokB);
 
+                /* append pretty trigger in round brackets */
+                header += "  (" + prettifyTrigger(m_trig) + ")";
+
                 tl.DrawLatex(0.50, 0.96, header.c_str());
             }
             else {                                  // 1‑D spectrum (Δη / Δφ)
@@ -2023,7 +2028,8 @@ class CorrQA : public QA
                 tl.SetTextAlign(22);
                 tl.SetTextFont(42);
                 tl.SetTextSize(0.05);
-                std::string header = prettyDet(tokA) + "  vs  " + prettyDet(tokB);
+                std::string header = prettyDet(tokA) + "  vs  " + prettyDet(tokB) +
+                                     "  (" + prettifyTrigger(m_trig) + ")";
                 tl.DrawLatex(0.50, 0.96, header.c_str());
             }
             drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
@@ -3446,20 +3452,41 @@ class NSDetectorQA : public QA
                   h->Draw("POLZ");
               }
               else                                /* ---------- sEPD polar view ---------- */
-              /* ---------- sEPD polar view ---------- */
+              /* ---------- sEPD polar view (enhanced) -------------------------------- */
               {
-                  /* ❶ convert to the *displayed* radius: subtract inner offset (0.15 cm) */
-                  const double rMin  = h->GetYaxis()->GetXmin();          // 0.15 cm
-                  const double rMaxY = h->GetYaxis()->GetXmax();          // 3.51 cm  (outer ring edge)
-                  const double edge  = rMaxY;                             // use the true detector radius
+                  //--------------------------------------------------------------------
+                  // ❶  Geometry constants & diagnostics
+                  //--------------------------------------------------------------------
+                  const double rInner = h->GetYaxis()->GetXmin();           // 0.15 cm
+                  const double rOuter = h->GetYaxis()->GetXmax();           // 3.51 cm
+                  const double edge   = rOuter;                             // detector radius
 
+                  const int    nPhi   = h->GetNbinsX();
+                  const int    nRing  = h->GetNbinsY();
+                  const double dPhi   = 2.0 * TMath::Pi() / nPhi;
+                  const double dR     = (rOuter - rInner) / nRing;
+
+                  log::dbg("      sEPD polar view:");
+                  log::dbg("         nPhi  = " + std::to_string(nPhi)  +
+                           "  (Δφ = " + std::to_string(TMath::RadToDeg() * dPhi) + "°)");
+                  log::dbg("         nRing = " + std::to_string(nRing) +
+                           "  (ΔR = " + std::to_string(dR) + " cm)");
+                  log::dbg("         rInner = " + std::to_string(rInner) + " cm"
+                           "  |  rOuter = " + std::to_string(rOuter) + " cm");
+
+                  //--------------------------------------------------------------------
+                  // ❷  Pad style
+                  //--------------------------------------------------------------------
                   gPad->SetLeftMargin (0.10);
                   gPad->SetBottomMargin(0.10);
                   gPad->SetTopMargin  (0.08);
-                  gPad->SetRightMargin(0.05);
+                  gPad->SetRightMargin(withZ ? 0.18 : 0.12);
                   gPad->SetFixedAspectRatio();
                   gPad->SetLogz();
 
+                  //--------------------------------------------------------------------
+                  // ❸  First draw (heat map) – ensures palette is created
+                  //--------------------------------------------------------------------
                   const char* optFirst = withZ ? "COLZ POL AH"      : "COL POL AH";
                   const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
 
@@ -3468,28 +3495,95 @@ class NSDetectorQA : public QA
                   h->GetZaxis()->SetTitleOffset(1.30);
                   h->Draw(optFirst);
 
+                  //--------------------------------------------------------------------
+                  // ❹  Draw empty frame (square) so ROOT keeps axes, then redraw map
+                  //--------------------------------------------------------------------
                   gPad->DrawFrame(-edge, -edge, edge, edge);
-                  /* ❸ spokes up to the same radius */
-                  const double rStop = edge;
-                  
                   h->Draw(optSame);
 
-                  /* φ‑sector spokes ---------------------------------------------------- */
+                  //--------------------------------------------------------------------
+                  // ❺  Draw φ‑sector spokes and radial circles (grid)
+                  //--------------------------------------------------------------------
                   static std::vector<TLine> spokes;
+                  static std::vector<TEllipse> rings;
                   if (spokes.empty())
                   {
-                      const double dPhi  = 2.0 * TMath::Pi() / 24.0;   // 15°
-                      const double rStop = edge;                   // same as outer edge
-                      for (int i = 0; i < 24; ++i)
+                      // φ spokes
+                      for (int i = 0; i < nPhi; ++i)
                       {
                           const double a = i * dPhi;
-                          spokes.emplace_back(0., 0., rStop * std::cos(a), rStop * std::sin(a));
+                          spokes.emplace_back(0., 0., edge * std::cos(a), edge * std::sin(a));
                           spokes.back().SetLineColor(kBlack);
                           spokes.back().SetLineWidth(1);
                       }
+                      // radial rings (dashed)
+                      for (int j = 1; j <= nRing; ++j)
+                      {
+                          const double r = rInner + j * dR;
+                          rings.emplace_back(0., 0., r, r);
+                          rings.back().SetLineColor(kBlack);
+                          rings.back().SetLineStyle(2);
+                          rings.back().SetFillStyle(0);
+                      }
                   }
                   for (auto& l : spokes) l.Draw();
+                  for (auto& e : rings)  e.Draw();
+
+                  //--------------------------------------------------------------------
+                  // ❻  Geometry & count tables  (printed to stdout)
+                  //--------------------------------------------------------------------
+                  std::cout << "\n┌───────────────────── Radial Rings ─────────────────────┐\n"
+                            << "│   j   │ r_in [cm] │ r_out [cm] │   Σ Counts  │\n"
+                            << "├───────┼───────────┼────────────┼──────────────┤\n";
+
+                  for (int j = 1; j <= nRing; ++j)
+                  {
+                      const double rLo = rInner + (j-1)*dR;
+                      const double rHi = rInner +  j   *dR;
+                      double sum = 0.0;
+                      for (int i = 1; i <= nPhi; ++i) sum += h->GetBinContent(i, j);
+                      std::cout << std::setw(5) << j
+                                << "   │ " << std::setw(9) << std::fixed << std::setprecision(3) << rLo
+                                << " │ "  << std::setw(10) << rHi
+                                << " │ "  << std::setw(11) << std::fixed << std::setprecision(0) << sum
+                                << " │\n";
+                  }
+                  std::cout << "└─────────────────────────────────────────────────────────┘\n";
+
+                  std::cout << "\n┌────────────────── φ Sectors (Δφ = "
+                            << std::setw(6) << std::fixed << std::setprecision(2)
+                            << TMath::RadToDeg() * dPhi << "°) ──────────────────┐\n"
+                            << "│   i   │  φ_low [°] │  φ_high [°] │   Σ Counts │\n"
+                            << "├───────┼────────────┼─────────────┼────────────┤\n";
+
+                  for (int i = 1; i <= nPhi; ++i)
+                  {
+                      const double φLo = (i-1)*dPhi * TMath::RadToDeg();
+                      const double φHi =  i   *dPhi * TMath::RadToDeg();
+                      double sum = 0.0;
+                      for (int j = 1; j <= nRing; ++j) sum += h->GetBinContent(i, j);
+                      std::cout << std::setw(5) << i
+                                << "   │ " << std::setw(10) << std::fixed << std::setprecision(2) << φLo
+                                << " │ "  << std::setw(11) << φHi
+                                << " │ "  << std::setw(10) << std::fixed << std::setprecision(0) << sum
+                                << " │\n";
+                  }
+                  std::cout << "└─────────────────────────────────────────────────────────┘\n";
+
+                  //--------------------------------------------------------------------
+                  // ❼  Canvas / pad metrics (useful when debugging aspect issues)
+                  //--------------------------------------------------------------------
+                  if (auto* c = gPad->GetCanvas())
+                  {
+                      log::dbg("         canvas  WxH = "
+                               + std::to_string(c->GetWw()) + " × "
+                               + std::to_string(c->GetWh()) + " px");
+                      log::dbg("         pad      WxH = "
+                               + std::to_string(gPad->GetWw()) + " × "
+                               + std::to_string(gPad->GetWh()) + " px");
+                  }
               }
+
               /* ----------- common augmented title (both styles) ----------------- */
               const unsigned long long nEvt =
                   static_cast<unsigned long long>( h->GetEntries() );
@@ -4042,6 +4136,8 @@ public:
 
 
 
+
+
 // ────────────────────────────────────────────────────────────────────
 //  Jet‑QA module
 //      • “generalHistos” : every raw histogram & projection
@@ -4123,7 +4219,18 @@ class JetQA : public QA
         //----------------------------------------------------------------
         bool ok = false;
         if (is1D)
-          ok = save1Dplot(static_cast<TH1*>(o), baseGen, n);
+          {
+            TH1* h1 = static_cast<TH1*>(o);
+            ok = save1Dplot(h1, baseGen, n);
+
+            /* cache Inclusive h_maxJetEt_* for later summary */
+            if (n.rfind("h_maxJetEt_",0) == 0 && slice == "Inclusive")
+            {
+                auto hClone = std::unique_ptr<TH1>(static_cast<TH1*>(h1->Clone()));
+                hClone->SetDirectory(nullptr);
+                _cachedMaxEt[slice] = std::move(hClone);
+            }
+        }
         else if (is2D)
           ok = handle2D  (static_cast<TH2*>(o), baseGen, n);
         else            // is3D
@@ -4163,27 +4270,17 @@ class JetQA : public QA
         std::map<std::string,std::unique_ptr<TH1>> maxEtPerSlice;
 
         //----------------------------------------------------------------
-        // 1. Harvest every Inclusive h_maxJetEt_… histogram that has data
+        // 1. Harvest the cached Inclusive h_maxJetEt_* histograms
         //----------------------------------------------------------------
-        log(Lvl::DBG,"[JetQA::~JetQA] scanning gROOT for h_maxJetEt_*");
-
-        for (const TObject* obj : *gROOT->GetList()) {
-          const TH1* h = dynamic_cast<const TH1*>(obj);
-          if (!h) continue;                        // ignore non‑histograms
-
-          const std::string n = h->GetName();
-          if (n.rfind("h_maxJetEt_",0) != 0) continue;
-          if (h->Integral() <= 0)       continue;  // skip empty
-
-          const std::string slice = sliceKey(n);   // Inclusive / Cent_x_y
-          maxEtPerSlice[slice].reset(static_cast<TH1*>(h->Clone()));
-          maxEtPerSlice[slice]->SetDirectory(nullptr);
+        if (_cachedMaxEt.empty()) {
+            log(Lvl::WRN,"[JetQA::~JetQA] no cached h_maxJetEt_* histograms – summary skipped");
+            return;
         }
 
-        if (maxEtPerSlice.empty()) {
-          log(Lvl::WRN,"[JetQA::~JetQA] no non‑empty h_maxJetEt_* histograms – summary skipped");
-          return;
-        }
+        for (auto& [slice,hPtr] : _cachedMaxEt)
+            if (hPtr && hPtr->Integral() > 0)
+                maxEtPerSlice[slice].reset(static_cast<TH1*>(hPtr->Clone()));
+
 
         //----------------------------------------------------------------
         // 2. Prepare output directory
@@ -4196,62 +4293,73 @@ class JetQA : public QA
           return;
         }
 
-        //----------------------------------------------------------------
-        // 3. Yield(E_T)  –  differential spectra for each slice
-        //----------------------------------------------------------------
-        TCanvas cYield("c_yieldEt","Jet yield vs E_{T}",1100,850);
-        cYield.SetLogy();
+          //----------------------------------------------------------------
+          // 3. Yield(E_T)  –  per‑slice PNGs **and** combined overlay
+          //----------------------------------------------------------------
+          TCanvas cYield("c_yieldEt","Jet yield vs E_{T}",1100,850);
+          cYield.SetLogy();
 
-        TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
-        const int colList[]{kRed+1,kBlue+2,kGreen+2,kMagenta+2,kOrange+1};
-        int iCol = 0;
+          /* legend positioned high‑left, large markers for overlay */
+          TLegend leg(0.18,0.68,0.48,0.88); leg.SetBorderSize(0);
+          const int colList[]{kRed+1,kBlue+2,kGreen+2,kMagenta+2,kOrange+1};
+          int iCol = 0;
 
-        std::vector<double> xCent, yYield;         // for the cent‑trend graph
+          std::vector<double> xCent, yYield;                // for cent‑trend
 
-        for (auto& [slice, h] : maxEtPerSlice)
-        {
-          // 3.1 centrality coordinate (bin centre)
-          double xC = 50.0;                        // default for Inclusive
-          if (slice.rfind("Cent_",0) == 0) {
-            std::smatch m;
-            if (std::regex_match(slice, m, std::regex(R"(Cent_([0-9]+)_([0-9]+))")))
-              xC = 0.5 * (std::stod(m[1]) + std::stod(m[2]));
-          }
+          for (auto& [slice, h] : maxEtPerSlice)
+          {
+              /* --- 3.1 centrality coordinate -------------------------------- */
+              double xC = 50.0;
+              if (slice.rfind("Cent_",0) == 0) {
+                  std::smatch m;
+                  if (std::regex_match(slice,m,std::regex(R"(Cent_([0-9]+)_([0-9]+))")))
+                      xC = 0.5*(std::stod(m[1])+std::stod(m[2]));
+              }
 
-          // 3.2 integrate yield above kEtMin
-          int    binMin = h->FindBin(kEtMin);
-          double yield  = h->Integral(binMin, h->GetNbinsX());
-          long long nEv = static_cast<long long>(h->GetEntries());
+              /* --- 3.2 integrate yield above kEtMin ------------------------- */
+              const int    binMin = h->FindBin(kEtMin);
+              double       yield  = h->Integral(binMin, h->GetNbinsX());
+              const long long nEv = static_cast<long long>(h->GetEntries());
+              if (nEv==0) continue;
+              yield /= nEv;
 
-          if (nEv == 0) {                          // avoid div‑by‑0
-            log(Lvl::WRN,"[JetQA::~JetQA] slice \""+slice+"\" has 0 entries – skipped");
-            continue;
-          }
-          yield /= nEv;                            // per‑event yield
+              xCent.push_back(xC);  yYield.push_back(yield);
 
-          xCent.push_back(xC);   yYield.push_back(yield);
+              /* --- 3.3 differential spectrum (clone, norm‑per‑event) ------- */
+              auto hDiff = std::unique_ptr<TH1>(static_cast<TH1*>(h->Clone()));
+              hDiff->Scale(1.0/nEv,"width");
+              const int col = colList[iCol % (sizeof(colList)/sizeof(int))];
+              hDiff->SetLineColor(col);  hDiff->SetLineWidth(2);
+              hDiff->GetYaxis()->SetTitle("1/N_{ev}  dN/dE_{T}  [GeV^{-1}]");
 
-          // 3.3 differential spectrum
-          auto hDiff = std::unique_ptr<TH1>(static_cast<TH1*>(h->Clone()));
-          hDiff->Scale(1.0/nEv, "width");
-          const int col = colList[iCol % (sizeof(colList)/sizeof(int))];
-          hDiff->SetLineColor(col);  hDiff->SetLineWidth(2);
-          hDiff->SetTitle(Form("dN/dE_{T} – %s", slice.c_str()));
-          hDiff->GetYaxis()->SetTitle("1/N_{ev}  dN/dE_{T}  [GeV^{-1}]");
-          hDiff->Draw(iCol==0 ? "HIST" : "HIST SAME");
-          leg.AddEntry(hDiff.get(), slice.c_str(), "l");
+              /* ---------- A) individual PNG for this slice ---------- */
+              {
+                  TCanvas cSlice(Form("c_yield_%s",slice.c_str()),
+                                 Form("Jet yield vs E_{T} – %s",slice.c_str()),
+                                 1100,850);
+                  cSlice.SetLogy();
+                  hDiff->Draw("HIST");
+                  const fs::path pngSlice =
+                         dirSum/(std::string("JetYield_vs_Et_")+slice+".png");
+                  cSlice.SaveAs(pngSlice.string().c_str());
+              }
 
-          _owned1D.push_back(std::move(hDiff));
-          ++iCol;
+              /* ---------- B) add to combined overlay ---------------- */
+              hDiff->SetTitle("");                 // suppress title in overlay
+              hDiff->Draw(iCol==0 ? "HIST" : "HIST SAME");
+              leg.AddEntry(hDiff.get(), slice.c_str(),"l");
+
+              _owned1D.push_back(std::move(hDiff));
+              ++iCol;
         }
-        leg.Draw();
 
-        const fs::path pngYield = dirSum/"JetYield_vs_Et_AllSlices.png";
-        try { cYield.SaveAs(pngYield.string().c_str()); }
-        catch (const std::exception& ex) {
-          log(Lvl::ERR,std::string("[JetQA::~JetQA] failed to save ")+pngYield.string()+
-                        " – "+ex.what());
+        /* draw legend & save overlay only if ≥1 slice was plotted */
+        if (iCol>0) {
+              leg.Draw();
+              const fs::path pngYield = dirSum/"JetYield_vs_Et_AllSlices.png";
+              cYield.SaveAs(pngYield.string().c_str());
         }
+
 
         //----------------------------------------------------------------
         // 4. Yield vs centrality (if ≥2 points)
@@ -4291,7 +4399,6 @@ class JetQA : public QA
       }
     }
 
-
  private:
     // ------------------------------------------------------------------
     //  radiusTag  – extract jet‑radius label (r02, r04 …) from the name
@@ -4325,8 +4432,15 @@ class JetQA : public QA
         ensure_dir(dir);
         TCanvas c; c.SetLogy();
         h->SetStats(0);
-        h->SetTitle(makeTitle(hname).c_str());
+        h->SetTitle("");                 // avoid ROOT’s default title box
         h->Draw();
+
+        TLatex ttl;
+        ttl.SetNDC();                   // normalised device coordinates
+        ttl.SetTextFont(42);            // plain, professional font
+        ttl.SetTextAlign(23);           // centered horizontally, top‑aligned
+        ttl.SetTextSize(0.045);
+        ttl.DrawLatex(0.50, 0.94, makeTitle(hname).c_str());
 
         const fs::path png = dir/(hname + ".png");
         c.SaveAs(png.string().c_str());
@@ -4347,15 +4461,51 @@ class JetQA : public QA
 
       try {
         ensure_dir(dir);
-        h->SetTitle(makeTitle(hname).c_str());
+        TCanvas c;
+        h->SetStats(0);
+        h->SetTitle("");
 
-        TCanvas c; h->SetStats(0);
+        /* --- auto‑range: first & last non‑empty bins ------------------- */
+        int fx = h->GetNbinsX()+1, lx = 0;
+        int fy = h->GetNbinsY()+1, ly = 0;
+        double zMin = std::numeric_limits<double>::max();
+        for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+            for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                const double c = h->GetBinContent(ix,iy);
+                if (c <= 0) continue;
+                if (ix < fx) fx = ix;  if (ix > lx) lx = ix;
+                if (iy < fy) fy = iy;  if (iy > ly) ly = iy;
+                if (c  < zMin) zMin = c;
+            }
+        if (fx < lx) h->GetXaxis()->SetRange(fx,lx);
+        if (fy < ly) h->GetYaxis()->SetRange(fy,ly);
+        if (zMin < std::numeric_limits<double>::max()) h->SetMinimum(zMin);
+
+        /* ---------------------------------------------------------------
+         *  Special treatment for   h_leadEt_vs_subEt_*   histograms
+         *     • enable log‑Z colour scale for better dynamic range
+         *     • suppress the diagonal guideline
+         * -------------------------------------------------------------- */
+        const bool isLeadSub = (hname.rfind("h_leadEt_vs_subEt_",0) == 0);
+        if (isLeadSub) c.SetLogz();
+
         h->Draw("COLZ");
 
-        // y = x guideline
-        const double xmax = h->GetXaxis()->GetXmax();
-        TLine diag(0,0, xmax, xmax);
-        diag.SetLineStyle(2); diag.SetLineWidth(2); diag.Draw();
+        /* show guideline only for non‑lead/sub histograms */
+        if (!isLeadSub) {
+              const double xmax = h->GetXaxis()->GetXmax();
+              TLine diag(0,0, xmax, xmax);
+              diag.SetLineStyle(2);
+              diag.SetLineWidth(2);
+              diag.Draw();
+        }
+
+        TLatex ttl; ttl.SetNDC();
+        ttl.SetTextFont(42);
+        ttl.SetTextAlign(23);
+        ttl.SetTextSize(0.03);
+        ttl.DrawLatex(0.50, 0.94, makeTitle(hname).c_str());
+
 
         const fs::path png = dir/(hname + ".png");
         c.SaveAs(png.string().c_str());
@@ -4366,6 +4516,56 @@ class JetQA : public QA
         log::err(std::string("[JetQA] handle2D() exception – ")+ex.what());
         return false;
       }
+    }
+    
+    // ------------------------------------------------------------------
+    //  saveJetQA2D – draw 2‑D histogram keeping the descriptive header
+    // ------------------------------------------------------------------
+    static void saveJetQA2D(TH2* h, const fs::path& png)
+    {
+        if (!h) { log::err("[JetQA] saveJetQA2D() nullptr"); return; }
+
+        try {
+            ensure_dir(png.parent_path());
+
+            /* ── canvas identical to other Jet‑QA helpers ───────────────── */
+            TCanvas c;
+            h->SetStats(0);
+
+            /* preserve the header that saveProjection() injected */
+            const std::string header = h->GetTitle();
+            h->SetTitle("");                     // suppress ROOT’s own title box
+
+            /* automatic axis‑range trimming (same logic as handle2D) */
+            int fx = h->GetNbinsX()+1, lx = 0;
+            int fy = h->GetNbinsY()+1, ly = 0;
+            double zMin = std::numeric_limits<double>::max();
+            for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+                for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                    const double cBin = h->GetBinContent(ix,iy);
+                    if (cBin <= 0) continue;
+                    if (ix < fx) fx = ix;  if (ix > lx) lx = ix;
+                    if (iy < fy) fy = iy;  if (iy > ly) ly = iy;
+                    if (cBin < zMin) zMin = cBin;
+                }
+            if (fx < lx) h->GetXaxis()->SetRange(fx,lx);
+            if (fy < ly) h->GetYaxis()->SetRange(fy,ly);
+            if (zMin < std::numeric_limits<double>::max()) h->SetMinimum(zMin);
+
+            h->Draw("COLZ");
+
+            /* draw the preserved header */
+            TLatex ttl; ttl.SetNDC();
+            ttl.SetTextFont(42);
+            ttl.SetTextAlign(23);
+            ttl.SetTextSize(0.03);
+            ttl.DrawLatex(0.50, 0.94, header.c_str());
+
+            c.SaveAs(png.string().c_str());
+        }
+        catch (const std::exception& ex) {
+            log::err(std::string("[JetQA] saveJetQA2D() exception – ")+ex.what());
+        }
     }
 
     // =============== 3‑D ==================================================
@@ -4393,8 +4593,6 @@ class JetQA : public QA
       }
     }
 
-    // ===== local helpers (only visible inside JetQA) ==================
-
     // ------------------------------------------------------------------
     //  save3D – single 3‑D view (semi‑transparent boxes)
     // ------------------------------------------------------------------
@@ -4405,16 +4603,69 @@ class JetQA : public QA
 
       try {
         ensure_dir(png.parent_path());
+
+        /* ── canvas with generous margins for colour bar and axis titles ── */
         TCanvas c("c3D","",1200,1000);
-        c.SetRightMargin(0.18);
-        h->SetStats(0); h->SetContour(99);
+        c.SetLeftMargin  (0.14);
+        c.SetBottomMargin(0.14);
+        c.SetRightMargin (0.32);                 // extra room for palette
+
+        /* ── histogram cosmetics ─────────────────────────────────────────── */
+        h->SetStats(0);
+        h->SetContour(99);
+
+        /* shift axis titles away from tick labels so they do not overlap */
+        h->GetXaxis()->SetTitleOffset(1.6);
+        h->GetYaxis()->SetTitleOffset(2.0);
+        h->GetZaxis()->SetTitleOffset(1.4);
+
+        h->SetTitle("");          // suppress ROOT’s default title
         h->Draw("BOX2Z");
+
+        /* ── label the colour scale after the palette has been created ──── */
+        gPad->Update();
+
+        if (auto* pal =
+                  dynamic_cast<TPaletteAxis*>(h->GetListOfFunctions()
+                                                ->FindObject("palette")))
+        {
+                /* ── move palette farther right ───────────────────────── */
+                const double x1 = 0.84;             // left edge
+                const double x2 = 0.90;             // right edge
+                pal->SetX1NDC(x1);
+                pal->SetX2NDC(x2);
+
+                /* ── tidy the vertical axis text (let us label outside) ─ */
+                pal->GetAxis()->SetTitle("");       // no vertical title
+                pal->GetAxis()->SetLabelSize(0.035);
+
+                /* ── horizontal label centred above palette ───────────── */
+                TLatex lab;
+                lab.SetNDC();
+                lab.SetTextFont(42);
+                lab.SetTextAlign(23);               // centred horizontally
+                lab.SetTextSize(0.032);
+                const double xMid = 0.5*(x1+x2);
+                const double yTop = pal->GetY2NDC() + 0.02;
+                lab.DrawLatex(xMid, yTop, "Counts");
+        }
+
+        /* ── professional header via TLatex ─────────────────────────────── */
+        {
+              TLatex ttl; ttl.SetNDC();
+              ttl.SetTextFont(42);
+              ttl.SetTextAlign(23);
+              ttl.SetTextSize(0.045);
+              ttl.DrawLatex(0.50, 0.94, makeTitle(h->GetName()).c_str());
+        }
+
         c.SaveAs(png.string().c_str());
       }
       catch (const std::exception& ex) {
         log::err(std::string("[JetQA] save3D() exception – ")+ex.what());
       }
     }
+    
 
     // ------------------------------------------------------------------
     //  saveProjection – 2‑D projection helper for TH3
@@ -4439,8 +4690,40 @@ class JetQA : public QA
 
         h2->SetDirectory(nullptr);                         // detach
         h2->SetStats(0);
-        h2->SetTitle((std::string(h3->GetTitle()) + "  –  " + axes).c_str());
-        save2D(h2.get(), png);
+
+        /* --- auto‑range identical to handle2D() ------------------------ */
+        int fx = h2->GetNbinsX()+1, lx = 0;
+        int fy = h2->GetNbinsY()+1, ly = 0;
+        double zMin = std::numeric_limits<double>::max();
+        for (int ix = 1; ix <= h2->GetNbinsX(); ++ix)
+            for (int iy = 1; iy <= h2->GetNbinsY(); ++iy) {
+                const double c = h2->GetBinContent(ix,iy);
+                if (c <= 0) continue;
+                if (ix < fx) fx = ix;  if (ix > lx) lx = ix;
+                if (iy < fy) fy = iy;  if (iy > ly) ly = iy;
+                if (c  < zMin) zMin = c;
+            }
+        if (fx < lx) h2->GetXaxis()->SetRange(fx,lx);
+        if (fy < ly) h2->GetYaxis()->SetRange(fy,ly);
+        if (zMin < std::numeric_limits<double>::max()) h2->SetMinimum(zMin);
+
+        /* translate ROOT’s axis code (“yx”, “xz”, “yz”) → human‑readable text */
+        const char* axesDesc =
+                    strcmp(axes,"yx")==0 ? "E_{T} vs Area"      :
+                    strcmp(axes,"xz")==0 ? "E_{T} vs N_{const}" :
+                    strcmp(axes,"yz")==0 ? "Area vs N_{const}"  :
+                                           axes;                 /* fallback */
+
+        /* build “axes‑only” title + radius/cent/trigger descriptor */
+        std::string full = makeTitle(h3->GetName());         /* e.g.  "Jet E_T … (R = 0.2, …)" */
+        std::string descriptor;
+        size_t p = full.find('(');                           /* keep everything from '(' onward */
+        if (p != std::string::npos) descriptor = full.substr(p);
+
+        std::string finalTitle = std::string(axesDesc) + " " + descriptor;
+        h2->SetTitle(finalTitle.c_str());
+
+        saveJetQA2D(h2.get(), png);        // new helper that keeps the header text
       }
       catch (const std::exception& ex) {
         log::err(std::string("[JetQA] saveProjection() exception – ")+ex.what());
@@ -4448,22 +4731,55 @@ class JetQA : public QA
     }
 
     // ------------------------------------------------------------------
-    //  makeTitle – prettify histogram titles
+    //  makeTitle – build a fully descriptive TLatex header
+    //              e.g.  "Leading vs sub‑leading jet E_{T}
+    //                     (R = 0.2, 20–30 %, MBD #N&S #geq 2 vtx < 10)"
     // ------------------------------------------------------------------
     static std::string makeTitle(const std::string& hname)
     {
-      std::smatch m;
-      std::regex re(R"(_(r[0-9]+|R[0-9]+).+?_(MBD.+))");
-      if (std::regex_search(hname, m, re))
-        return m[1].str() + "  (" + m[2].str() + ')';
-      return hname;
-    }
+        /* 1.  translate the histogram *kind* from its prefix ------------- */
+        std::string kind = hname;                // fallback
+        if      (hname.rfind("h_maxJetEt_"        ,0) == 0) kind = "Max jet E_{T}";
+        else if (hname.rfind("h_leadEt_vs_subEt_" ,0) == 0) kind = "Leading vs subleading jet E_{T}";
+        else if (hname.rfind("h_jetEt_area_nConst_",0) == 0) kind = "Jet E_{T} vs Area vs N_{const}";
 
+        /* 2.  extract radius, optional centrality, trigger --------------- */
+        // pattern:  _r02_(20)_(30)_<trigger>   OR   _r02_<trigger>
+        std::smatch m;
+        std::regex  re(R"(.*_(r[0-9]+|R[0-9]+)(?:_([0-9]+)_([0-9]+))?_(.+))");
+        std::string radius = "R = ?";
+        std::string cent   = "Centrality IND";
+        std::string trig   = "?";
+
+        if (std::regex_match(hname, m, re))
+        {
+            /* radius ---------------------------------------------------- */
+            std::string rTag = m[1];
+            int rInt = std::stoi(rTag.substr(1));          // "r02" -> 2
+            std::ostringstream rs; rs.setf(std::ios::fixed); rs<<std::setprecision(1)<<rInt/10.0;
+            radius = "R = " + rs.str();
+
+            /* centrality (optional) ------------------------------------ */
+            if (m[2].matched && m[3].matched)
+                cent = m[2].str() + "#minus" + m[3].str() + " %";
+
+            /* trigger --------------------------------------------------- */
+            trig = prettifyTrigger(m[4]);
+        }
+
+        /* 3.  assemble final title --------------------------------------- */
+        return kind + " (" + radius + ", " + cent + ", " + trig + ")";
+    }
     
-  // containers keeping produced objects alive
-  std::vector<std::unique_ptr<TH1>>         _owned1D;
-  std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs;
+    // containers keeping produced objects alive
+    std::vector<std::unique_ptr<TH1>>          _owned1D;
+    std::vector<std::unique_ptr<TGraphErrors>> _ownedGraphs;
+
+    /* Inclusive h_maxJetEt_* histograms cached for the destructor */
+    std::unordered_map<std::string,std::unique_ptr<TH1>> _cachedMaxEt;
 };
+
+
 
 
 // ╔═══════════════════════════════════════════════════════════════════╗
@@ -4509,7 +4825,8 @@ class VnPlotQA : public QA
          *          – jets        : p_v<n>_JET_rXX_<lo>_<hi>_<trig>
          * ------------------------------------------------------------------ */
         static const std::regex re(
-            R"(p_v([123])_((?:[A-Za-z0-9]+_[NS])|(?:JET_r[0-9]{2}))_([0-9]+)_([0-9]+)_(.+))");
+            R"(p_v([123])_((?:[A-Za-z0-9]+_[NST])|(?:JET_r[0-9]{2}))_([0-9]+)_([0-9]+)_(.+))");
+
 
         const std::string hName = o->GetName();
         std::smatch       m;
@@ -4589,19 +4906,25 @@ class VnPlotQA : public QA
       if (tag.find("CEMC")  != std::string::npos) return "EMCal";
       if (tag.find("IHCAL") != std::string::npos) return "IHCal";
       if (tag.find("OHCAL") != std::string::npos) return "OHCal";
-      if (tag == "HCAL_S" || tag == "HCAL_N")      return "totalHCal";
-      if (tag == "ALL_S"  || tag == "ALL_N")       return "totalCalo";
+      if (tag == "HCAL_S" || tag == "HCAL_N" || tag == "HCAL_T")
+          return "totalHCal";
+      if (tag == "ALL_S"  || tag == "ALL_N"  || tag == "ALL_T")
+          return "totalCalo";
 
       /* jets ---------------------------------------------------------- */
       if (tag.rfind("JET_r",0)==0)                 return "jetvN";
       return tag;                                  // fallback
   }
 
-  static std::string regionOf(const std::string& tag)
-  {
-      if (tag.rfind("JET_r",0)==0) return tag.substr(4,3); // r02 / r04 …
-      return (tag.back()=='S') ? "South" : "North";
-  }
+    static std::string regionOf(const std::string& tag)
+    {
+        if (tag.rfind("JET_r",0)==0)              // jets keep the “rXX” code
+            return tag.substr(4,3);               // e.g. r04
+        const char suf = tag.back();              // last char = S / N / T
+        if (suf == 'S') return "South";
+        if (suf == 'N') return "North";
+        return "Total";                           // *anything* else → combined arm
+    }
 
   /* turn a TProfile → TGraphErrors, apply resolution if available ---- */
   std::unique_ptr<TGraphErrors>
@@ -4629,12 +4952,12 @@ class VnPlotQA : public QA
       /* copy points --------------------------------------------------- */
       for (int i=1;i<=nb;++i)
       {
-          const double xLo=p->GetXaxis()->GetBinLowEdge(i);
-          const double xHi=p->GetXaxis()->GetBinUpEdge (i);
-          const double x  =0.5*(xLo+xHi);
-          const double ex =0.5*(xHi-xLo);
+          const double xLo = p->GetXaxis()->GetBinLowEdge(i);
+          const double xHi = p->GetXaxis()->GetBinUpEdge (i);
+          const double x   = 0.5*(xLo + xHi);
+          const double ex  = 0.0;                          // suppress horizontal errors
 
-          double y  = p->GetBinContent(i) / Rn;      // corrected
+          double y  = p->GetBinContent(i) / Rn;            // corrected
           double ey = p->GetBinError  (i) / Rn;
 
           g->SetPoint     (i-1, x, y);
@@ -4756,11 +5079,50 @@ class VnPlotQA : public QA
             return;
         }
 
-        /* ---------- 2. colour palette ----------------------------------- */
+        /* ---------- 2. build missing “Total” regions (N ⊕ S) ------------- */
+        for (auto& [trig, detMap] : grp)
+        for (auto& [det , regMap] : detMap)
+        {
+            const bool hasN = regMap.count("North");
+            const bool hasS = regMap.count("South");
+            const bool hasT = regMap.count("Total");
+
+            if (hasT || !(hasN && hasS)) continue;           // nothing to do
+
+            auto& northMap = regMap["North"];
+            auto& southMap = regMap["South"];
+            auto& totMap   = regMap["Total"];                // will be created
+
+            for (auto& [n, centN] : northMap)               // loop harmonics
+            {
+                auto& centS = southMap[n];
+                for (auto& [centKey, vecN] : centN)          // loop centralities
+                {
+                    if (vecN.empty()) continue;
+                    auto itS = centS.find(centKey);
+                    if (itS == centS.end() || itS->second.empty()) continue;
+
+                    /* 1. clone the first North profile ----------------------- */
+                    auto* pTot = static_cast<TProfile*>(vecN.front()->Clone());
+                    pTot->SetDirectory(nullptr);
+
+                    /* 2. add the first South profile ------------------------- */
+                    pTot->Add(itS->second.front());          // TH1::Add = weighted sum
+
+                    /* 3. keep ownership so ROOT will not delete it ----------- */
+                    _ownedProfiles.emplace_back(pTot);
+
+                    /* 4. expose to the “Total” container --------------------- */
+                    totMap[n][centKey].push_back(pTot);
+                }
+            }
+        }
+
+        /* ---------- 3a. colour palette ----------------------------------- */
         const int colTbl[] = {kRed+1,kBlue+2,kGreen+2,kMagenta+2,kCyan+2,kOrange+1};
         const int nCol     = sizeof(colTbl)/sizeof(int);
 
-        /* ---------- 3. iterate over regrouped structure ----------------- */
+        /* ---------- 3b. iterate over regrouped structure ----------------- */
         for (const auto& [trig, detMap] : grp)
         {
             log(Lvl::INF,"trigger group: "+trig);
@@ -4796,12 +5158,49 @@ class VnPlotQA : public QA
                     }
 
                     TGraphErrors* g = gHold.get();
-                    g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (Cent %s %%)",
-                                     n, det.c_str(), reg.c_str(), cent.c_str()));
+
+                    /* ----------  human‑readable labels  -------------------------------- */
+                    std::string centLab = "Centrality IND";
+                    {
+                        const size_t pos = cent.find('_');
+                        if (pos != std::string::npos)
+                            centLab = cent.substr(0,pos) + "–" + cent.substr(pos+1) + " %";
+                    }
+                    const std::string trigLab = prettifyTrigger(trig);
+
+                    /* ----------  set new title  --------------------------------------- */
+                    g->SetTitle(Form("%s v_{%d}, %s, %s; p_{T}^{tower}  [GeV]; v_{%d}",
+                                     det.c_str(), n, centLab.c_str(), trigLab.c_str(), n));
                     g->Draw("AP");
 
-                    gHold.release();                               // ROOT canvas owns it now
 
+                    /* ── dynamic Y‑axis: always show 0 and full error bars ────────────── */
+                    double yMin = 0.0, yMax = 0.0;
+                    for (int ip = 0; ip < g->GetN(); ++ip)
+                    {
+                        const double y  = g->GetY()[ip];
+                        const double ey = g->GetEY()[ip];
+                        yMin = std::min(yMin, y - ey);
+                        yMax = std::max(yMax, y + ey);
+                    }
+                    /* ----------  attach axis titles & rescale frame ------------------- */
+                    TH1* fr = g->GetHistogram();                       // robust – never nullptr
+                    if (fr)
+                    {
+                        fr->SetMinimum(yMin < 0 ? 1.15 * yMin : 0.0);
+                        fr->SetMaximum(1.15 * yMax);
+                        fr->GetXaxis()->SetTitle("p_{T}^{tower}  [GeV]");
+                        fr->GetYaxis()->SetTitle(Form("v_%d", n));
+                        if (yMin < 0)
+                        {
+                            auto* z = new TLine(fr->GetXaxis()->GetXmin(), 0,
+                                                fr->GetXaxis()->GetXmax(), 0);
+                            z->SetLineStyle(kDashed); z->Draw();
+                        }
+                    }
+                    c.Modified();  c.Update();
+
+                    gHold.release();                               // ROOT canvas owns it now
 
                     saveCanvas(c, {det, reg, Form("v%d", n), "Cent_" + cent},
                                Form("v%d_%s_%s_cent%s.png",
@@ -4823,6 +5222,7 @@ class VnPlotQA : public QA
 
                     int    colIdx = 0;
                     double yMax   = 0.0;
+                    double yMin   = 0.0;
 
                     for (const auto& [cent, vec] : centMap)
                     {
@@ -4855,20 +5255,24 @@ class VnPlotQA : public QA
                         g->SetMarkerColor(col);
                         g->SetBit(kCanDelete, kFALSE);              // canvas must NOT delete it
 
-                        g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (all cent)",
-                                         n, det.c_str(), reg.c_str()));
+                        g->SetTitle(Form("%s v_{%d}, Centrality IND, %s; p_{T}^{tower}  [GeV]; v_{%d}",
+                                         det.c_str(), n, prettifyTrigger(trig).c_str(), n));
 
                         log(Lvl::DBG, "       ↳ drawing, colour=" + std::to_string(col));
-                        g->Draw(colIdx == 1 ? "APL" : "PL SAME");
+                        g->Draw(colIdx == 1 ? "AP" : "P SAME");      // points only, no lines
 
-                        leg.AddEntry(g, Form("Cent %s %%", cent.c_str()), "pl");
+                        leg.AddEntry(g, Form("Cent %s %%", cent.c_str()), "p");
 
-                        const double* ys = g->GetY();
-                        if (g->GetN() > 0)
+                        double localMax = -1e9, localMin =  1e9;
+                        for (int ip = 0; ip < g->GetN(); ++ip)
                         {
-                            const double localMax = *std::max_element(ys, ys + g->GetN());
-                            yMax = std::max(yMax, localMax);
+                            const double y  = g->GetY()[ip];
+                            const double ey = g->GetEY()[ip];
+                            localMax = std::max(localMax, y + ey);
+                            localMin = std::min(localMin, y - ey);
                         }
+                        yMax = std::max(yMax, localMax);
+                        yMin = std::min(yMin, localMin);
 
                         _ownedGraphs.push_back(std::move(gPtr));
                     }
@@ -4879,15 +5283,25 @@ class VnPlotQA : public QA
                         return;
                     }
 
-                    if (yMax > 0.0)      /* raise frame top by 15 % head‑room */
+                    /* ----------  pick the frame histogram from the FIRST graph -------- */
+                    TH1* fr = nullptr;
+                    for (auto obj : *cAll.GetListOfPrimitives())          // first TH1 is the frame
+                        if ((fr = dynamic_cast<TH1*>(obj))) break;
+
+                    if (fr)
                     {
-                        cAll.Update();
-                        if (auto* fr = static_cast<TH1*>(cAll.GetPrimitive("htemp")))
+                        fr->SetMaximum(1.15 * yMax);
+                        fr->SetMinimum(yMin < 0 ? 1.15 * yMin : 0.0);
+                        fr->GetXaxis()->SetTitle("p_{T}^{tower}  [GeV]");
+                        fr->GetYaxis()->SetTitle(Form("v_%d", n));
+                        if (yMin < 0)
                         {
-                            fr->SetMaximum(1.15 * yMax);
-                            fr->GetYaxis()->SetTitle(Form("v_%d", n));
+                            auto* z = new TLine(fr->GetXaxis()->GetXmin(), 0,
+                                                fr->GetXaxis()->GetXmax(), 0);
+                            z->SetLineStyle(kDashed); z->Draw();
                         }
                     }
+                    cAll.Modified();  cAll.Update();
 
                     leg.Draw();
 
@@ -4928,25 +5342,51 @@ class VnPlotQA : public QA
                         const auto [mu,er] = meanProf(vec.front(), Rn);
 
                         gCent->SetPoint     (ip, cMid, mu);
-                        gCent->SetPointError(ip,
-                                             0.5*(std::stod(cent.substr(pos+1))-
-                                                  std::stod(cent.substr(0,pos))), er);
+                        const double ex = 0.0;                       // no horizontal error bar
+                        gCent->SetPointError(ip, ex, er);
+                        
                         ++ip;
                     }
 
                     if (gCent->GetN() > 0)
                     {
                         TCanvas cCent("c_cent","",1000,800); cCent.SetGrid();
-                        gCent->SetTitle(Form("v_{%d} vs centrality – %s %s",
-                                             n,det.c_str(),reg.c_str()));
+                        gCent->SetTitle(Form("%s #bar{v}_{%d} vs centrality, %s; centrality  [%%]; v_{%d}",
+                                             det.c_str(), n, prettifyTrigger(trig).c_str(), n));
                         gCent->SetMarkerStyle(kFullCircle); gCent->SetLineWidth(2);
                         gCent->Draw("AP");
+
+                        /* ── make sure lower edge shows 0 (or below if needed) -------------- */
+                        double yMin = 0.0, yMax = 0.0;
+                        for (int ip = 0; ip < gCent->GetN(); ++ip)
+                        {
+                            const double y  = gCent->GetY()[ip];
+                            const double ey = gCent->GetEY()[ip];
+                            yMin = std::min(yMin, y - ey);
+                            yMax = std::max(yMax, y + ey);
+                        }
+                        TH1* fr = gCent->GetHistogram();
+                        if (fr)
+                        {
+                            fr->SetMaximum(1.15 * yMax);
+                            fr->SetMinimum(yMin < 0 ? 1.15 * yMin : 0.0);
+                            fr->GetXaxis()->SetTitle("centrality  [%]");
+                            fr->GetYaxis()->SetTitle(Form("v_%d", n));
+                            if (yMin < 0)
+                            {
+                                auto* z = new TLine(fr->GetXaxis()->GetXmin(), 0,
+                                                    fr->GetXaxis()->GetXmax(), 0);
+                                z->SetLineStyle(kDashed); z->Draw();
+                            }
+                        }
+                        cCent.Modified();  cCent.Update();
 
                         _ownedGraphs.push_back(std::move(gCent));
 
                         saveCanvas(cCent,{det,reg,Form("v%d",n),"summaryPlots"},
                                    Form("vbar%d_%s_%s_vsCent.png",
                                         n,det.c_str(),reg.c_str()));
+                        
                         log(Lvl::DBG,"      saved v̅_n vs cent");
                     }
                     else
@@ -5095,8 +5535,8 @@ public:
 
     ~TriggerQA() override
     {
-        /* run‑level output directory (…/output/<run>/triggerQA) */
-        const fs::path outDir = root.parent_path() / "triggerQA";
+        /* per‑trigger output directory (…/output/<run>/<trigger>/triggerQA) */
+        const fs::path outDir = root / "triggerQA";
         ensure_dir(outDir);
 
         /* groups to be plotted ------------------------------------------------ */

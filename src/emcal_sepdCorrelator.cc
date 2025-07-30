@@ -249,17 +249,16 @@ int emcal_sepdCorrelator::InitRun(PHCompositeNode* topNode)
   /* ------------------------------------------------------------------ */
   if (m_flowAcc.empty())                               // only first InitRun
   {
-      const std::vector<std::string> dets = {
-        "CEMC_S","CEMC_N",
-        "IHCAL_S","IHCAL_N",
-        "OHCAL_S","OHCAL_N",
-        "HCAL_S","HCAL_N",
-        "ALL_S","ALL_N"
-      };
-      for (const auto& d : dets)
-        m_flowAcc[d].assign(m_ptBins.size(), {});         // 8 × zero‑initialised
+        const std::vector<std::string> dets = {
+          "CEMC_S","CEMC_N","CEMC_T",
+          "IHCAL_S","IHCAL_N","IHCAL_T",
+          "OHCAL_S","OHCAL_N","OHCAL_T",
+          "HCAL_S","HCAL_N","HCAL_T",
+          "ALL_S","ALL_N","ALL_T"
+        };
+        for (const auto& d : dets)
+            m_flowAcc[d].assign(m_ptBins.size(), {});       // one FlowAcc per pT‑bin
   }
-    
   LOG(1, CLR_BLUE, "[InitRun] InitRun completed successfully");
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -706,23 +705,24 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
       H[name.str()] = p;
     };
 
+    /* detectors:  South, North, Total (South+North) */
+    static const std::array<const char*,15> detKeys = {
+        "CEMC_S","CEMC_N","CEMC_T",
+        "IHCAL_S","IHCAL_N","IHCAL_T",
+        "OHCAL_S","OHCAL_N","OHCAL_T",
+        "HCAL_S","HCAL_N","HCAL_T",
+        "ALL_S","ALL_N","ALL_T"
+    };
+
+    /* centrality‑binned profiles */
     for (int n : {1,2,3})
-      for (const auto& det :
-           {"CEMC_S","CEMC_N",
-            "IHCAL_S","IHCAL_N",
-            "OHCAL_S","OHCAL_N",
-            "HCAL_S","HCAL_N",
-            "ALL_S","ALL_N"})
+      for (const auto& det : detKeys)
         for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
           make(det, n, m_centEdges[i], m_centEdges[i + 1]);
 
+    /* minimum‑bias (0–100 %) profiles */
     for (int n : {1,2,3})
-      for (const auto& det :
-           {"CEMC_S","CEMC_N",
-            "IHCAL_S","IHCAL_N",
-            "OHCAL_S","OHCAL_N",
-            "HCAL_S","HCAL_N",
-            "ALL_S","ALL_N"})
+      for (const auto& det : detKeys)
         make(det, n, 0, 100);
 
     {
@@ -1913,23 +1913,31 @@ void emcal_sepdCorrelator::accumulateFlowContribution(const std::string& calorim
   /*……… route to the correct detector buckets ……………………………*/
   if (calorimeter == "CEMC")
   {
-    bool south = isSouthCEMC(ieta);
-    push(south ? "CEMC_S" : "CEMC_N");
-    push(south ? "ALL_S"  : "ALL_N");
+        bool south = isSouthCEMC(ieta);
+        push(south ? "CEMC_S" : "CEMC_N");
+        push("CEMC_T");                       // combined S+N
+        push(south ? "ALL_S"  : "ALL_N");
+        push("ALL_T");                        // combined S+N
   }
   else if (calorimeter == "IHCAL")
   {
-    bool south = isSouthHCal(ieta);
-    push(south ? "IHCAL_S" : "IHCAL_N");
-    push(south ? "HCAL_S"  : "HCAL_N");
-    push(south ? "ALL_S"   : "ALL_N");
+      bool south = isSouthHCal(ieta);
+      push(south ? "IHCAL_S" : "IHCAL_N");
+      push("IHCAL_T");
+      push(south ? "HCAL_S"  : "HCAL_N");
+      push("HCAL_T");
+      push(south ? "ALL_S"   : "ALL_N");
+      push("ALL_T");
   }
   else if (calorimeter == "OHCAL")
   {
-    bool south = isSouthHCal(ieta);
-    push(south ? "OHCAL_S" : "OHCAL_N");
-    push(south ? "HCAL_S"  : "HCAL_N");
-    push(south ? "ALL_S"   : "ALL_N");
+      bool south = isSouthHCal(ieta);
+      push(south ? "OHCAL_S" : "OHCAL_N");
+      push("OHCAL_T");
+      push(south ? "HCAL_S"  : "HCAL_N");
+      push("HCAL_T");
+      push(south ? "ALL_S"   : "ALL_N");
+      push("ALL_T");
   }
 }
 
