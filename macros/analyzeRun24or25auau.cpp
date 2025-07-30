@@ -5554,18 +5554,44 @@ public:
         return true;
     }
 
+    /* ──────────────────────────────────────────────────────────────────
+     * REPLACEMENT — paste this entire block verbatim
+     * ────────────────────────────────────────────────────────────────── */
     ~TriggerQA() override
     {
-        /* run ONLY once – during the Combined pass ------------------------ */
-        const std::string runID = root.parent_path().filename().string();   // "Combined", "69420", …
-        if (runID != "Combined" || _emitted) return;                       // ← early exit
+        /* --------------------------------------------------------------
+         * 0.  Entry banner & one‑time guard
+         * -------------------------------------------------------------- */
+        const std::string runID = root.parent_path().filename().string();   // e.g. "69420", "Combined"
+        log(Lvl::DBG, "~TriggerQA()  –  enter  (runID = \"" + runID + "\")");
+
+        if (runID != "Combined") {
+            log(Lvl::DBG, "~TriggerQA()  –  non‑Combined pass → nothing to do");
+            return;
+        }
+        if (_emitted) {
+            log(Lvl::WRN, "~TriggerQA()  –  already executed once, skipping");
+            return;
+        }
         _emitted = true;
 
-        /* unified summary directory (sits next to the trigger sub‑folders) */
-        const fs::path outDir = root.parent_path() / "turnOnCurveSummaries";
-        ensure_dir(outDir);
+        /* --------------------------------------------------------------
+         * 1.  Prepare unified output directory
+         * -------------------------------------------------------------- */
+        fs::path outDir = root.parent_path() / "turnOnCurveSummaries";
+        try {
+            ensure_dir(outDir);
+            log(Lvl::INF, "Created / verified summary folder:  " + outDir.string());
+        }
+        catch (const std::exception& ex) {
+            log(Lvl::ERR, std::string("ensure_dir(\"") + outDir.string() +
+                          "\") failed – " + ex.what());
+            return;
+        }
 
-        /* trigger groups -------------------------------------------------- */
+        /* --------------------------------------------------------------
+         * 2.  Define trigger groups (MB reference + photon hierarchy)
+         * -------------------------------------------------------------- */
         static const std::vector<std::string> grp150 = {
             "MBD_NS_geq_2_vtx_lt_150",
             "photon_6_plus_MBD_NS_geq_2_vtx_lt_150",
@@ -5581,82 +5607,125 @@ public:
             "photon_12_plus_MBD_NS_geq_2_vtx_lt_10"
         };
 
-        /* -------------------------------------------------------------- *
-         *  Generic overlay helper – works for *either* cache (unscaled / *
-         *  scaled).  Produces the main overlay + ratio sub‑panel.        *
+        /* --------------------------------------------------------------
+         * 3.  Generic overlay helper
+         *     – works for *either* cache (do‑not‑scale / scaled)
          * -------------------------------------------------------------- */
         auto makeOverlay =
             [&](const std::vector<std::string>& trgList,
                 const std::string& outName,
                 const std::unordered_map<std::string,TH1*>& src)
         {
-            /* need the reference MB‑trigger and ≥1 photon trigger -------- */
-            if (!src.count(trgList.front())) return;
-            bool havePhoton = false;
-            for (std::size_t i=1;i<trgList.size();++i)
-                if (src.count(trgList[i])) { havePhoton = true; break; }
-            if (!havePhoton) return;                       // nothing to compare to MB
+            log(Lvl::DBG, "makeOverlay(\"" + outName + "\") – starting");
 
-            /* build a *present*‑only list so missing photon triggers are OK */
-            std::vector<std::string> avail;
-            for (auto& t : trgList)
-                if (src.count(t)) avail.push_back(t);
-
-            if (avail.size() < 2) return;                 // safety – should not happen
-
-            TCanvas c("c_turnOn","Trigger turn‑on",1400,600);
-            c.Divide(2,1);
-
-            /* colour palette (up to five traces) --------------------------- */
-            const int col[5] = {kBlack,kBlue+2,kGreen+2,kRed+1,kMagenta+2};
-
-            /* ── LEFT : overlay of absolute spectra ──────────────────────── */
-            c.cd(1); gPad->SetLogy();
-
-            double globalMax = 0.0;
-            for (auto& t : avail)
-                globalMax = std::max(globalMax, src.at(t)->GetMaximum());
-
-            for (std::size_t i=0;i<avail.size();++i) {
-                TH1* h = src.at(avail[i]);
-                h->SetLineColor(col[i]); h->SetLineWidth(2);
-                h->SetMaximum(1.15*globalMax);
-                h->Draw(i==0 ? "HIST" : "HIST SAME");
+            /* 3.1  Check reference MB trigger --------------------------- */
+            const std::string& refKey = trgList.front();              // always MB entry
+            if (!src.count(refKey)) {
+                log(Lvl::WRN, "  MB reference \"" + refKey +
+                               "\" missing – overlay skipped");
+                return;
             }
-            TLegend leg(0.50,0.65,0.88,0.88); leg.SetBorderSize(0);
-            for (std::size_t i=0;i<avail.size();++i)
+
+            /* 3.2  Build list of available photon triggers ------------- */
+            std::vector<std::string> avail;          // keeps original order
+            avail.push_back(refKey);                 // MB reference always first
+
+            for (std::size_t i = 1; i < trgList.size(); ++i) {
+                if (src.count(trgList[i])) {
+                    avail.push_back(trgList[i]);
+                    log(Lvl::DBG, "  found histogram for \"" + trgList[i] + '"');
+                } else {
+                    log(Lvl::DBG, "  histogram for \"" + trgList[i] + "\" is missing");
+                }
+            }
+
+            if (avail.size() == 1) {
+                log(Lvl::WRN, "  no photon trigger histograms present → overlay skipped");
+                return;
+            }
+
+            /* limiting palette length just in case */
+            if (avail.size() > 5)
+                log(Lvl::WRN, "  more than 5 curves – excess will re‑use last colour");
+
+            /* 3.3  Canvas creation ------------------------------------- */
+            TCanvas c(("c_"+outName).c_str(), "Trigger turn-on", 1400, 600);
+            c.Divide(2, 1, 0.005, 0.005);
+
+            const int palette[5] = {kBlack, kBlue+2, kGreen+2, kRed+1, kMagenta+2};
+
+            /* ----------------  LEFT pad : absolute spectra  ----------------- */
+            c.cd(1); gPad->SetLogy();
+            double globalMax = 0.0;
+            for (auto& key : avail)
+                globalMax = std::max(globalMax, src.at(key)->GetMaximum());
+
+            for (std::size_t i = 0; i < avail.size(); ++i) {
+                TH1* h = src.at(avail[i]);
+                h->SetLineColor(palette[std::min<std::size_t>(i,4)]);
+                h->SetLineWidth(2);
+                h->SetMaximum(globalMax * 1.15);
+                h->Draw(i == 0 ? "HIST" : "HIST SAME");
+            }
+            TLegend leg(0.52, 0.66, 0.88, 0.88); leg.SetBorderSize(0);
+            for (std::size_t i = 0; i < avail.size(); ++i)
                 leg.AddEntry(src.at(avail[i]), avail[i].c_str(), "l");
             leg.Draw();
 
-            /* ── RIGHT : ratio to MB trigger ─────────────────────────────── */
+            /* ----------------  RIGHT pad : ratios to MB --------------------- */
             c.cd(2); gPad->SetGridy();
-
-            TH1* href = src.at(avail.front());          // MB reference
+            TH1* hRef = src.at(refKey);
             std::vector<std::unique_ptr<TH1>> ratios;
 
-            for (std::size_t i=1;i<avail.size();++i) {
-                ratios.emplace_back( static_cast<TH1*>(src.at(avail[i])->Clone()) );
-                ratios.back()->Divide(href);
-                ratios.back()->SetLineColor(col[i]); ratios.back()->SetLineWidth(2);
+            for (std::size_t i = 1; i < avail.size(); ++i) {
+                try {
+                    ratios.emplace_back(
+                        static_cast<TH1*>(src.at(avail[i])->Clone())
+                    );
+                }
+                catch (...) {
+                    log(Lvl::ERR, "  Clone() failed for \"" + avail[i] + '"');
+                    continue;
+                }
+
+                ratios.back()->Divide(hRef);
+                ratios.back()->SetLineColor(palette[std::min<std::size_t>(i,4)]);
+                ratios.back()->SetLineWidth(2);
                 ratios.back()->SetTitle(";E_{max}^{cluster}  [GeV];Ratio to MB trigger");
-                ratios.back()->SetMaximum(1.2); ratios.back()->SetMinimum(0);
-                ratios.back()->Draw(i==1 ? "HIST" : "HIST SAME");
+                ratios.back()->SetMaximum(1.20);
+                ratios.back()->SetMinimum(0.00);
+                ratios.back()->Draw(i == 1 ? "HIST" : "HIST SAME");
             }
-            TLegend leg2(0.50,0.15,0.88,0.38); leg2.SetBorderSize(0);
-            for (std::size_t i=1;i<avail.size();++i)
+
+            TLegend leg2(0.52, 0.16, 0.88, 0.38); leg2.SetBorderSize(0);
+            for (std::size_t i = 1; i < avail.size(); ++i)
                 leg2.AddEntry(ratios[i-1].get(), avail[i].c_str(), "l");
             leg2.Draw();
 
-            c.SaveAs( (outDir/outName).string().c_str() );
-            log(Lvl::INF,"wrote overlay " + (outDir/outName).string());
+            /* 3.4  Write PNG with robust error handling ---------------- */
+            fs::path dst = outDir / outName;
+            try {
+                c.SaveAs(dst.string().c_str());
+                log(Lvl::INF, "  wrote " + dst.string());
+            }
+            catch (const std::exception& ex) {
+                log(Lvl::ERR, std::string("  SaveAs(\"") + dst.string() +
+                              "\") failed – " + ex.what());
+            }
+            log(Lvl::DBG, "makeOverlay(\"" + outName + "\") – done");
         };
 
-        /* ---------- emit up to four PNGs -------------------------------- */
+        /* --------------------------------------------------------------
+         * 4.  Emit up to four summary PNGs
+         * -------------------------------------------------------------- */
         makeOverlay(grp150, "TurnOn_doNotScale_vtx_lt_150.png", _spectra);
         makeOverlay(grp10 , "TurnOn_doNotScale_vtx_lt_10.png",  _spectra);
         makeOverlay(grp150, "TurnOn_scaled_vtx_lt_150.png",     _spectraScaled);
         makeOverlay(grp10 , "TurnOn_scaled_vtx_lt_10.png",      _spectraScaled);
+
+        log(Lvl::INF, "~TriggerQA()  –  completed successfully");
     }
+
 private:
     /* one‑per‑trigger cache of the “doNotScale” spectra */
     static inline std::unordered_map<std::string,TH1*> _spectra;        // doNotScale
