@@ -1,24 +1,44 @@
 #!/usr/bin/env bash
+#!/usr/bin/env bash
 ##############################################################################
 #  runAuAu.sh — build & execute analyzeRun24or25auau.cpp
 #
-#  USAGE SUMMARY
-#  =============
-#      ./runAuAu.sh [--verbose]                        # analyse *all* runs
-#      ./runAuAu.sh [--verbose] testRun               # only the first run
-#      ./runAuAu.sh [--verbose] testCombined <N>      # N random runs + hadd
-#      ./runAuAu.sh --help | -h                       # show this help
+#  QUICK START
+#  -----------
+#      ./runAuAu.sh                       # all runs, all QA modules
+#      ./runAuAu.sh correlations,jetqa    # all runs, CorrQA + JetQA only
+#      ./runAuAu.sh testRun hcal,pi0      # first run, HCal + Pi0 QA
+#      ./runAuAu.sh testCombined 10       # top‑10 runs merged, full QA suite
+#      ./runAuAu.sh testCombined 10 correlations,hcal
+#
+#  FULL USAGE
+#  ==========
+#      ./runAuAu.sh [--verbose] [qa_list]
+#      ./runAuAu.sh [--verbose] testRun [qa_list]
+#      ./runAuAu.sh [--verbose] testCombined <N> [qa_list]
+#      ./runAuAu.sh --help | -h
+#
+#  POSITIONAL ARGUMENTS
+#      testRun                 analyse only the first discovered run
+#      testCombined <N>        merge the N highest‑statistics runs, then analyse
+#      qa_list                 (optional) comma‑separated list of QA‑module tags
+#                              to execute, e.g.  correlations,hcal,jetqa
+#                              — omit to run the complete QA suite.
 #
 #  OPTIONS
-#      --verbose  , -v  : show every clang++ / linker command ACLiC issues
-#      --help     , -h  : print this usage summary and exit
+#      --verbose , -v          show every clang++ / linker command printed by ACLiC
+#      --help    , -h          print this summary and exit
 #
 #  ENVIRONMENT
-#      VERBOSE=1        : same as --verbose flag
+#      VERBOSE=1               same effect as --verbose
+#      QA_ONLY                 alternative place to provide <qa_list>;
+#                              the command‑line argument, if present, overrides it
 #
 #  NOTES
-#      • All previous call patterns still work.
-#      • Duplicate‑rpath warnings from Apple ld are filtered out automatically.
+#      • All previous call patterns still work unchanged.
+#      • Output PNG/CSV files under  $HOME/Desktop/auauAnalysis/…  are purged
+#        automatically before each run.
+#      • Duplicate‑rpath warnings from Apple ld are filtered out of the log.
 ##############################################################################
 set -euo pipefail
 
@@ -42,19 +62,29 @@ sample_arg="-1"      # C++ parm #2
 
 case "${mode}" in
   "") ;;
-  testRun)       test_arg="true" ;;
+  testRun)
+        test_arg="true"
+        shift 1
+        ;;
   testCombined)
         if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
-            echo "Usage: ./runAuAu.sh [--verbose] testCombined <N>" >&2
+            echo "Usage: ./runAuAu.sh [--verbose] testCombined <N> [qa_list]" >&2
             exit 1
         fi
         sample_arg="$2"
+        shift 2
         ;;
-  *)  echo "Unknown option: ${mode}" >&2
-      echo "Valid options:  (none) | testRun | testCombined <N>" >&2
-      exit 1
-      ;;
+  *) ;;
 esac
+
+# ------------------------------------------------------------------
+# Any remaining positional argument is treated as the QA module list
+# ------------------------------------------------------------------
+if [[ $# -ge 1 ]]; then
+    export QA_ONLY="$1"          # e.g.  correlations,hcal
+    shift
+fi
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # 2.  Silence duplicate‑rpath warnings from Apple ld

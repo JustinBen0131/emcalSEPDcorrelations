@@ -53,17 +53,16 @@ namespace fs = std::filesystem;
 //            ▼  USER SETTINGS  ▼
 // ───────────────────────────────────────────────
 namespace {
-  /* directory that already contains all run‑merged ROOT files
-   * produced by your Condor step:  output_00066XXX.root, …            */
-  const fs::path kInputDir =
-      "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/input/output";
 
-  /* parent directory where PNGs/CSVs will appear:
-   *   <kOutputDir>/<run‑number>/…    (per‑run)
-   *   <kOutputDir>/Combined/…        (after hadd)                      */
-  const fs::path kOutputDir =
-      "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output";
-}
+    /* Change this one line whenever you move the whole analysis tree. */
+    const fs::path baseDir = "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations";
+
+    /* All other locations are built from baseDir, so no edits below. */
+    const fs::path kInputDir  = baseDir / "input"  / "output";   // ROOT files
+    const fs::path kOutputDir = baseDir / "output";              // PNGs, CSVs …
+
+}   // anonymous namespace
+
 std::string kInputFile   = "";   // gets filled inside the loop
 std::string kOutputBase  = "";   // ditto
 std::set<std::string> kTriggersWanted{
@@ -583,147 +582,151 @@ class Pi0QA : public QA
     // -----------------------------------------------------------------------
     bool process(TObject* o) override
     {
-        /* --------------------------------------------------------------- *
-         *  very first sanity checks                                       *
-         * --------------------------------------------------------------- */
-        if (!o) {
+        /* --------------------------------------------------------- *
+         * 0. ultra‑early sanity checks (never throw from here)       *
+         * --------------------------------------------------------- */
+        if (!o)
+        {
             log(Lvl::ERR,"process(): received nullptr – skipped");
             return false;
         }
-        if (!o->InheritsFrom(TH1::Class())) {
+        if (!o->InheritsFrom(TH1::Class()))
+        {
             log(Lvl::DBG,Form("process(): \"%s\" is not TH1 – skipped",o->GetName()));
             return false;
         }
 
         const std::string n = o->GetName();
-        log(Lvl::DBG,"process(): starting \"" + n + '"');
+        log(Lvl::DBG,"process(): enter – \"" + n + '"');
 
-        /* ------------------------ full try/catch ----------------------- */
+        /* ========================================================= *
+         *  Everything below is wrapped in a single try/catch guard  *
+         * ========================================================= */
         try
         {
-            /* =============================================================== *
-             * (A)  UNCUT 2‑D maps                                             *
-             * =============================================================== */
+            // ================================================================
+            // (A)  UNCUT 2‑D MAPS  – names start with “Minv_vs_”
+            // ================================================================
             if (o->InheritsFrom(TH2::Class()) && n.rfind("Minv_vs_",0) == 0)
             {
-                auto* h2 = static_cast<TH2*>(o);
+                log(Lvl::DBG,"→ treating object as uncut 2‑D map");
 
-                if (h2->GetEntries()   <= 0 ||
-                    h2->Integral()     <= 0) {
-                    log(Lvl::INFO,"empty 2‑D map \"" + n + "\" – skipped");
+                auto* h2 = static_cast<TH2*>(o);
+                if (h2->GetEntries() <= 0 || h2->Integral() <= 0)
+                {
+                    log(Lvl::INFO,"empty 2‑D map – skipped");
                     return false;
                 }
 
-                //----------------------------------------------------------------
-                // 1.  Shrink both axes to the region that actually has content
-                //----------------------------------------------------------------
-                auto shrinkAxis = [](TH2* h, bool xAxis)
+                // ----------------- 1. shrink axes ---------------------------
+                auto shrinkAxis = [&](TH2* h, bool xAxis)
                 {
                     const int nBins = xAxis ? h->GetNbinsX() : h->GetNbinsY();
-                    int first =  nBins+1;          // start larger than any valid bin
-                    int last  = -1;                // start smaller than any valid bin
+                    int first =  nBins+1, last = -1;
 
                     for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
                     for (int iy = 1; iy <= h->GetNbinsY(); ++iy)
                     {
                         if (h->GetBinContent(ix,iy) <= 0) continue;
-
                         int bin = xAxis ? ix : iy;
                         first   = std::min(first, bin);
                         last    = std::max(last , bin);
                     }
 
-                    if (last >= first)   // protect against pathological “all‑zero” case
+                    if (last >= first)
                     {
                         TAxis* ax = xAxis ? h->GetXaxis() : h->GetYaxis();
-                        const double lo = ax->GetBinLowEdge (first);
-                        const double hi = ax->GetBinUpEdge  (last );
+                        const double lo = ax->GetBinLowEdge(first);
+                        const double hi = ax->GetBinUpEdge (last );
                         ax->SetRangeUser(lo,hi);
+                        log(Lvl::DBG,Form("   axis %c shrunk  [%d,%d] → [%.3f,%.3f]",
+                                          xAxis?'X':'Y',first,last,lo,hi));
                     }
+                    else
+                        log(Lvl::WARN,"   shrinkAxis(): all‑zero axis – kept default range");
                 };
 
-                shrinkAxis(h2,true );   // X‑axis
-                shrinkAxis(h2,false);   // Y‑axis
+                shrinkAxis(h2,true);   // X
+                shrinkAxis(h2,false);  // Y
 
-                //----------------------------------------------------------------
-                // 2.  Draw with log‑Z and save
-                //----------------------------------------------------------------
-                std::string slice = sliceKey(n);
-                fs::path subDir  = "EMCal/invMassQA/cutQA";
-                fs::path outPng  = cPath(root,slice,subDir)/(n + ".png");
+                // ----------------- 2. draw & save ---------------------------
+                const std::string slice = sliceKey(n);
+                const fs::path subDir  = "EMCal/invMassQA/cutQA";
+                const fs::path outPng  = cPath(root,slice,subDir)/(n + ".png");
                 ensure_dir(outPng.parent_path());
 
-                log(Lvl::INFO,"writing 2‑D map → " + outPng.string());
-
-                TCanvas c;
-                c.SetRightMargin(0.18);    // room for the colour bar
-                c.SetLogz();               // ← log‑scale in Z
-                h2->SetStats(0);
-                h2->Draw("COLZ");
-                c.SaveAs(outPng.string().c_str());
-                return true;               // ♦ histogram consumed
+                log(Lvl::INFO,"saving 2‑D map → " + outPng.string());
+                try
+                {
+                    TCanvas c;
+                    c.SetRightMargin(0.18);
+                    c.SetLogz();
+                    h2->SetStats(0);
+                    h2->Draw("COLZ");
+                    c.SaveAs(outPng.string().c_str());
+                    log(Lvl::DBG,"2‑D map saved OK");
+                }
+                catch (const std::exception& ex)
+                {
+                    log(Lvl::ERR,std::string("SaveAs failed – ")+ex.what());
+                }
+                return true;    // ♦ histogram consumed
             }
 
-
-           /* =============================================================== *
-            * (B)  INVARIANT‑MASS SPECTRA                                     *
-            * =============================================================== */
-            if (n.rfind("mInv_",0) != 0) {
-                log(Lvl::DBG,"process(): not an mInv_* spectrum – skipped");
+            // ================================================================
+            // (B)  INVARIANT‑MASS SPECTRA  – names start with “mInv_”
+            // ================================================================
+            if (n.rfind("mInv_",0) != 0)
+            {
+                log(Lvl::DBG,"not an mInv_* spectrum – skipped");
                 return false;
             }
 
             CutKey ck;
-            if (!decodeInvName(n, ck)) {
-                log(Lvl::WARN,"decodeInvName() failed for \"" + n + "\" – skipped");
+            if (!decodeInvName(n, ck))
+            {
+                log(Lvl::WARN,"decodeInvName() failed – skipped");
                 return false;
             }
 
-            std::string slice = sliceKey(n);
-            const bool pTInt  = (ck.pLo < 0 || ck.pHi < 0);
+            const std::string slice = sliceKey(n);
+            const bool pTInt        = (ck.pLo < 0 || ck.pHi < 0);
 
-           /* --------------------------------------------------------------- *
-            *   bookkeeping – cut combination changes (directory switch)      *
-            * --------------------------------------------------------------- */
-            const std::string combDir = "E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy);
-            if (cutTag.empty()) {
+            // -------- bookkeeping for (E,χ²,α) combination ------------------
+            const std::string combDir =
+                "E"+sf3(ck.E)+"_Chi"+sf3(ck.chi)+"_Asym"+sf3(ck.asy);
+
+            if (cutTag.empty())
+            {
                 cutTag = combDir;
                 log(Lvl::INFO,"cutTag initialised → " + cutTag);
-            } else if (combDir != cutTag) {
-                log(Lvl::INFO,"cutTag change  " + cutTag + " → " + combDir);
-                writeSummaryPanels();               // finish previous cut
-                _centralHists.clear();
-                _storedFit.clear();
-                _storedEtaFit.clear();
+            }
+            else if (combDir != cutTag)
+            {
+                log(Lvl::INFO,"cutTag switch  " + cutTag + " → " + combDir);
+                writeSummaryPanels();
+                _centralHists.clear(); _storedFit.clear(); _storedEtaFit.clear();
                 cutTag = combDir;
             }
 
-            /* destination directory ------------------------------------ */
-            fs::path subDir = fs::path("EMCal/invMassQA") / combDir;
-            fs::path baseDir = cPath(root, slice, subDir);   // cPath() already normalises “Cent_”
+            // -------- ensure output directory exists -----------------------
+            const fs::path subDir = fs::path("EMCal/invMassQA") / combDir;
+            const fs::path baseDir = cPath(root,slice,subDir);
             ensure_dir(baseDir);
 
-            fs::path outPng = baseDir / (n + ".png");
-            log(Lvl::DBG,"output PNG will be " + outPng.string());
+            const fs::path outPng = baseDir / (n + ".png");
+            log(Lvl::DBG,"spectrum PNG path → " + outPng.string());
 
+            // --------------------------- fit --------------------------------
             TH1* h = static_cast<TH1*>(o);
+            const double piFitLo = 0.05, piFitHi = 0.35;
+            double piMu=0.,piMuErr=0.,piSig=0.,piSigErr=0.;
 
-            const double piFitLo = 0.05, piFitHi = 0.35;          // still needed later
-            double piMu    = 0.,  piMuErr  = 0.;
-            double piSig   = 0.,  piSigErr = 0.;
+            TF1 total("total","gaus(0)+pol2(3)",piFitLo,piFitHi);
+            const bool fitOK = doPi0Fit(h,total,piMu,piMuErr,piSig,piSigErr);
 
-            TF1 total("total","gaus(0)+pol2(3)",piFitLo,piFitHi); // will be configured inside
-            const bool fitOK = doPi0Fit(h, total,
-                                        piMu, piMuErr,
-                                        piSig, piSigErr);          // helper returns fit status
-            
-            
-            double etaMu = 0., etaMuErr = 0.;
-            double etaSig = 0., etaSigErr = 0.;
-
-            const bool etaOK = doEtaFit(h, slice,
-                                        etaMu, etaMuErr,
-                                        etaSig, etaSigErr);   // helper returns fit status
+            double etaMu=0.,etaMuErr=0.,etaSig=0.,etaSigErr=0.;
+            (void)doEtaFit(h,slice,etaMu,etaMuErr,etaSig,etaSigErr);
 
             TF1 poly("bg","pol2",piFitLo,piFitHi);
             poly.SetParameters(total.GetParameter(3),
@@ -731,87 +734,130 @@ class Pi0QA : public QA
                                total.GetParameter(5));
             poly.SetLineColor(kAzure+2); poly.SetLineWidth(2); poly.SetLineStyle(2);
 
-
+            // -------------- S/B ratios for CSV -----------------------------
             const std::vector<double> ws = {1.25,1.5,1.75,2.0,2.25};
             for (double w: ws)
             {
                 const int i1 = binAt(h,std::max(piMu-w*piSig,piFitLo));
                 const int i2 = binAt(h,std::min(piMu+w*piSig,piFitHi));
+
                 double S=0,B=0,sErr=0,bErr=0;
-                for(int i=i1;i<=i2;++i){
-                    const double x  = h->GetBinCenter(i);
-                    const double bg = std::max(poly.Eval(x),0.);
-                    const double cnt= h->GetBinContent(i);
+                for (int i=i1;i<=i2;++i)
+                {
+                    const double x   = h->GetBinCenter(i);
+                    const double bg  = std::max(poly.Eval(x),0.);
+                    const double cnt = h->GetBinContent(i);
                     B+=bg; S+=cnt-bg; sErr+=cnt; bErr+=bg;
                 }
+
                 bErr = std::sqrt(bErr); sErr = std::sqrt(sErr);
-                double ratio=(B>0)?S/B:0, rErr=0;
-                if (ratio>0) rErr=ratio*std::sqrt((sErr*sErr)/(S*S)+(bErr*bErr)/(B*B));
+                double ratio = (B>0) ? S/B : 0, rErr = 0;
+                if (ratio>0) rErr = ratio*std::sqrt((sErr*sErr)/(S*S)+(bErr*bErr)/(B*B));
+
                 csvSB << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
                       << slice << ',' << w << ',' << ratio << ',' << rErr << '\n';
             }
 
-           /* --------------------------------------------------------------- *
-            * 6.  Pretty plot of the single spectrum                          *
-            * --------------------------------------------------------------- */
+            // -------------- render single spectrum -------------------------
+            log(Lvl::INFO,"drawing spectrum → " + outPng.string());
+            try
             {
-                log(Lvl::INFO,"rendering spectrum → " + outPng.string());
-                TCanvas c; h->SetStats(0); h->Draw();
-                poly.Draw("SAME"); total.Draw("SAME");
+                TCanvas c;                     // local canvas
+                h->SetStats(0);
+                h->Draw();                     // histogram first
+
+                /* draw CLONES so the pad owns its own copies, not the stack objects */
+                poly.DrawCopy("SAME");
+                total.DrawCopy("SAME");
                 if (_storedEtaFit.count(slice))
-                    _storedEtaFit[slice]->Draw("SAME");
+                    _storedEtaFit[slice]->DrawCopy("SAME");   // safe for stored fits
 
-                TLatex tl;                   // common style
-                tl.SetNDC();
-                tl.SetTextSize(0.038);
-                tl.SetTextAlign(13);
+                // labels and legend (same code, only log around) -------------
+                {
+                    TLatex tl; tl.SetNDC(); tl.SetTextSize(0.038); tl.SetTextAlign(13);
 
-                /* ---------- centrality label -------------------------------- */
-                std::string centStr;
-                if (slice == "Inclusive") {
-                    centStr = "Inclusive";
-                } else {
-                    std::smatch m;
-                    if (std::regex_match(slice,m,std::regex(R"((\d{1,3})_(\d{1,3}))")))
-                        centStr = "Cent " + m[1].str() + "-" + m[2].str() + " %";
-                    else
-                        centStr = slice;                       // fallback
-                }
+                    std::string centStr;
+                    if (slice=="Inclusive") centStr="Inclusive";
+                    else {
+                        std::smatch m;
+                        if (std::regex_match(slice,m,std::regex(R"((\d{1,3})_(\d{1,3}))")))
+                            centStr="Cent "+m[1].str()+"-"+m[2].str()+" %";
+                        else centStr=slice;
+                    }
 
-                /* ---------- pT label --------------------------------------- */
-                std::string pTStr;
-                if (pTInt || (ck.pLo < 0 && ck.pHi < 0)) {
-                    pTStr = "p_{T} IND";
-                } else {
-                    pTStr = Form("%.2f < p_{T} < %.2f GeV/c", ck.pLo, ck.pHi);
-                }
+                    std::string pTStr = pTInt
+                                      ? "p_{T} IND"
+                                      : Form("%.2f < p_{T} < %.2f GeV/c",ck.pLo,ck.pHi);
 
-                /* first line: centrality + pT information                      */
-                tl.DrawLatex(0.14, 0.93, (centStr + "   " + pTStr).c_str());
+                    tl.DrawLatex(0.14,0.93,(centStr+"   "+pTStr).c_str());
+                    tl.DrawLatex(0.14,0.89,
+                                 Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
+                                      ck.E,ck.asy,ck.chi));
 
-                /* second line: analysis cuts                                   */
-                tl.DrawLatex(0.14, 0.89,
-                             Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
-                                  ck.E, ck.asy, ck.chi));
-
-                TLegend leg(0.55,0.64,0.88,0.88); leg.SetBorderSize(0); leg.SetTextAlign(12);
-                leg.AddEntry((TObject*)nullptr,
-                             Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV",piMu,piMuErr),"");
-                leg.AddEntry((TObject*)nullptr,
-                             Form("          #sigma = %.3f #pm %.3f GeV",piSig,piSigErr),"");
-                if (etaMu>0) {
+                    TLegend leg(0.55,0.64,0.88,0.88);
+                    leg.SetBorderSize(0); leg.SetTextAlign(12);
                     leg.AddEntry((TObject*)nullptr,
-                                 Form("#eta:    #mu = %.3f #pm %.3f GeV",etaMu,etaMuErr),"");
+                                 Form("#pi^{0}:  #mu = %.3f #pm %.3f GeV",piMu,piMuErr),"");
                     leg.AddEntry((TObject*)nullptr,
-                                 Form("          #sigma = %.3f #pm %.3f GeV",etaSig,etaSigErr),"");
+                                 Form("          #sigma = %.3f #pm %.3f GeV",piSig,piSigErr),"");
+                    if (etaMu>0)
+                    {
+                        leg.AddEntry((TObject*)nullptr,
+                                     Form("#eta:    #mu = %.3f #pm %.3f GeV",etaMu,etaMuErr),"");
+                        leg.AddEntry((TObject*)nullptr,
+                                     Form("          #sigma = %.3f #pm %.3f GeV",etaSig,etaSigErr),"");
+                    }
+                    leg.Draw();
                 }
-                leg.Draw();
+
                 c.SaveAs(outPng.string().c_str());
+                log(Lvl::DBG,"spectrum PNG saved OK");
+            }
+            catch (const std::exception& ex)
+            {
+                log(Lvl::ERR,std::string("spectrum SaveAs failed – ")+ex.what());
             }
 
-           /* --------------------------------------------------------------- *
-            * 7.  CSV & stored‑fit bookkeeping                                *
-            * --------------------------------------------------------------- */
+            /* ------------------------------------------------------------------ *
+             *  Detach every TF1 from ALL ROOT lists that may own it before it    *
+             *  goes out of scope – protects against later double deletion.       *
+             *  >>> VERBOSE VERSION – prints every action so we can spot issues.  *
+             * ------------------------------------------------------------------ */
+            auto detachTF1 = [&](TF1* f, const char* tag)
+            {
+                if (!f) { log(Lvl::DBG, std::string("detachTF1(")+tag+"): f==nullptr"); return; }
+
+                log(Lvl::DBG, Form("detachTF1(%s): pointer = %p", tag, (void*)f));
+
+                auto tryRemove = [&](TCollection* lst, const char* lstName)
+                {
+                    if (!lst) return false;
+                    if (lst->FindObject(f)) {
+                        lst->Remove(f);
+                        log(Lvl::DBG, std::string("   removed from ")+lstName);
+                        return true;
+                    }
+                    return false;
+                };
+
+                bool removed = false;
+                removed |= tryRemove(h->GetListOfFunctions(),            "hist‑function list");
+                removed |= tryRemove(gPad ? gPad->GetListOfPrimitives()
+                                          : nullptr,                     "pad primitives");
+                removed |= tryRemove(gROOT ? gROOT->GetListOfFunctions()
+                                           : nullptr,                    "gROOT function list");
+
+                if (!removed)
+                    log(Lvl::WARN, std::string("detachTF1(")+tag+
+                                    "): pointer not found in any list – possible logic error");
+            };
+
+            /* call for both local functions with explicit tags */
+            detachTF1(&poly , "poly");
+            detachTF1(&total, "total");
+
+
+            // ---------- CSV & caches (original logic, unchanged) -----------
             csvFit << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
                    << ck.pLo << ',' << ck.pHi << ','
                    << piMu   << ',' << piMuErr  << ','
@@ -822,31 +868,36 @@ class Pi0QA : public QA
             _fitSummary.emplace(n, FitInfo{slice,ck.pLo,ck.pHi,piMu,piSig,
                                            total.GetChisquare(),total.GetNDF()});
 
-            if (fitOK && _storedFit.count(slice)==0) {
+            if (fitOK && _storedFit.count(slice)==0)
+            {
                 _storedFit[slice].total.reset(new TF1(total));
                 _storedFit[slice].poly .reset(new TF1(poly ));
             }
 
-            if (fitOK) {
-                auto &m=s_runPoints[slice];
+            if (fitOK)
+            {
+                auto &m = s_runPoints[slice];
                 if (m.count(runID)==0)
-                    m[runID]={piMu,piMuErr,piSig,piSigErr};
+                    m[runID] = {piMu,piMuErr,piSig,piSigErr};
             }
 
-           /* --------------------------------------------------------------- *
-            * 8.  Cache for overview canvases                                 *
-            * --------------------------------------------------------------- */
             cacheForOverview(slice,n,h,pTInt);
 
-            log(Lvl::DBG,"process(): finished \"" + n + '"');
+            log(Lvl::DBG,"process(): exit OK for \"" + n + '"');
             return true;
         }
         catch (const std::exception& ex)
         {
-            log(Lvl::ERR,std::string("process(): exception – ")+ex.what());
+            log(Lvl::ERR,std::string("process(): C++ exception – ")+ex.what());
+            return false;
+        }
+        catch (...)
+        {
+            log(Lvl::ERR,"process(): UNKNOWN exception");
             return false;
         }
     }
+
 
  private:
     // -----------------------------------------------------------------------------
@@ -1525,6 +1576,9 @@ class Pi0QA : public QA
                 std::unordered_map<std::string,RunPoint>>  s_runPoints;
     static inline bool s_summaryWritten = false;
 };
+
+
+
 
 
 // ─── Minimal fall‑back style helpers ────────────────────────────────────
@@ -2622,8 +2676,7 @@ public:
 
                 if (!missingSEB.empty())
                 {
-                    const fs::path txt =
-                        "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output/MissingSEB.txt";
+                    const fs::path txt = baseDir / "output" / "MissingSEB.txt";
                     ensure_dir(txt.parent_path());
 
                     std::ofstream ofs(txt, std::ios::app);
@@ -3999,230 +4052,413 @@ class JetQA : public QA
  public:
   using QA::QA;
 
+  enum class Lvl { DBG, INF, WRN, ERR };
+
+  static void log(Lvl level, const std::string& msg)
+  {
+        switch (level) {
+            case Lvl::DBG: ::log::trace(msg); break;
+            case Lvl::INF: ::log::info (msg); break;
+            case Lvl::WRN: ::log::warn (msg); break;
+            case Lvl::ERR: ::log::err  (msg); break;
+        }
+  }
+    
   // =================================================================
   // 1. Per‑histogram processing (called many times per file)
   // =================================================================
   bool process(TObject* o) override
   {
-    if (!o->InheritsFrom(TH1::Class())) return false;
+      //------------------------------------------------------------------
+      // 0. Preliminary sanity checks
+      //------------------------------------------------------------------
+      if (!o) {
+        log(Lvl::WRN,"process(): received nullptr – skipped");
+        return false;
+      }
+      if (!o->InheritsFrom(TH1::Class())) {          // we process only TH1/2/3
+        log(Lvl::DBG,Form("process(): \"%s\" is not TH1 – skipped",o->GetName()));
+        return false;
+      }
 
-    const std::string n = o->GetName();
-    const bool is1D =  n.rfind("h_maxJetEt_"         ,0) == 0;
-    const bool is2D =  n.rfind("h_leadEt_vs_subEt_"  ,0) == 0;
-    const bool is3D =  n.rfind("h_jetEt_area_nConst_",0) == 0;
-    if (!is1D && !is2D && !is3D) return false;
+      const std::string n = o->GetName();            // histogram name (immutable)
 
-    const std::string slice = sliceKey(n);                  // Inclusive / Cent_…
-    const std::string rLab  = radiusTag(n);                 // r02 / r04 …
+      // Categorise once – fast string‑prefix tests (rfind(...,0) == 0 → starts with)
+      const bool is1D = n.rfind("h_maxJetEt_"         ,0) == 0;
+      const bool is2D = n.rfind("h_leadEt_vs_subEt_"  ,0) == 0;
+      const bool is3D = n.rfind("h_jetEt_area_nConst_",0) == 0;
 
-    /* -------- 1.1   *all* raw plots into …/generalHistos/ ---------- */
-    fs::path baseGen = cPath(root, slice,
-                             fs::path("jetQA/generalHistos") / rLab);
-    ensure_dir(baseGen);
+      if (!is1D && !is2D && !is3D) {                 // not a Jet‑QA histogram
+        log(Lvl::DBG,"process(): \""+n+
+                      "\" not in jet‑QA family – skipped");
+        return false;
+      }
 
-    /* the original plotting helpers are reused unchanged ------------- */
-    if (is1D)          return save1Dplot(static_cast<TH1*>(o), baseGen, n);
-    if (is2D)          return handle2D (static_cast<TH2*>(o), baseGen, n);
-                       return handle3D (static_cast<TH3*>(o), baseGen, n);
+      log(Lvl::DBG,"process(): start \""+n+"\"  "
+                   "(is1D="+std::to_string(is1D)+
+                   ", is2D="+std::to_string(is2D)+
+                   ", is3D="+std::to_string(is3D)+")");
+
+      //------------------------------------------------------------------
+      // 1. Everything inside a try/catch so that one bad histogram never
+      //    aborts the entire QA pass.
+      //------------------------------------------------------------------
+      try
+      {
+        //----------------------------------------------------------------
+        // 1.1  Build destination directory:  …/<slice>/jetQA/generalHistos/<rXX>
+        //----------------------------------------------------------------
+        const std::string slice = sliceKey(n);       // e.g. "Inclusive" or "Cent_0_10"
+        const std::string rLab  = radiusTag(n);      // e.g. "r02", "r04", …
+
+        fs::path baseGen =
+            cPath(root, slice,
+                  fs::path("jetQA/generalHistos") / rLab);
+
+        ensure_dir(baseGen);                         // may throw on permission issues
+
+        //----------------------------------------------------------------
+        // 1.2  Delegate to the original helpers; propagate their return
+        //      status so upstream code stays unchanged.
+        //----------------------------------------------------------------
+        bool ok = false;
+        if (is1D)
+          ok = save1Dplot(static_cast<TH1*>(o), baseGen, n);
+        else if (is2D)
+          ok = handle2D  (static_cast<TH2*>(o), baseGen, n);
+        else            // is3D
+          ok = handle3D  (static_cast<TH3*>(o), baseGen, n);
+
+        if (!ok)
+          log(Lvl::WRN,"process(): helper reported failure for \""+n+"\"");
+
+        log(Lvl::DBG,"process(): finished \""+n+"\"  (status=" +
+                     std::string(ok ? "OK" : "FAIL") + ')');
+        return ok;
+      }
+      catch (const std::exception& ex)
+      {
+        log(Lvl::ERR,std::string("process(): C++ exception for \"")+n+
+                      "\" – "+ex.what());
+        return false;                                 // safe fallback
+      }
+      catch (...)
+      {
+        log(Lvl::ERR,std::string("process(): UNKNOWN exception for \"")+n+"\"");
+        return false;
+      }
   }
+
 
   // =================================================================
   // 2. Final summary – executed once at the very end of the run
   // =================================================================
   ~JetQA() override
   {
-    /* ------------------------------------------------------------ *
-     *  Collect every “h_maxJetEt_rXX_…Inclusive…” histogram that   *
-     *  has statistics, integrate above a threshold and build:      *
-     *     – yield(E_T)  per slice                                  *
-     *     – yield vs centrality (cent = bin centre)                *
-     * ------------------------------------------------------------ */
-    constexpr double kEtMin = 20.0;                // GeV threshold
-    std::map<std::string,std::unique_ptr<TH1>> maxEtPerSlice;   // slice→hist
+      //----------------------------------------------------------------
+      // 0. Early exit guards
+      //----------------------------------------------------------------
+      try {
+        constexpr double kEtMin = 20.0;            // GeV threshold for the yield
+        std::map<std::string,std::unique_ptr<TH1>> maxEtPerSlice;
 
-    for (const TObject* obj : *gROOT->GetList())
-    {
-      const TH1* h = dynamic_cast<const TH1*>(obj);
-      if (!h) continue;
+        //----------------------------------------------------------------
+        // 1. Harvest every Inclusive h_maxJetEt_… histogram that has data
+        //----------------------------------------------------------------
+        log(Lvl::DBG,"[JetQA::~JetQA] scanning gROOT for h_maxJetEt_*");
 
-      const std::string n = h->GetName();
-      if (n.rfind("h_maxJetEt_",0)!=0) continue;         // keep only the 1‑D family
-      if (h->Integral()<=0)      continue;
+        for (const TObject* obj : *gROOT->GetList()) {
+          const TH1* h = dynamic_cast<const TH1*>(obj);
+          if (!h) continue;                        // ignore non‑histograms
 
-      const std::string slice = sliceKey(n);             // Inclusive / Cent_x_y
-      /* clone under our ownership so original may disappear ---------- */
-      maxEtPerSlice[slice].reset( static_cast<TH1*>(h->Clone()) );
-      maxEtPerSlice[slice]->SetDirectory(nullptr);
-    }
+          const std::string n = h->GetName();
+          if (n.rfind("h_maxJetEt_",0) != 0) continue;
+          if (h->Integral() <= 0)       continue;  // skip empty
 
-    if (maxEtPerSlice.empty()) return;          // nothing to summarise
-
-    /* 2.1  yield(E_T) – one graph per slice ------------------------ */
-    fs::path dirSum = root / "jetQA/summary";
-    ensure_dir(dirSum);
-
-    TCanvas cYield("c_yieldEt","Jet yield vs E_{T}",1100,850);
-    TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
-
-    int colList[]{kRed+1,kBlue+2,kGreen+2,kMagenta+2,kOrange+1};
-    int iCol=0;
-
-    std::vector<double> xCent, yYield;          // for yield‑vs‑cent graph
-
-    for (auto& [slice, h] : maxEtPerSlice)
-    {
-        /* determine centrality bin centre ---------------------------- */
-        double xC = 50.0;                                   // default = Inclusive
-        if (slice.rfind("Cent_", 0) == 0)
-        {
-          std::smatch m;
-          std::regex  re(R"(Cent_([0-9]+)_([0-9]+))");
-          if (std::regex_match(slice, m, re))
-            xC = 0.5 * (std::stod(m[1]) + std::stod(m[2]));
+          const std::string slice = sliceKey(n);   // Inclusive / Cent_x_y
+          maxEtPerSlice[slice].reset(static_cast<TH1*>(h->Clone()));
+          maxEtPerSlice[slice]->SetDirectory(nullptr);
         }
 
-        /* integrate Y(E_T>EtMin) ------------------------------------ */
-        int    binMin = h->FindBin(kEtMin);
-        double yield  = h->Integral(binMin, h->GetNbinsX());
+        if (maxEtPerSlice.empty()) {
+          log(Lvl::WRN,"[JetQA::~JetQA] no non‑empty h_maxJetEt_* histograms – summary skipped");
+          return;
+        }
 
-        /* real event count for this slice --------------------------- */
-        long long nEv = static_cast<long long>(h->GetEntries());
-        if (nEv == 0)                     // skip empty slices (avoids div-by-zero)
-          continue;
+        //----------------------------------------------------------------
+        // 2. Prepare output directory
+        //----------------------------------------------------------------
+        fs::path dirSum = root / "jetQA/summary";
+        try { ensure_dir(dirSum); }
+        catch (const std::exception& ex) {
+          log(Lvl::ERR,std::string("[JetQA::~JetQA] ensure_dir(")+dirSum.string()+
+                        ") failed – "+ex.what());
+          return;
+        }
 
-        yield /= nEv;                     // per-event yield
+        //----------------------------------------------------------------
+        // 3. Yield(E_T)  –  differential spectra for each slice
+        //----------------------------------------------------------------
+        TCanvas cYield("c_yieldEt","Jet yield vs E_{T}",1100,850);
+        cYield.SetLogy();
 
-        xCent.push_back(xC);
-        yYield.push_back(yield);
+        TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
+        const int colList[]{kRed+1,kBlue+2,kGreen+2,kMagenta+2,kOrange+1};
+        int iCol = 0;
 
-        /* build differential yield dN/dE_T --------------------------- */
-        auto hDiff = std::unique_ptr<TH1>(static_cast<TH1*>(h->Clone()));
-        hDiff->Scale(1.0 / nEv, "width");       // safe: nEv > 0
-        hDiff->SetLineColor(colList[iCol % 5]);
-        hDiff->SetLineWidth(2);
+        std::vector<double> xCent, yYield;         // for the cent‑trend graph
 
-        hDiff->SetTitle(Form("dN/dE_{T} – %s", slice.c_str()));
-        hDiff->GetYaxis()->SetTitle("1/N_{ev}  dN/dE_{T}  [GeV^{-1}]");
+        for (auto& [slice, h] : maxEtPerSlice)
+        {
+          // 3.1 centrality coordinate (bin centre)
+          double xC = 50.0;                        // default for Inclusive
+          if (slice.rfind("Cent_",0) == 0) {
+            std::smatch m;
+            if (std::regex_match(slice, m, std::regex(R"(Cent_([0-9]+)_([0-9]+))")))
+              xC = 0.5 * (std::stod(m[1]) + std::stod(m[2]));
+          }
 
-        hDiff->Draw(iCol == 0 ? "HIST" : "HIST SAME");
-        leg.AddEntry(hDiff.get(), slice.c_str(), "l");
-        _owned1D.push_back(std::move(hDiff));
-        ++iCol;
+          // 3.2 integrate yield above kEtMin
+          int    binMin = h->FindBin(kEtMin);
+          double yield  = h->Integral(binMin, h->GetNbinsX());
+          long long nEv = static_cast<long long>(h->GetEntries());
+
+          if (nEv == 0) {                          // avoid div‑by‑0
+            log(Lvl::WRN,"[JetQA::~JetQA] slice \""+slice+"\" has 0 entries – skipped");
+            continue;
+          }
+          yield /= nEv;                            // per‑event yield
+
+          xCent.push_back(xC);   yYield.push_back(yield);
+
+          // 3.3 differential spectrum
+          auto hDiff = std::unique_ptr<TH1>(static_cast<TH1*>(h->Clone()));
+          hDiff->Scale(1.0/nEv, "width");
+          const int col = colList[iCol % (sizeof(colList)/sizeof(int))];
+          hDiff->SetLineColor(col);  hDiff->SetLineWidth(2);
+          hDiff->SetTitle(Form("dN/dE_{T} – %s", slice.c_str()));
+          hDiff->GetYaxis()->SetTitle("1/N_{ev}  dN/dE_{T}  [GeV^{-1}]");
+          hDiff->Draw(iCol==0 ? "HIST" : "HIST SAME");
+          leg.AddEntry(hDiff.get(), slice.c_str(), "l");
+
+          _owned1D.push_back(std::move(hDiff));
+          ++iCol;
+        }
+        leg.Draw();
+
+        const fs::path pngYield = dirSum/"JetYield_vs_Et_AllSlices.png";
+        try { cYield.SaveAs(pngYield.string().c_str()); }
+        catch (const std::exception& ex) {
+          log(Lvl::ERR,std::string("[JetQA::~JetQA] failed to save ")+pngYield.string()+
+                        " – "+ex.what());
+        }
+
+        //----------------------------------------------------------------
+        // 4. Yield vs centrality (if ≥2 points)
+        //----------------------------------------------------------------
+        if (xCent.size() > 1)
+        {
+          auto gCent = std::make_unique<TGraphErrors>(xCent.size());
+          for (std::size_t i=0;i<xCent.size();++i)
+            gCent->SetPoint(i, xCent[i], yYield[i]);
+
+          TCanvas cCent("c_yieldCent","Jet yield vs centrality",900,700);
+          gCent->SetTitle(Form("Jet yield  E_{T}>%.0f GeV",kEtMin));
+          gCent->GetXaxis()->SetTitle("centrality [%]");
+          gCent->GetYaxis()->SetTitle("jets / event");
+          gCent->SetMarkerStyle(kFullCircle);  gCent->SetLineWidth(2);
+          gCent->Draw("AP");
+
+          const fs::path pngCent = dirSum/"JetYield_vs_Centrality.png";
+          try { cCent.SaveAs(pngCent.string().c_str()); }
+          catch (const std::exception& ex) {
+            log(Lvl::ERR,std::string("[JetQA::~JetQA] failed to save ")+pngCent.string()+
+                          " – "+ex.what());
+          }
+          _ownedGraphs.push_back(std::move(gCent));
+        }
+
+        log(Lvl::INF,"[JetQA::~JetQA] summary successfully written ("+
+                      std::to_string(maxEtPerSlice.size())+" slice(s))");
+      }
+      catch (const std::exception& ex)
+      {
+        log(Lvl::ERR,std::string("[JetQA::~JetQA] C++ exception – ")+ex.what());
+      }
+      catch (...)
+      {
+        log(Lvl::ERR,"[JetQA::~JetQA] UNKNOWN exception");
+      }
     }
-    leg.Draw();
-    cYield.SetLogy();
-    cYield.SaveAs( (dirSum/"JetYield_vs_Et_AllSlices.png").string().c_str() );
 
-    /* 2.2  yield vs centrality ------------------------------------- */
-    if (xCent.size()>1)
-    {
-      auto gCent = std::make_unique<TGraphErrors>(xCent.size());
-      for (std::size_t i=0;i<xCent.size();++i)
-        gCent->SetPoint(i, xCent[i], yYield[i]);
-
-      TCanvas cCent("c_yieldCent","Jet yield vs centrality",900,700);
-      gCent->SetTitle(Form("Jet yield  E_{T}>%.0f GeV",kEtMin));
-      gCent->GetXaxis()->SetTitle("centrality [%]");
-      gCent->GetYaxis()->SetTitle("jets / event");
-      gCent->SetMarkerStyle(kFullCircle); gCent->SetLineWidth(2);
-      gCent->Draw("AP");
-
-      cCent.SaveAs( (dirSum/"JetYield_vs_Centrality.png").string().c_str() );
-      _ownedGraphs.push_back(std::move(gCent));
-    }
-  }
 
  private:
-  // ======================= helper functions =========================
-  static std::string radiusTag(const std::string& hname)
-  {
-    std::smatch m; std::regex re(R"(_(r[0-9]+|R[0-9]+)_)");
-    return std::regex_search(hname,m,re) ? m[1].str() : "UnknownR";
-  }
+    // ------------------------------------------------------------------
+    //  radiusTag  – extract jet‑radius label (r02, r04 …) from the name
+    // ------------------------------------------------------------------
+    static std::string radiusTag(const std::string& hname)
+    {
+      log::trace("[JetQA] radiusTag()  →  hname=\"" + hname + '"');
+      try {
+        std::smatch m;  std::regex re(R"(_(r[0-9]+|R[0-9]+)_)");
+        if (std::regex_search(hname, m, re)) {
+          log::trace("[JetQA] radiusTag()  ←  \"" + m[1].str() + '"');
+          return m[1].str();
+        }
+        log::warn("[JetQA] radiusTag()  –  pattern not found in \"" + hname + '"');
+      }
+      catch (const std::exception& ex) {
+        log::err(std::string("[JetQA] radiusTag() exception – ")+ex.what());
+      }
+      return "UnknownR";
+    }
 
-  bool save1Dplot(TH1* h, const fs::path& dir, const std::string& hname)
-  {
-    TCanvas c; c.SetLogy(); h->SetStats(0);
-    h->SetTitle(makeTitle(hname).c_str());
-    h->Draw();
-    c.SaveAs( (dir/(hname+".png")).string().c_str() );
-    return true;
-  }
-    
-  // =============== 2‑D ==================================================
-  bool handle2D(TH2* h, const fs::path& dir, const std::string& hname)
-  {
-    h->SetTitle(makeTitle(hname).c_str());
-    TCanvas c; h->SetStats(0);
-    h->Draw("COLZ");
+    // ------------------------------------------------------------------
+    //  save1Dplot  – render 1‑D histogram with log‑Y
+    // ------------------------------------------------------------------
+    bool save1Dplot(TH1* h, const fs::path& dir, const std::string& hname)
+    {
+      log::trace("[JetQA] save1Dplot() enter – " + hname);
+      if (!h) { log::err("[JetQA] save1Dplot() received nullptr"); return false; }
 
-    // y = x guideline
-    const double xmax = h->GetXaxis()->GetXmax();
-    TLine diag(0,0, xmax, xmax);
-    diag.SetLineStyle(2); diag.SetLineWidth(2); diag.Draw();
+      try {
+        ensure_dir(dir);
+        TCanvas c; c.SetLogy();
+        h->SetStats(0);
+        h->SetTitle(makeTitle(hname).c_str());
+        h->Draw();
 
-    ensure_dir(dir);
-    c.SaveAs((dir / (hname + ".png")).string().c_str());
-    return true;
-  }
+        const fs::path png = dir/(hname + ".png");
+        c.SaveAs(png.string().c_str());
+        log::info("[JetQA] 1‑D plot saved → " + png.string());
+        return true;
+      }
+      catch (const std::exception& ex) {
+        log::err(std::string("[JetQA] save1Dplot() exception – ")+ex.what());
+        return false;
+      }
+    }
 
-  // =============== 3‑D ==================================================
-  bool handle3D(TH3* h3, const fs::path& dir, const std::string& hname)
-  {
-    h3->SetTitle(makeTitle(hname).c_str());
+    // =============== 2‑D ==================================================
+    bool handle2D(TH2* h, const fs::path& dir, const std::string& hname)
+    {
+      log::trace("[JetQA] handle2D() enter – " + hname);
+      if (!h) { log::err("[JetQA] handle2D() nullptr"); return false; }
 
-    // main 3‑D view
-    save3D(h3, dir / (hname + "_3D.png"));
+      try {
+        ensure_dir(dir);
+        h->SetTitle(makeTitle(hname).c_str());
 
-    // orthogonal projections
-    saveProjection(h3,"yx", dir / (hname + "_Et_vs_Area.png"));    // E_T vs A
-    saveProjection(h3,"xz", dir / (hname + "_Et_vs_Nconst.png"));  // E_T vs N
-    saveProjection(h3,"yz", dir / (hname + "_Area_vs_Nconst.png"));// A  vs N
-    return true;
-  }
+        TCanvas c; h->SetStats(0);
+        h->Draw("COLZ");
 
-  // ===== local helpers (only visible inside JetQA) ==================
-  static void save3D(TH3* h, const fs::path& png)
-  {
-    log::trace("save3D → " + png.string());
-    TCanvas c("c3D","",1200,1000);
-    c.SetRightMargin(0.18);
-    h->SetStats(0); h->SetContour(99);
-    h->Draw("BOX2Z");                      // nice semi‑transparent boxes
-    ensure_dir(png.parent_path());
-    c.SaveAs(png.string().c_str());
-  }
+        // y = x guideline
+        const double xmax = h->GetXaxis()->GetXmax();
+        TLine diag(0,0, xmax, xmax);
+        diag.SetLineStyle(2); diag.SetLineWidth(2); diag.Draw();
 
-  static void saveProjection(TH3* h3,
+        const fs::path png = dir/(hname + ".png");
+        c.SaveAs(png.string().c_str());
+        log::info("[JetQA] 2‑D plot saved → " + png.string());
+        return true;
+      }
+      catch (const std::exception& ex) {
+        log::err(std::string("[JetQA] handle2D() exception – ")+ex.what());
+        return false;
+      }
+    }
+
+    // =============== 3‑D ==================================================
+    bool handle3D(TH3* h3, const fs::path& dir, const std::string& hname)
+    {
+      log::trace("[JetQA] handle3D() enter – " + hname);
+      if (!h3) { log::err("[JetQA] handle3D() nullptr"); return false; }
+
+      try {
+        ensure_dir(dir);
+        h3->SetTitle(makeTitle(hname).c_str());
+
+        // main 3‑D view
+        save3D(h3, dir/(hname + "_3D.png"));
+
+        // orthogonal projections
+        saveProjection(h3,"yx", dir/(hname + "_Et_vs_Area.png"));    // E_T vs A
+        saveProjection(h3,"xz", dir/(hname + "_Et_vs_Nconst.png"));  // E_T vs N
+        saveProjection(h3,"yz", dir/(hname + "_Area_vs_Nconst.png"));// A  vs N
+        return true;
+      }
+      catch (const std::exception& ex) {
+        log::err(std::string("[JetQA] handle3D() exception – ")+ex.what());
+        return false;
+      }
+    }
+
+    // ===== local helpers (only visible inside JetQA) ==================
+
+    // ------------------------------------------------------------------
+    //  save3D – single 3‑D view (semi‑transparent boxes)
+    // ------------------------------------------------------------------
+    static void save3D(TH3* h, const fs::path& png)
+    {
+      if (!h) { log::err("[JetQA] save3D() nullptr"); return; }
+      log::trace("[JetQA] save3D() → " + png.string());
+
+      try {
+        ensure_dir(png.parent_path());
+        TCanvas c("c3D","",1200,1000);
+        c.SetRightMargin(0.18);
+        h->SetStats(0); h->SetContour(99);
+        h->Draw("BOX2Z");
+        c.SaveAs(png.string().c_str());
+      }
+      catch (const std::exception& ex) {
+        log::err(std::string("[JetQA] save3D() exception – ")+ex.what());
+      }
+    }
+
+    // ------------------------------------------------------------------
+    //  saveProjection – 2‑D projection helper for TH3
+    // ------------------------------------------------------------------
+    static void saveProjection(TH3* h3,
                                const char* axes,
                                const fs::path& png)
     {
-        TH1*   tmp = h3->Project3D(axes);                 // ROOT gives TH1*
-        auto h2 = std::unique_ptr<TH2>(                  // take ownership
-                      dynamic_cast<TH2*>(tmp));          // safe cast → TH2*
+      if (!h3) { log::err("[JetQA] saveProjection() nullptr"); return; }
+      log::trace(std::string("[JetQA] saveProjection(")+axes+") → "+png.string());
 
-        if (!h2) {                                       // should never happen
-            log::warn(std::string("Projection '")+axes+
-                       "' of '"+h3->GetName()+"' is not TH2 – skipped");
-            delete tmp;                                  // avoid leak
-            return;
+      try {
+        TH1* tmp = h3->Project3D(axes);                    // ROOT returns TH1*
+        auto h2  = std::unique_ptr<TH2>(dynamic_cast<TH2*>(tmp));
+
+        if (!h2) {
+          log::warn(std::string("[JetQA] projection '")+axes+
+                    "' of '"+h3->GetName()+"' is not TH2 – skipped");
+          delete tmp;
+          return;
         }
 
-        h2->SetDirectory(nullptr);                       // detach from gDirectory
+        h2->SetDirectory(nullptr);                         // detach
         h2->SetStats(0);
-        h2->SetTitle((std::string(h3->GetTitle())+
-                     "  –  "+axes).c_str());
-
+        h2->SetTitle((std::string(h3->GetTitle()) + "  –  " + axes).c_str());
         save2D(h2.get(), png);
-  }
+      }
+      catch (const std::exception& ex) {
+        log::err(std::string("[JetQA] saveProjection() exception – ")+ex.what());
+      }
+    }
 
-  static std::string makeTitle(const std::string& hname)
-  {
-    // “h_jetEt_area_nConst_r02_MBD_NandS_geq_2”  →  “r02  (MBD_NandS_geq_2)”
-    std::smatch m; std::regex re(R"(_(r[0-9]+|R[0-9]+).+?_(MBD.+))");
-    return std::regex_search(hname,m,re) ? (m[1].str()+"  ("+m[2].str()+')')
-                                         : hname;
-  }
+    // ------------------------------------------------------------------
+    //  makeTitle – prettify histogram titles
+    // ------------------------------------------------------------------
+    static std::string makeTitle(const std::string& hname)
+    {
+      std::smatch m;
+      std::regex re(R"(_(r[0-9]+|R[0-9]+).+?_(MBD.+))");
+      if (std::regex_search(hname, m, re))
+        return m[1].str() + "  (" + m[2].str() + ')';
+      return hname;
+    }
+
     
   // containers keeping produced objects alive
   std::vector<std::unique_ptr<TH1>>         _owned1D;
@@ -4244,6 +4480,15 @@ class VnPlotQA : public QA
   {
     std::filesystem::create_directories(_outDir);
   }
+    
+  enum class Lvl { DBG, INF, WRN, ERR };
+  static void log(Lvl l, const std::string& m)
+  {
+        static const char* tag[]{"DBG","INF","WRN","ERR"};
+        std::ostream& os = (l == Lvl::ERR) ? std::cerr : std::cout;
+        os << "[VnPlotQA] " << tag[static_cast<int>(l)] << "  " << m << '\n';
+  }
+
 
   // ─────────────────────────────── 1. cache every TProfile ──────────
   bool process(TObject* o) override
@@ -4354,131 +4599,243 @@ class VnPlotQA : public QA
       return {m,er};
   }
 
-  // ============================ canvas writer ==========================
-  void writeCanvases()
-  {
-    /* --- regroup cache: split into detector base / region / harmonic -- */
-    using ProfVec = std::vector<TProfile*>;
-    using CentMap = std::map<std::string,ProfVec>;
-    using HarmMap = std::map<int,CentMap>;
-    using RegMap  = std::unordered_map<std::string,HarmMap>;  // region
-    using DetMap  = std::unordered_map<std::string,RegMap>;   // detector
+    // ============================ canvas writer ==========================
+    void writeCanvases()
+    {
+        log(Lvl::INF,"writeCanvases(): enter – regrouping cached profiles");
 
-    std::unordered_map<std::string,DetMap> grp;               // by trigger
+        /* ---------------- regroup cache:  trigger → detector → region ---------------- */
+        using ProfVec = std::vector<TProfile*>;
+        using CentMap = std::map<std::string,ProfVec>;          // key = "lo_hi"
+        using HarmMap = std::map<int,CentMap>;                  // key = harmonic n
+        using RegMap  = std::unordered_map<std::string,HarmMap>;/* region  (N / S / r04 …) */
+        using DetMap  = std::unordered_map<std::string,RegMap>; /* detector (EMCal, jetvN) */
 
-    for (auto& [trig, detMap] : _raw)
-      for (auto& [detTag, hMap] : detMap)
-      {
-        const std::string det  = detBase(detTag);
-        const std::string reg  = regionOf(detTag);
-        RegMap& rmap = grp[trig][det];
+        std::unordered_map<std::string,DetMap> grp;             // regrouped by trigger
 
-        for (auto& [n,cMap] : hMap)
-          for (auto& [cent,v] : cMap)
-            rmap[reg][n][cent].insert(rmap[reg][n][cent].end(),
-                                      v.begin(),v.end());
-      }
-
-    /* colour palette -------------------------------------------------- */
-    const int colTbl[]{kRed+1,kBlue+2,kGreen+2,kMagenta+2,kCyan+2,kOrange+1};
-    const int nCol = sizeof(colTbl)/sizeof(int);
-
-    /* loop over regrouped structure ---------------------------------- */
-    for (const auto& [trig, detMap] : grp)
-      for (const auto& [det, regMap] : detMap)
-        for (const auto& [reg, harmMap] : regMap)
-          for (const auto& [n, centMap] : harmMap)
-          {
-            /* ===== (1) v_n(pT) : one plot per centrality ============= */
-            for (const auto& [cent, vec] : centMap)
+        /* ---------- 1. regroup profiling histograms --------------------- */
+        try
+        {
+            for (auto& [trig, detMap] : _raw)
+            for (auto& [detTag, hMap] : detMap)
             {
-              if (vec.empty()) continue;
-              TCanvas c("c","",1100,850); c.SetGrid();
+                const std::string det = detBase(detTag);
+                const std::string reg = regionOf(detTag);
+                RegMap& rmap         = grp[trig][det];
 
-              auto g = graphFromProf(vec.front(), n, cent, trig);
-              g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (Cent %s %%)",
-                               n,det.c_str(),reg.c_str(),cent.c_str()));
-              g->Draw("AP");
+                for (auto& [n, cMap] : hMap)
+                for (auto& [cent, v] : cMap)
+                {
+                    {
+                        std::ostringstream oss;
+                        oss << "  regroup: trig=" << trig
+                            << " det=" << det << " reg=" << reg
+                            << " n=" << n << " cent=" << cent
+                            << " vec=" << v.size();
+                        log(Lvl::DBG, oss.str());
+                    }
 
-              saveCanvas(c,{det,reg,Form("v%d",n),"Cent_"+cent},
-                         Form("v%d_%s_%s_cent%s.png",
-                              n,det.c_str(),reg.c_str(),cent.c_str()));
+                    auto& tgt = rmap[reg][n][cent];
+
+                    /* ===== DEBUG pre‑state (allocation‑free) ===== */
+                    {
+                        char buf[256];
+                        std::snprintf(buf, sizeof(buf),
+                                      "    • tgt=%p  size=%zu  cap=%zu | v=%p  size=%zu  cap=%zu",
+                                      static_cast<const void*>(&tgt), tgt.size(), tgt.capacity(),
+                                      static_cast<const void*>(&v),   v.size(),   v.capacity());
+                        log(Lvl::DBG, buf);
+                    }
+
+
+                    /* ===== alias‑check ===== */
+                    if (&tgt == &v)
+                    {
+                        log(Lvl::ERR,"    ⛔ self‑insertion detected – skipping this vector");
+                        continue;                                    // move on to next (cent,v) pair
+                    }
+
+                    /* ===== merge profile lists without risking self‑aliasing ========= */
+                    try
+                    {
+                        if (v.empty())           // nothing to do
+                            continue;
+
+                        /* First encounter of this centrality --------------------------- *
+                         * Just copy‑assign – no reallocation, no aliasing hazard.        */
+                        if (tgt.empty())
+                        {
+                            tgt = v;             // deep copies the pointer list
+                            log(Lvl::DBG, "    ✓ first copy – new size=1");
+                            continue;
+                        }
+
+                        /* Subsequent fills – append safely ----------------------------- */
+                        const std::size_t oldCap = tgt.capacity();
+                        tgt.reserve(tgt.size() + v.size());   // single reallocation at most
+                        tgt.insert(tgt.end(), v.begin(), v.end());
+
+                        std::ostringstream ok;
+                        ok << "    ✓ merged " << v.size()
+                           << " profiles   new size=" << tgt.size()
+                           << "   cap " << oldCap << " → " << tgt.capacity();
+                        log(Lvl::DBG, ok.str());
+                    }
+                    catch (const std::exception& ex)
+                    {
+                        log(Lvl::ERR, std::string("    ❌ merging vectors failed – ") + ex.what());
+                    }
+                }
             }
+        }
+        catch(const std::exception& ex)
+        {
+            log(Lvl::ERR,std::string("regrouping failed – ")+ex.what());
+            return;
+        }
 
-            /* ===== (2) all‑cent plot ================================= */
+        /* ---------- 2. colour palette ----------------------------------- */
+        const int colTbl[] = {kRed+1,kBlue+2,kGreen+2,kMagenta+2,kCyan+2,kOrange+1};
+        const int nCol     = sizeof(colTbl)/sizeof(int);
+
+        /* ---------- 3. iterate over regrouped structure ----------------- */
+        for (const auto& [trig, detMap] : grp)
+        {
+            log(Lvl::INF,"trigger group: "+trig);
+            for (const auto& [det, regMap] : detMap)
+            for (const auto& [reg, harmMap] : regMap)
+            for (const auto& [n, centMap]  : harmMap)
             {
-              TCanvas c("c_all","",1100,850); c.SetGrid();
-              TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
-              int colIdx=0; double yMax=0;
 
-              for (const auto& [cent, vec] : centMap)
-              {
-                if (vec.empty()) continue;
-                auto g = graphFromProf(vec.front(), n, cent, trig);
-                int col = colTbl[colIdx++%nCol];
-                g->SetLineColor(col); g->SetMarkerColor(col);
-                g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (all cent)",
-                                 n,det.c_str(),reg.c_str()));
-                g->Draw(colIdx==1?"APL":"PL SAME");
-                leg.AddEntry(g.get(),Form("Cent %s %%",cent.c_str()),"pl");
-                yMax = std::max(yMax,
-                                *std::max_element(g->GetY(), g->GetY()+g->GetN()));
-                _ownedGraphs.push_back(std::move(g));
-              }
-              if (yMax>0)
-              {
-                c.Update();
-                if(auto* fr=static_cast<TH1*>(c.GetPrimitive("htemp")))
-                  fr->SetMaximum(1.15*yMax);
-              }
-              leg.Draw();
-              saveCanvas(c,{det,reg,Form("v%d",n),"summaryPlots"},
-                         Form("v%d_%s_%s_allCent.png",
-                              n,det.c_str(),reg.c_str()));
-            }
+                {
+                    std::ostringstream oss;
+                    oss << "  → det=" << det
+                        << "  reg=" << reg
+                        << "  n=" << n
+                        << "  centSlices=" << centMap.size();
+                    log(Lvl::INF, oss.str());
+                }
 
-            /* ===== (3) pT‑integrated v̅_n vs centrality ============== */
-            {
-              auto gCent = std::make_unique<TGraphErrors>();
-              int ip=0;
-              for (const auto& [cent, vec] : centMap)
-              {
-                if (vec.empty()) continue;
+                /* =========== (1)  v_n(pT)  – one canvas per centrality ============ */
+                for (const auto& [cent, vec] : centMap)
+                {
+                    if (vec.empty()) { log(Lvl::WRN,"   slice "+cent+" is EMPTY"); continue; }
 
-                const auto pos=cent.find('_');
-                const double cMid = 0.5*( std::stod(cent.substr(0,pos)) +
-                                          std::stod(cent.substr(pos+1)) );
+                    TCanvas c("c","",1100,850); c.SetGrid();
+                    auto g = graphFromProf(vec.front(), n, cent, trig);
+                    g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (Cent %s %%)",
+                                     n,det.c_str(),reg.c_str(),cent.c_str()));
+                    g->Draw("AP");
 
-                const std::string rName =
-                    Form("p_R%d_vs_cent_%s",n,trig.c_str());
-                double Rn=1.0;
-                if (auto* r = static_cast<TProfile*>(gROOT->FindObject(rName.c_str())))
-                Rn = r->GetBinContent(r->FindBin(cMid));
+                    saveCanvas(c,{det,reg,Form("v%d",n),"Cent_"+cent},
+                               Form("v%d_%s_%s_cent%s.png",
+                                    n,det.c_str(),reg.c_str(),cent.c_str()));
+                    log(Lvl::DBG,"      saved per‑cent canvas for cent="+cent);
+                }
 
-                const auto [mu,er] = meanProf(vec.front(),Rn);
+                /* =========== (2)  all‑centralities overlay ======================= */
+                try
+                {
+                    TCanvas cAll("c_all","",1100,850); cAll.SetGrid();
+                    TLegend leg(0.15,0.70,0.45,0.88); leg.SetBorderSize(0);
 
-                gCent->SetPoint     (ip, cMid, mu);
-                gCent->SetPointError(ip, 0.5*(std::stod(cent.substr(pos+1))-
-                                              std::stod(cent.substr(0,pos))), er);
-                ++ip;
-              }
+                    int   colIdx = 0;
+                    double yMax  = 0.0;
 
-              if (gCent->GetN()>0)
-              {
-                TCanvas c("c_cent","",1000,800); c.SetGrid();
-                gCent->SetTitle(Form("v_{%d} vs centrality – %s %s",
-                                     n,det.c_str(),reg.c_str()));
-                gCent->SetMarkerStyle(kFullCircle); gCent->SetLineWidth(2);
-                gCent->Draw("AP");
-                _ownedGraphs.push_back(std::move(gCent));
+                    for (const auto& [cent, vec] : centMap)
+                    {
+                        if (vec.empty()) continue;
+                        auto g = graphFromProf(vec.front(), n, cent, trig);
 
-                saveCanvas(c,{det,reg,Form("v%d",n),"summaryPlots"},
-                           Form("vbar%d_%s_%s_vsCent.png",
-                                n,det.c_str(),reg.c_str()));
-              }
-            }
-          }
-  }
+                        const int col = colTbl[colIdx++ % nCol];
+                        g->SetLineColor(col); g->SetMarkerColor(col);
+
+                        g->SetTitle(Form("v_{%d}(p_{T}) – %s %s (all cent)",
+                                         n,det.c_str(),reg.c_str()));
+
+                        g->Draw(colIdx==1 ? "APL" : "PL SAME");
+                        leg.AddEntry(g.get(),Form("Cent %s %%",cent.c_str()),"pl");
+
+                        const double *ys = g->GetY();
+                        yMax = std::max(yMax, *std::max_element(ys, ys + g->GetN()));
+
+                        _ownedGraphs.push_back(std::move(g));
+                    }
+
+                    if (yMax > 0)            /* raise frame top by 15 % head‑room */
+                    {
+                        cAll.Update();
+                        if (auto* fr = static_cast<TH1*>(cAll.GetPrimitive("htemp")))
+                            fr->SetMaximum(1.15 * yMax);
+                    }
+                    leg.Draw();
+
+                    saveCanvas(cAll,{det,reg,Form("v%d",n),"summaryPlots"},
+                               Form("v%d_%s_%s_allCent.png",
+                                    n,det.c_str(),reg.c_str()));
+                    log(Lvl::DBG,"      saved all‑cent overlay");
+                }
+                catch(const std::exception& ex)
+                {
+                    log(Lvl::ERR,std::string("   overlay plot failed – ")+ex.what());
+                }
+
+                /* =========== (3)  pT‑integrated v̅_n versus centrality =========== */
+                try
+                {
+                    auto gCent = std::make_unique<TGraphErrors>();
+                    int ip = 0;
+
+                    for (const auto& [cent, vec] : centMap)
+                    {
+                        if (vec.empty()) continue;
+
+                        const size_t pos = cent.find('_');
+                        const double cMid = 0.5 * ( std::stod(cent.substr(0,pos)) +
+                                                    std::stod(cent.substr(pos+1)) );
+
+                        const std::string rName =
+                            Form("p_R%d_vs_cent_%s", n, trig.c_str());
+                        double Rn = 1.0;
+                        if (auto* r = static_cast<TProfile*>(gROOT->FindObject(rName.c_str())))
+                            Rn = r->GetBinContent(r->FindBin(cMid));
+
+                        const auto [mu,er] = meanProf(vec.front(), Rn);
+
+                        gCent->SetPoint     (ip, cMid, mu);
+                        gCent->SetPointError(ip,
+                                             0.5*(std::stod(cent.substr(pos+1))-
+                                                  std::stod(cent.substr(0,pos))), er);
+                        ++ip;
+                    }
+
+                    if (gCent->GetN() > 0)
+                    {
+                        TCanvas cCent("c_cent","",1000,800); cCent.SetGrid();
+                        gCent->SetTitle(Form("v_{%d} vs centrality – %s %s",
+                                             n,det.c_str(),reg.c_str()));
+                        gCent->SetMarkerStyle(kFullCircle); gCent->SetLineWidth(2);
+                        gCent->Draw("AP");
+
+                        _ownedGraphs.push_back(std::move(gCent));
+
+                        saveCanvas(cCent,{det,reg,Form("v%d",n),"summaryPlots"},
+                                   Form("vbar%d_%s_%s_vsCent.png",
+                                        n,det.c_str(),reg.c_str()));
+                        log(Lvl::DBG,"      saved v̅_n vs cent");
+                    }
+                    else
+                        log(Lvl::WRN,"      no points for v̅_n vs cent – skipped");
+                }
+                catch(const std::exception& ex)
+                {
+                    log(Lvl::ERR,std::string("   v̅_n vs cent failed – ")+ex.what());
+                }
+            } /* end harmonic‑loop */
+        }     /* end trigger‑loop */
+
+        log(Lvl::INF,"writeCanvases(): exit OK");
+    }
 
   // ---------- save helper ---------------------------------------------
   void saveCanvas(TCanvas& c,
@@ -4702,6 +5059,40 @@ namespace  /* helpers stay local to this TU */ {
 /* small convenience type from the original code -------------------- */
 struct Cnt { int tot = 0, used = 0; };
 
+/* ------------------------------------------------------------------ *
+ *  QA‑module filter – controlled via environment variable QA_ONLY.
+ *  Example:   export QA_ONLY="correlations,hcal,jetqa"
+ * ------------------------------------------------------------------ */
+static std::unordered_set<std::string> gQaFilter;
+
+static bool wantQA(const std::string& tag)
+{
+    /* empty filter  →  accept every module */
+    return gQaFilter.empty() || gQaFilter.count(tag);
+}
+
+/* one‑time initialiser – runs before main() ------------------------ */
+struct _InitQaFilter_
+{
+    _InitQaFilter_()
+    {
+        const char* env = std::getenv("QA_ONLY");
+        if (!env || !*env) return;                 // no list supplied
+        std::stringstream ss(env);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            std::transform(tok.begin(), tok.end(), tok.begin(), ::tolower);
+            gQaFilter.insert(tok);
+        }
+        if (!gQaFilter.empty()) {
+            std::ostringstream o;
+            o << "QA filter active → ";
+            for (const auto& t : gQaFilter) o << t << ' ';
+            log::info(o.str());
+        }
+    }
+} _initQaFilter_;
+
 /* ===================================================================
  * H‑0  :  open ROOT file + discover centrality slices
  * =================================================================== */
@@ -4758,126 +5149,215 @@ void catalogueHistograms(TFile*             in,
 /* ===================================================================
  * H‑2  :  PASS‑1 – full QA production
  *         Returns the two maps needed later for the summaries.
+ *         ▶  This version is functionally identical to the original
+ *            but adds exhaustive diagnostics and exception guards.
  * =================================================================== */
 struct QaMaps {
-    std::unordered_map<std::string,Cnt> stat;
-    std::unordered_map<std::string,int> runsActive;
+    std::unordered_map<std::string,Cnt> stat;       // total/used histograms
+    std::unordered_map<std::string,int> runsActive; // scaled‑trigger activity
 };
 
 QaMaps runQaProduction(TFile*              in,
                        const std::string&  outBase,
                        const CentList&     slices)
 {
-    log::banner("Pass 1 – QA Production");
+    log::banner("Pass 1 – QA Production  (outBase = \"" + outBase + "\")");
 
+    //------------------------------------------------------------------
+    // 0. CSV initialisation
+    //------------------------------------------------------------------
     fs::path csvPath = fs::path(outBase) / "InvariantMassSummary.csv";
     ensure_dir(csvPath.parent_path());
+
     std::ofstream csv(csvPath);
-    csv << "trigger,E,Chi,Asym,pTlo,pThi,meanPi0,errPi0,sigmaPi0,errSigmaPi0,"
-            "meanEta,errEta,sigmaEta,errSigmaEta\n";
-
-    NSCache<MapPair> mbdCache, sepdCache;
-    QaMaps maps;                                    // <-- will be returned
-
-    TIter itDir(in->GetListOfKeys());
-    while (auto* kd = dynamic_cast<TKey*>(itDir())) {
-        if (strcmp(kd->GetClassName(), "TDirectoryFile")) continue;
-        string trg = kd->GetName(); if (!kTriggersWanted.count(trg)) continue;
-        TDirectory* dTrig = static_cast<TDirectory*>(kd->ReadObj());
-
-        /* ------------------------------------------------------------ *
-         * isMinimalTrigFolder – copied verbatim                        *
-         * ------------------------------------------------------------ */
-        auto isMinimalTrigFolder = [&](TDirectory* dir)->bool
-        {
-            TIter it(dir->GetListOfKeys());
-            while (auto* key = dynamic_cast<TKey*>(it())) {
-                const std::string h = key->GetName();
-                const bool ok =
-                      h == "h_MB_vs_Trigger" ||
-                      h.rfind("cnt_",0)            == 0 ||
-                      h.rfind("h_vtxRelToCut_",0)  == 0;
-                if (!ok) return false;
-            }
-            return true;
-        };
-
-        fs::path b = fs::path(outBase) / trg;
-        bool hasLive = false;                       // exactly as before
-
-        if (isMinimalTrigFolder(dTrig)) {
-            ensure_dir(b / "triggerQA");
-        } else {
-            auto *hCntScaled = dynamic_cast<TH1 *>(
-                    dTrig->Get(Form("cnt_%s_scaled", trg.c_str())));
-            hasLive = (hCntScaled && hCntScaled->GetBinContent(1) > 0);
-            if (hasLive) ++maps.runsActive[trg];
-
-            std::vector<std::string> subDirs = {
-                "correlations", "centrality",
-                "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
-                "MBD/otherQA", "MBD/zVertex",
-                "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
-                "jetQA/generalHistos", "jetQA/summary", "triggerQA"
-            };
-            if (hasLive) {
-                subDirs.insert(subDirs.end(), {
-                    "vNana",
-                    "EMCal/otherQA",
-                    "EMCal/invMassQA",
-                    "EMCal/invMassQA/cutQA"
-                });
-            }
-            for (const auto &sub : subDirs) ensure_dir(b / sub);
-        }
-
-        /* ------------------- QA module instantiation ---------------- */
-        std::vector<std::unique_ptr<QA>> qa;
-        fs::path base = fs::path(outBase) / trg;
-        
-        qa.emplace_back(std::make_unique<CorrQA>(trg, base, slices));
-        qa.emplace_back(std::make_unique<HcalQA >(trg, base, slices));
-        qa.emplace_back(std::make_unique<MbdQA  >(trg, base, slices, mbdCache));
-        qa.emplace_back(std::make_unique<SepdQA >(trg, base, slices, sepdCache));
-        qa.emplace_back(std::make_unique<sEPDotherQA>(trg, base, slices));
-        qa.emplace_back(std::make_unique<JetQA >(trg, base, slices));
-        qa.emplace_back(std::make_unique<EventQA>(trg, base, slices));
-        qa.emplace_back(std::make_unique<TriggerQA>(trg, base, slices));
-
-        if (hasLive) {
-            qa.emplace_back(std::make_unique<Pi0QA >(trg, base, slices, csv));
-            qa.emplace_back(std::make_unique<EmcalQA>(trg, base, slices));
-            qa.emplace_back(std::make_unique<VnPlotQA>(trg, base, slices));
-        }
-
-        /* ---------------- directory walk (original lambda) ---------- */
-        auto walkDir = [&](TDirectory* dir, auto&& walk)->void
-        {
-            TIter it(dir->GetListOfKeys());
-            while (auto* key = dynamic_cast<TKey*>(it()))
-            {
-                if (strcmp(key->GetClassName(),"TDirectoryFile") == 0) {
-                    walk(static_cast<TDirectory*>(key->ReadObj()), walk);
-                    continue;
-                }
-                TObject* obj = key->ReadObj();
-                if (obj->InheritsFrom(TH1::Class()))
-                    static_cast<TH1*>(obj)->SetDirectory(nullptr);
-
-                ++maps.stat[trg].tot;
-                for (auto& m : qa)
-                    if (m->process(obj)) { ++maps.stat[trg].used; break; }
-            }
-        };
-        walkDir(dTrig, walkDir);
-
-        log::ok("Trigger " + trg + ": processed " +
-                std::to_string(maps.stat[trg].tot) + " objects");
+    if (!csv) {
+        log::err("Cannot open " + csvPath.string() + " for writing – aborting runQaProduction()");
+        return {};
     }
+    csv << "trigger,E,Chi,Asym,pTlo,pThi,meanPi0,errPi0,sigmaPi0,errSigmaPi0,"
+           "meanEta,errEta,sigmaEta,errSigmaEta\n";
+
+    //------------------------------------------------------------------
+    // 1. state managed across triggers
+    //------------------------------------------------------------------
+    NSCache<MapPair> mbdCache, sepdCache;
+    QaMaps maps;                       // <‑‑ will be returned
+
+    //------------------------------------------------------------------
+    // 2. iterate over top‑level trigger directories (one “trg” loop)
+    //    • emits start / end banners
+    //    • traps every recoverable error
+    //    • counts silent failures (errCnt)
+    //------------------------------------------------------------------
+    TIter itDir(in->GetListOfKeys());
+    while (auto* kd = dynamic_cast<TKey*>(itDir()))
+    {
+        // ── guard: interested only in sub‑directories ──────────────────
+        if (strcmp(kd->GetClassName(), "TDirectoryFile") != 0) continue;
+
+        const std::string trg = kd->GetName();
+        if (!kTriggersWanted.count(trg)) continue;
+
+        const auto t0 = std::chrono::steady_clock::now();
+        log::banner("Trigger \"" + trg + "\" — analysis START");
+
+        try
+        {
+            //------------------------------------------------------------------
+            // 2‑A. open trigger directory
+            //------------------------------------------------------------------
+            std::unique_ptr<TDirectory> trigDir(
+                static_cast<TDirectory*>(kd->ReadObj()));
+
+            if (!trigDir || trigDir->IsZombie()) {
+                log::warn("  ↳ directory unreadable – skipping trigger \"" + trg + '"');
+                continue;
+            }
+
+            //------------------------------------------------------------------
+            // 2‑B. classify folder as “minimal” or “full”
+            //------------------------------------------------------------------
+            auto isMinimal = [](TDirectory* d)->bool
+            {
+                TIter it(d->GetListOfKeys());
+                while (auto* k = dynamic_cast<TKey*>(it())) {
+                    const std::string n = k->GetName();
+                    const bool ok =  n == "h_MB_vs_Trigger"          ||
+                                     n.rfind("cnt_",0)            == 0 ||
+                                     n.rfind("h_vtxRelToCut_",0)  == 0;
+                    if (!ok) return false;
+                }
+                return true;
+            };
+
+            fs::path trgBase = fs::path(outBase) / trg;
+            bool     hasLive = false;
+
+            //------------------------------------------------------------------
+            // 2‑C. ensure output directory tree exists
+            //------------------------------------------------------------------
+            if (isMinimal(trigDir.get()))
+            {
+                log::trace("  ↳ minimal folder (MB‑only)");
+                ensure_dir(trgBase / "triggerQA");
+            }
+            else
+            {
+                // live‑trigger detection
+                auto* hCntScaled = dynamic_cast<TH1*>(
+                        trigDir->Get(Form("cnt_%s_scaled", trg.c_str())));
+                hasLive = (hCntScaled && hCntScaled->GetBinContent(1) > 0);
+                if (hasLive) ++maps.runsActive[trg];
+
+                std::vector<std::string> sub = {
+                    "correlations", "centrality",
+                    "HCal/IHCal", "HCal/OHCal", "HCal/totalHCal",
+                    "MBD/otherQA", "MBD/zVertex",
+                    "sEPD/OtherQA", "sEPD/EventPlaneQA", "sEPD/tileQA",
+                    "jetQA/generalHistos", "jetQA/summary", "triggerQA"
+                };
+                if (hasLive)
+                    sub.insert(sub.end(),
+                               {"vNana","EMCal/otherQA",
+                                "EMCal/invMassQA","EMCal/invMassQA/cutQA"});
+
+                for (const auto& sd : sub)
+                    try {
+                        ensure_dir(trgBase / sd);
+                    }
+                    catch (const std::exception& ex) {
+                        log::warn("  ↳ cannot create \"" +
+                                  (trgBase / sd).string() +
+                                  "\" – " + ex.what());
+                    }
+            }
+
+            //------------------------------------------------------------------
+            // 2‑D. assemble QA module stack  (filter‑aware)
+            //------------------------------------------------------------------
+            std::vector<std::unique_ptr<QA>> qa;
+
+            /* helper: add module only when wanted */
+            auto push = [&](const std::string& tag, auto p)
+                        { if (wantQA(tag)) qa.emplace_back(std::move(p)); };
+
+            push("correlations", std::make_unique<CorrQA>(trg, trgBase, slices));
+            push("hcal",         std::make_unique<HcalQA>(trg, trgBase, slices));
+            push("mbd",          std::make_unique<MbdQA >(trg, trgBase, slices, mbdCache));
+            push("sepd",         std::make_unique<SepdQA>(trg, trgBase, slices, sepdCache));
+            push("sepdother",    std::make_unique<sEPDotherQA>(trg, trgBase, slices));
+            push("jetqa",        std::make_unique<JetQA >(trg, trgBase, slices));
+            push("eventqa",      std::make_unique<EventQA>(trg, trgBase, slices));
+            push("triggerqa",    std::make_unique<TriggerQA>(trg, trgBase, slices));
+
+            if (hasLive) {
+                push("pi0",   std::make_unique<Pi0QA >(trg, trgBase, slices, csv));
+                push("emcal", std::make_unique<EmcalQA>(trg, trgBase, slices));
+                push("vn",    std::make_unique<VnPlotQA>(trg, trgBase, slices));
+            }
+
+            log::trace("  ↳ instantiated "
+                       + std::to_string(qa.size()) + " QA modules");
+
+            //------------------------------------------------------------------
+            // 2‑E. recursive walk of all keys inside the trigger directory
+            //------------------------------------------------------------------
+            size_t errCnt = 0;
+
+            auto walkDir = [&](TDirectory* dir, auto&& walk)->void {
+                TIter it(dir->GetListOfKeys());
+                while (auto* key = dynamic_cast<TKey*>(it()))
+                {
+                    // dive into sub‑directories first
+                    if (strcmp(key->GetClassName(),"TDirectoryFile") == 0) {
+                        walk(static_cast<TDirectory*>(key->ReadObj()), walk);
+                        continue;
+                    }
+
+                    std::unique_ptr<TObject> obj(key->ReadObj());
+                    if (!obj) { ++errCnt; continue; }
+
+                    // detach TH1 from ROOT's dir ownership
+                    if (obj->InheritsFrom(TH1::Class()))
+                        static_cast<TH1*>(obj.get())->SetDirectory(nullptr);
+
+                    ++maps.stat[trg].tot;
+                    bool used = false;
+                    for (auto& m : qa)
+                        if (m->process(obj.get())) { used = true; break; }
+
+                    if (used) ++maps.stat[trg].used;
+                }
+            };
+            walkDir(trigDir.get(), walkDir);
+
+            //------------------------------------------------------------------
+            // 2‑F. end‑of‑trigger log line
+            //------------------------------------------------------------------
+            const auto dt = std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() - t0).count();
+
+            log::ok("Trigger \"" + trg + "\"  – done in "
+                    + std::to_string(dt).substr(0,5) + " s"
+                    + "   |   used "
+                    + std::to_string(maps.stat[trg].used) + "/"
+                    + std::to_string(maps.stat[trg].tot) + " objects"
+                    + (errCnt ? ("   |   silent‑failures = " + std::to_string(errCnt)) : ""));
+        }
+        catch (const std::exception& ex)
+        {
+            log::err("‼  Fatal exception while processing trigger \""
+                     + trg + "\": " + ex.what());
+        }
+        log::banner("Trigger \"" + trg + "\" — analysis END");
+    } // <- end trigger loop
+
 
     csv.close();
-    return maps;
+    log::info("Pass 1 – QA Production finished, CSV written → " + csvPath.string());
+    return maps;  // ––––––––––––––––––––––––––––––––––––––––––––––––––
 }
+
 
 /* ===================================================================
  * H‑3  :  summary printouts   (three blocks, unchanged text)
@@ -5230,7 +5710,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     std::unordered_map<std::string, int>                      sebCount;
 
     {   /* 4 a. read MissingSEB.txt */
-        std::ifstream miss("/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations/output/MissingSEB.txt");
+        std::ifstream miss( (baseDir / "output" / "MissingSEB.txt").string() );
         if (!miss) {
             log::warn("MissingSEB.txt not found – merging all runs");
         } else {

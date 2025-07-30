@@ -88,23 +88,62 @@ Result: `output/output_total.root`
 
 ---
 
-## 6 · Offline analysis & plotting
+## 6 · Offline analysis & plotting
 
 ```bash
-chmod +x runAuAu.sh then ./runAuAu.sh     # writes PNG + CSV (this runs the analyzeAuAu cpp macro in root compiler mode to increase re runnning speed)
+# build once (ACLiC optimisation) then launch
+chmod +x runAuAu.sh
+./runAuAu.sh                   # default: all QA modules on all runs
+```
+
+### 6.1  Selecting QA modules at run‑time  
+
+The last positional argument can be **a comma‑separated list of QA tags**.  
+Only the listed modules run; everything else is skipped.  
+If you omit the list, the macro behaves exactly as before (runs **all** modules).
+
+| Tag            | QA module instantiated                            |
+| -------------- | ------------------------------------------------- |
+| `correlations` | detector‑correlation maps (CorrQA)                |
+| `hcal`         | HCal QA (IHCal / OHCal / totalHCal)               |
+| `mbd`          | MBD QA                                            |
+| `sepd`         | sEPD QA (event‑plane, tile, …)                    |
+| `sepdother`    | miscellaneous sEPD checks                         |
+| `jetqa`        | jet‑trigger QA                                    |
+| `eventqa`      | global event‑quality checks                       |
+| `triggerqa`    | trigger‑counter summaries                         |
+| `pi0`          | π⁰ / η invariant‑mass QA                          |
+| `emcal`        | EMCal QA (non‑mass plots)                         |
+| `vn`           | flow‑vₙ plots                                     |
+
+> **Syntax**  
+> `./runAuAu.sh [--verbose] [mode] [mode‑args] [qa_tag_1,qa_tag_2,…]`
+
+### 6.2  Typical calls
+
+```bash
+# CorrQA and JetQA only, all runs
+./runAuAu.sh correlations,jetqa
+
+# first run only, HCal and π0 modules
+./runAuAu.sh testRun hcal,pi0
+
+# merge top‑5 runs, then CorrQA + HCal + vₙ plots
+./runAuAu.sh testCombined 5 correlations,hcal,vn
 ```
 
 Key outputs:
 
 ```
 output/Combined/<trigger>/
-   ├─ vn/FlowQA/…
+   ├─ vn/FlowQA/…          (if ‘vn’ selected)
    │   ├─ v2_ALL_S_allCent_MB.png
    │   ├─ v2_cent20_40_MB.png
    │   └─ vbar2_ALL_S_vsCent_MB.png
-   ├─ EMCal/…
+   ├─ EMCal/…              (if ‘emcal’ selected)
    └─ InvariantMassSummary.csv
 ```
+
 
 ---
 
