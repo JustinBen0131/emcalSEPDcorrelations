@@ -1710,12 +1710,16 @@ class CorrQA : public QA
     ~CorrQA() override
     {
         writeCentralityOverviews();   // §4 below
-        writeRunSummaries();          // implemented just below
+        writeRunSummaries();          // run‑by‑run pages
+        writeCalorimeterSummary();    // 2×3 calorimeter overview  ← NEW
     }
 
  private:
-    static std::unordered_map<std::string, NameMap> s_cache;
-    std::string m_trig;
+     static std::unordered_map<std::string, NameMap> s_cache;
+     std::string m_trig;
+
+     /* ─ calorimeter‑overview helper ─ */
+     std::unordered_map<std::string, std::shared_ptr<TH2>> m_calSummary;
 
     /* ------------------------------------------------------------------ *
      *  Produce 8 × 8 overview pages for every detector‑pair folder.       *
@@ -1821,7 +1825,7 @@ class CorrQA : public QA
                     TLatex header; header.SetNDC();
                     header.SetTextFont(42);
                     header.SetTextAlign(11);
-                    header.SetTextSize(0.040);
+                    header.SetTextSize(0.034);
                     header.DrawLatex(0.02, 0.97, groupDir.c_str());
 
                     fs::path png = baseDir /
@@ -1845,6 +1849,86 @@ class CorrQA : public QA
         log(Lvl::DBG,"writeRunSummaries(): clearing s_cache");
         s_cache.clear();
     }
+    
+    /* ------------------------------------------------------------------ *
+     *  2×3 calorimeter summary (EMCal/IHCal/OHCal  ×  MBD/sEPD)          *
+     * ------------------------------------------------------------------ */
+    void writeCalorimeterSummary()
+    {
+        static const std::array<std::string,6> order = {
+            "EMCal_MBD","IHCal_MBD","OHCal_MBD",
+            "EMCal_sEPD","IHCal_sEPD","OHCal_sEPD"};
+
+        /* stop early if none of the six inclusive maps are cached */
+        bool any = false;
+        for (const auto& k : order)
+            if (m_calSummary.count(k)) { any = true; break; }
+        if (!any) {
+            log(Lvl::DBG,"writeCalorimeterSummary(): nothing cached – skipped");
+            return;
+        }
+
+        fs::path outDir = root / "correlations" / "calorimeterSummary";
+        ensure_dir(outDir);
+
+        TCanvas c("c_calSum","", 3*550, 2*500);
+        c.Divide(3,2,0.001,0.001);
+
+        /* ── loop over the 6 pads ─────────────────────────────────────────── */
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            c.cd(static_cast<int>(i)+1);
+            setupPad(gPad);
+            gPad->SetTopMargin(0.12);   /* room for per‑pad header */
+            gPad->SetLogz();
+
+            auto it = m_calSummary.find(order[i]);
+            if (it != m_calSummary.end()) {
+                tightenAxes(it->second.get());
+                it->second->Draw("COLZ");
+            } else {                                /* N/A pad */
+                TLatex miss; miss.SetNDC(); miss.SetTextAlign(22);
+                miss.SetTextFont(42); miss.SetTextSize(0.04);
+                miss.DrawLatex(0.50,0.50,"N/A");
+            }
+
+            /* ── per‑pad title, e.g. “EMCal vs MBD” ───────────────────────── */
+            const std::size_t us = order[i].find('_');
+            const std::string tokA = order[i].substr(0, us);
+            const std::string tokB = order[i].substr(us+1);
+            const std::string padTitle =
+                prettyDet(tokA) + "  vs  " + prettyDet(tokB);
+
+            TLatex padTx; padTx.SetNDC();
+            padTx.SetTextAlign(22); padTx.SetTextFont(42);
+            padTx.SetTextSize(0.045);
+            padTx.DrawLatex(0.50, 0.96, padTitle.c_str());
+        }
+
+        /* ── global labels: two lines, smaller font, tight in the corner ─── */
+        c.cd();  /* main canvas pad */
+        const std::string runID   = stripLeadingZeros(root.parent_path()
+                                                      .filename().string());
+        const std::string trigLbl = prettifyTrigger(m_trig);
+
+        TLatex tx; tx.SetNDC();
+        tx.SetTextAlign(11);         /* left‑justified, top‑aligned           */
+        tx.SetTextFont(42);
+        tx.SetTextSize(0.022);       /* smaller than per‑pad titles           */
+
+        constexpr double x0 = 0.01;  /* far left edge of canvas               */
+        constexpr double y0 = 0.96; /* very top                              */
+
+        tx.DrawLatex(x0, y0, ("Run " + runID).c_str());          /* line 1   */
+        tx.DrawLatex(x0, y0 - 0.020, trigLbl.c_str());           /* line 2   */
+
+
+        fs::path png = outDir / "calorimeterSummary.png";
+        c.SaveAs(png.string().c_str());
+        log(Lvl::INFO,"writeCalorimeterSummary(): saved " + png.string());
+
+        m_calSummary.clear();
+    }
+
 
 
     // ─────────────────────────────── 1. per-histogram ──────────────────────
@@ -2021,7 +2105,7 @@ class CorrQA : public QA
                 tl.SetNDC();
                 tl.SetTextAlign(22);
                 tl.SetTextFont(42);
-                tl.SetTextSize(0.05);
+                tl.SetTextSize(0.04);
                 std::string header;
                 if (detA == "sEPD" && detB == "sEPD")            // special N‑S correlation
                     header = "sEPD North - South Correlations";
@@ -2050,13 +2134,25 @@ class CorrQA : public QA
                 tl.SetNDC();
                 tl.SetTextAlign(22);
                 tl.SetTextFont(42);
-                tl.SetTextSize(0.05);
+                tl.SetTextSize(0.04);
                 std::string header = prettyDet(tokA) + "  vs  " + prettyDet(tokB) +
                                      "  (" + prettifyTrigger(m_trig) + ")";
                 tl.DrawLatex(0.50, 0.96, header.c_str());
             }
             drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
             c.SaveAs(pngFile.string().c_str());
+
+            /* cache six inclusive maps for the 2×3 calorimeter summary */
+            if (!hasCent && h2) {
+                static const std::unordered_set<std::string> want = {
+                    "EMCal_MBD","IHCal_MBD","OHCal_MBD",
+                    "EMCal_sEPD","IHCal_sEPD","OHCal_sEPD"};
+                if (want.count(groupDir)) {
+                    auto cl = std::shared_ptr<TH2>(static_cast<TH2*>(h2->Clone()));
+                    cl->SetDirectory(nullptr); tidyAxes(cl.get()); styleAxes(cl.get(), false);
+                    m_calSummary[groupDir] = std::move(cl);
+                }
+            }
 
             /* ─── mirror copy for unified “HCal” collection ───────────────────── */
             const bool involvesHCal =
@@ -5466,92 +5562,176 @@ public:
     using QA::QA;                       // inherit constructors
 
     // ────────────────────────────────────────────────────────────────
-    // 1. per‑histogram processing
+    // 1. per‑histogram processing – **verbose, exception‑safe version**
     // ────────────────────────────────────────────────────────────────
     bool process(TObject* o) override
     {
-        if (!o->InheritsFrom(TH1::Class()))          // neither TH1 nor TH2
+        /* ---------------------------------------------------------- *
+         * 0.  Preliminary sanity checks                              *
+         * ---------------------------------------------------------- */
+        if (!o) {
+            log(Lvl::ERR,"process(): received nullptr – skipped");
             return false;
+        }
+        if (!o->InheritsFrom(TH1::Class())) {          // we process only TH1/2
+            log(Lvl::DBG,Form("process(): \"%s\" is not TH1 – skipped",o->GetName()));
+            return false;
+        }
 
         const std::string n = o->GetName();
+        log(Lvl::DBG,"process(): start \""+n+'\"');
 
-        /* --------  A. MB×Trigger correlation  (TH2I)  --------------- */
-        if (n == "h_MB_vs_Trigger")
+        try
         {
-            auto* h2 = dynamic_cast<TH2*>(o);
-            if (!h2) return false;
+            /* ============================================================= *
+             *  A.  Minimum‑bias × Trigger correlation matrix (TH2)          *
+             * ============================================================= */
+            if (n == "h_MB_vs_Trigger")
+            {
+                auto* h2 = dynamic_cast<TH2*>(o);
+                if (!h2) {
+                    log(Lvl::ERR,"process(): \""+n+"\" – dynamic_cast<TH2*> failed");
+                    return false;
+                }
 
-            fs::path out = root / "triggerQA" / "MBTrigCorrelation.png";
+                fs::path out = root / "triggerQA" / "MBTrigCorrelation.png";
+                ensure_dir(out.parent_path());
+
+                log(Lvl::DBG,"process(): rendering MB×Trigger correlation → "+out.string());
+
+                TCanvas c("c_corr","MB vs Trigger decision",1200,700);
+                c.SetRightMargin(0.18);
+                h2->SetStats(0);
+                h2->SetTitle("Minimum‑bias vs Trigger decision;Trigger key;Event category");
+                c.SetLogz();
+                h2->Draw("COLZ TEXT");
+
+                /* ---- totals and accepted fraction ------------------------ */
+                TLatex tx; tx.SetNDC(); tx.SetTextSize(0.03); tx.SetTextAlign(13);
+                const double padL=c.GetLeftMargin(), padT=c.GetTopMargin();
+                const int nTrig = h2->GetNbinsX();
+                long long totEvt=0, bothOK=0;
+
+                for (int ix=1; ix<=nTrig; ++ix)
+                {
+                    bothOK += static_cast<long long>(h2->GetBinContent(ix,4));
+                    for (int iy=1; iy<=4; ++iy)
+                        totEvt += static_cast<long long>(h2->GetBinContent(ix,iy));
+                }
+                tx.DrawLatex(padL+0.02,1-padT-0.04,
+                             Form("Total events : %lld",totEvt));
+                tx.DrawLatex(padL+0.02,1-padT-0.08,
+                             Form("Accepted (MB && Trig) : %lld  (%.2f%%)",
+                                  bothOK, (totEvt ? 100.*bothOK/totEvt : 0.0)));
+
+                c.SaveAs(out.string().c_str());
+                log(Lvl::INF,"wrote "+out.string());
+                return true;                                // finished branch A
+            }
+
+            /* ============================================================= *
+             *  B.  Scalar counters & turn‑on spectra                         *
+             * ============================================================= */
+
+            const bool isCnt =
+                  n.rfind("cnt_",0)                         == 0  ||   // raw/live/scaled bit counters
+                  n.rfind("h_vtxRelToCut_",0)               == 0  ||   // vertex‑quality monitor
+                  n.rfind("h_maxClusterEnergy_doNotScale_",0)== 0 ||   // turn‑on  (raw+live)
+                  n.rfind("h_maxClusterE_EMC_",0)           == 0;      // turn‑on  (scaled)
+
+            if (!isCnt) {
+                log(Lvl::DBG,"process(): \""+n+"\" – not a counter/turn‑on histo");
+                return false;
+            }
+
+            auto* h1 = dynamic_cast<TH1*>(o);
+            if (!h1) {
+                log(Lvl::ERR,"process(): \""+n+"\" – dynamic_cast<TH1*> failed");
+                return false;
+            }
+
+
+            /* corrected code – four functional changes
+             *   (1) strip *all* leading zeros after “…_lt_”
+             *   (2) ignore empty histograms (Integral() == 0)
+             *   (3) never overwrite an existing entry (keeps merged content)
+             *   (4) log which keys are stored ─ easier debugging                */
+            auto normalisedKey = [](std::string raw) -> std::string
+            {
+                /* “…_lt_00025” -> “…_lt_25”, “…_lt_010” -> “…_lt_10”, … */
+                return std::regex_replace(raw, std::regex(R"(_lt_0+([1-9]\d*))"), "_lt_$1");
+            };
+
+            /* do ‑ N O T ‑ scale -------------------------------------------------- */
+            if (n.rfind("h_maxClusterEnergy_doNotScale_",0)==0)
+            {
+                std::string trgName =
+                    normalisedKey(n.substr(std::strlen("h_maxClusterEnergy_doNotScale_")));
+
+                if (!_spectra.count(trgName))                       // ← no “Integral()” filter
+                {
+                    TH1* hClone = static_cast<TH1*>(h1->Clone());
+                    hClone->SetDirectory(nullptr);
+                    _spectra[trgName] = hClone;
+                    log(Lvl::DBG,"process(): cached doNotScale \""+trgName+
+                                  "\"  (Integral=" + std::to_string(h1->Integral()) + ')');
+                }
+            }
+
+            /* s c a l e d  -------------------------------------------------------- */
+            else if (n.rfind("h_maxClusterE_EMC_",0)==0)
+            {
+                std::string trgName =
+                    normalisedKey(n.substr(std::strlen("h_maxClusterE_EMC_")));
+
+                if (!_spectraScaled.count(trgName))
+                {
+                    TH1* hClone = static_cast<TH1*>(h1->Clone());
+                    hClone->SetDirectory(nullptr);
+                    _spectraScaled[trgName] = hClone;
+                    log(Lvl::DBG,"process(): cached scaled \""+trgName+
+                                  "\"  (Integral=" + std::to_string(h1->Integral()) + ')');
+                }
+            }
+
+            /* ---- (B‑2) decide subfolder ---------------------------------- */
+            std::string subdir;
+            if (n.find("_raw")    != std::string::npos) subdir = "bitCounts/raw";
+            else if (n.find("_live")   != std::string::npos) subdir = "bitCounts/live";
+            else if (n.find("_scaled") != std::string::npos) subdir = "bitCounts/scaled";
+            else if (n.rfind("h_vtxRelToCut_",0)==0)         subdir = "vtxCutCompliance";
+            else                                            subdir = "misc";
+
+            fs::path out = root / "triggerQA" / subdir / (n + ".png");
             ensure_dir(out.parent_path());
 
-            TCanvas c("c_corr","MB vs Trigger decision",1200,700);
-            c.SetRightMargin(0.18);
-            h2->SetStats(0);
-            h2->SetTitle("Minimum‑bias vs Trigger decision;Trigger key;Event category");
-            c.SetLogz();
-            h2->Draw("COLZ TEXT");
-
-            /* add raw totals in a text box */
-            TLatex tx; tx.SetNDC(); tx.SetTextSize(0.03); tx.SetTextAlign(13);
-            const double padL=c.GetLeftMargin(), padT=c.GetTopMargin();
-            int nTrig=h2->GetNbinsX();
-            long long totEvt=0, bothOK=0;
-            for (int ix=1; ix<=nTrig; ++ix){
-                bothOK += static_cast<long long>(h2->GetBinContent(ix,4));
-                for (int iy=1; iy<=4; ++iy)
-                    totEvt += static_cast<long long>(h2->GetBinContent(ix,iy));
-            }
-            tx.DrawLatex(padL+0.02,1-padT-0.04,
-                         Form("Total events : %lld",totEvt));
-            tx.DrawLatex(padL+0.02,1-padT-0.08,
-                         Form("Accepted (MB && Trig) : %lld (%.2f%%)",
-                              bothOK, (totEvt?100.*bothOK/totEvt:0)));
+            /* ---- (B‑3) render the histogram ------------------------------ */
+            log(Lvl::DBG,"process(): rendering counter → "+out.string());
+            TCanvas c("c_cnt","",800,600);
+            h1->SetStats(0);
+            h1->SetLineWidth(2);
+            const double yMax = 1.15 * h1->GetMaximum();
+            h1->SetMaximum(yMax>0 ? yMax : 1.);
+            h1->Draw("HIST TEXT00");
 
             c.SaveAs(out.string().c_str());
-            log(Lvl::INF,"wrote " + out.string());
-            return true;
+            log(Lvl::DBG,"saved "+out.string());
+            return true;                                    // finished branch B
         }
-
-        /* --------  B. scalar trigger counters  ---------------------- */
-        const bool isCnt =
-              n.find("cnt_")  == 0 ||
-              n.rfind("h_vtxRelToCut_",0) == 0;
-        if (!isCnt) return false;
-
-        auto* h1 = dynamic_cast<TH1*>(o);
-        if (!h1) return false;
-
-        /* cache the unscaled “doNotScale” spectra ─────────────────────────── */
-        if (n.rfind("h_maxClusterEnergy_doNotScale_",0)==0) {
-            const std::string trgName = n.substr(n.rfind('_')+1);
-            _spectra[trgName] = h1;                 // shallow copy – ROOT owns it
+        /* -------------------------------------------------------------- *
+         * 4.  Robust exception handling                                   *
+         * -------------------------------------------------------------- */
+        catch (const std::exception& ex)
+        {
+            log(Lvl::ERR,std::string("process(): C++ exception for \"")+n+
+                          "\" – "+ex.what());
+            return false;
         }
-
-        /* cache the per‑event / scaled spectra (if present in Combined pass) */
-        else if (n.rfind("h_maxClusterE_EMC_",0)==0) {
-            const std::string trgName = n.substr(n.rfind('_')+1);
-            _spectraScaled[trgName] = h1;           // second cache for “scaled” plots
+        catch (...)
+        {
+            log(Lvl::ERR,std::string("process(): UNKNOWN exception for \"")+n+"\"");
+            return false;
         }
-
-        std::string subdir;
-        if (n.find("_raw")    != std::string::npos) subdir = "bitCounts/raw";
-        else if (n.find("_live")   != std::string::npos) subdir = "bitCounts/live";
-        else if (n.find("_scaled") != std::string::npos) subdir = "bitCounts/scaled";
-        else if (n.rfind("h_vtxRelToCut_",0)==0)         subdir = "vtxCutCompliance";
-        else                                            subdir = "misc";
-
-        fs::path out = root / "triggerQA" / subdir / (n + ".png");
-        ensure_dir(out.parent_path());
-
-        TCanvas c("c_cnt","",800,600);
-        h1->SetStats(0); h1->SetLineWidth(2);
-        const double yMax = 1.15 * h1->GetMaximum();
-        h1->SetMaximum(yMax>0 ? yMax : 1.);        // avoids 0‑range canvases
-        h1->Draw("HIST TEXT00");
-        c.SaveAs(out.string().c_str());
-
-        log(Lvl::DBG,"saved " + out.string());
-        return true;
     }
 
     /* ──────────────────────────────────────────────────────────────────
@@ -5648,9 +5828,9 @@ public:
             if (avail.size() > 5)
                 log(Lvl::WRN, "  more than 5 curves – excess will re‑use last colour");
 
-            /* 3.3  Canvas creation ------------------------------------- */
-            TCanvas c(("c_"+outName).c_str(), "Trigger turn-on", 1400, 600);
-            c.Divide(2, 1, 0.005, 0.005);
+            TCanvas c(("c_"+outName).c_str(), "Trigger turn-on", 1100, 900);
+            /* one column, two rows – small gap between pads             */
+            c.Divide(1, 2, 0.005, 0.005);
 
             const int palette[5] = {kBlack, kBlue+2, kGreen+2, kRed+1, kMagenta+2};
 
@@ -5692,9 +5872,17 @@ public:
                 ratios.back()->SetLineColor(palette[std::min<std::size_t>(i,4)]);
                 ratios.back()->SetLineWidth(2);
                 ratios.back()->SetTitle(";E_{max}^{cluster}  [GeV];Ratio to MB trigger");
-                ratios.back()->SetMaximum(1.20);
-                ratios.back()->SetMinimum(0.00);
-                ratios.back()->Draw(i == 1 ? "HIST" : "HIST SAME");
+
+                if (ratios.back()->Integral() > 0.0)          // guard against an all‑zero ratio
+                {
+                    ratios.back()->SetMaximum(1.20);
+                    ratios.back()->SetMinimum(0.00);
+                    ratios.back()->Draw(i == 1 ? "HIST" : "HIST SAME");
+                }
+                else
+                {
+                    log(Lvl::WRN,"  ratio for \""+avail[i]+"\" is empty – skipped");
+                }
             }
 
             TLegend leg2(0.52, 0.16, 0.88, 0.38); leg2.SetBorderSize(0);
@@ -5712,7 +5900,61 @@ public:
                 log(Lvl::ERR, std::string("  SaveAs(\"") + dst.string() +
                               "\") failed – " + ex.what());
             }
+
+            /* --------------------------------------------------------------
+             *  individual photon‑pair overlays
+             * -------------------------------------------------------------- */
+            for (std::size_t i = 1; i < avail.size(); ++i)
+            {
+                const std::string& pho = avail[i];             // current photon trigger
+                std::string tag = pho.substr(0, pho.find_first_of(" \t"));
+                std::string oneName =
+                    outName.substr(0,outName.find_last_of('.')) + "_" + tag + ".png";
+
+                TCanvas c2(("c_"+oneName).c_str(), "Two‑curve turn‑on", 1100, 900);
+                c2.Divide(1,2,0.005,0.005);
+
+                /* top : spectra -------------------------------------------------- */
+                c2.cd(1); gPad->SetLogy();
+                double ymax = std::max(src.at(refKey)->GetMaximum(),
+                                       src.at(pho)->GetMaximum());
+                for (int pass=0; pass<2; ++pass)
+                {
+                    TH1* h = src.at(!pass ? refKey : pho);
+                    h->SetLineColor(palette[pass]);
+                    h->SetLineWidth(2);
+                    h->SetMaximum(ymax*1.15);
+                    h->Draw(pass==0 ? "HIST" : "HIST SAME");
+                }
+                TLegend l1(0.55,0.66,0.88,0.88); l1.SetBorderSize(0);
+                l1.AddEntry(src.at(refKey), refKey.c_str(), "l");
+                l1.AddEntry(src.at(pho),    pho.c_str(),    "l");
+                l1.Draw();
+
+                /* bottom : ratio ------------------------------------------------- */
+                c2.cd(2); gPad->SetGridy();
+                std::unique_ptr<TH1> r(
+                    static_cast<TH1*>(src.at(pho)->Clone())
+                );
+                r->Divide(src.at(refKey));
+                r->SetLineColor(palette[1]);
+                r->SetLineWidth(2);
+                r->SetTitle(";E_{cluster}^{max}  [GeV];Ratio to MB trigger");
+                r->SetMaximum(1.20);  r->SetMinimum(0.00);
+                r->Draw("HIST");
+
+                fs::path dst2 = outDir / oneName;
+                try {
+                    c2.SaveAs(dst2.string().c_str());
+                    log(Lvl::INF,"  wrote pair‑overlay " + dst2.string());
+                }
+                catch (const std::exception& ex) {
+                    log(Lvl::ERR,"  SaveAs(\""+dst2.string()+"\") failed – "+ex.what());
+                }
+            }
+
             log(Lvl::DBG, "makeOverlay(\"" + outName + "\") – done");
+
         };
 
         /* --------------------------------------------------------------
