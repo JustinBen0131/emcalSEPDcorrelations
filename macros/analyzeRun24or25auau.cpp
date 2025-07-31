@@ -1929,8 +1929,6 @@ class CorrQA : public QA
         m_calSummary.clear();
     }
 
-
-
     // ─────────────────────────────── 1. per-histogram ──────────────────────
     bool process(TObject* o) override
     {
@@ -5058,8 +5056,10 @@ class VnPlotQA : public QA
          const double cMid = 0.5*( std::stod(centKey.substr(0,pos)) +
                                    std::stod(centKey.substr(pos+1)) );
          const int bin = rProf->FindBin(cMid);
-         const double val = rProf->GetBinContent(bin);
-         if (val > 1e-6) Rn = val;
+         const double val = rProf->GetBinContent(bin);     // ⟨cos n ΔΨ⟩ (can be ≤1)
+         if (val > 0.0)                                    // guard against negatives / empty bin
+              Rn = std::sqrt(val);                          // resolution  Rn = √⟨cos n ΔΨ⟩
+
       }
 
       /* copy points --------------------------------------------------- */
@@ -5448,9 +5448,12 @@ class VnPlotQA : public QA
 
                         const std::string rName =
                             Form("p_R%d_vs_cent_%s", n, trig.c_str());
-                        double Rn = 1.0;
+                        double Rn = 1.0;                                   // default = no correction
                         if (auto* r = static_cast<TProfile*>(gROOT->FindObject(rName.c_str())))
-                            Rn = r->GetBinContent(r->FindBin(cMid));
+                        {
+                            const double val = r->GetBinContent(r->FindBin(cMid));
+                            if (val > 0.0) Rn = std::sqrt(val);            // use √⟨cos n ΔΨ⟩
+                        }
 
                         const auto [mu,er] = meanProf(vec.front(), Rn);
 
@@ -5512,8 +5515,8 @@ class VnPlotQA : public QA
             } /* end harmonic‑loop */
         }     /* end trigger‑loop */
 
-        log(Lvl::INF,"writeCanvases(): exit OK");
-    }
+      log(Lvl::INF,"writeCanvases(): exit OK");
+  }
 
   // ---------- save helper ---------------------------------------------
   void saveCanvas(TCanvas& c,

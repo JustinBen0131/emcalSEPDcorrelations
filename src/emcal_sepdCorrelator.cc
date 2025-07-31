@@ -54,8 +54,6 @@
 #include <regex>
 #include <tuple>
 
-
-
 #ifdef _OPENMP
   #include <omp.h>
 #endif
@@ -725,20 +723,26 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
       for (const auto& det : detKeys)
         make(det, n, 0, 100);
 
+    /* ----------  store ⟨cos n ΔΨ⟩ (n = 1,2,3) vs centrality -------------- */
     {
-      const std::string name = "p_R2_vs_cent_" + trig;
-
-    /* ----------  create a Double_t copy of the centrality edges  ---------- */
       std::vector<double> centEdgeD(m_centEdges.begin(), m_centEdges.end());
 
-      auto* p = new TProfile(name.c_str(),
-                             "cos 2(#Psi_{2}^{N}-#Psi_{2}^{S}) vs centrality;"
-                             "centrality bin [%];#LT cos 2Δ#Psi #GT",
-                             centEdgeD.size() - 1,            // NB: −1 bins
-                             centEdgeD.data(),                // Double_t *
-                             "s");
-      p->SetStats(0);
-      H[name] = p;
+      for (int n : {1, 2, 3})
+      {
+        std::ostringstream key;   key  << "p_R" << n << "_vs_cent_" << trig;
+        std::ostringstream titl;  titl << "cos ";
+        if (n > 1) titl << n;
+        titl << "(#Psi_{" << n << "}^{N}-#Psi_{" << n << "}^{S}) vs centrality;"
+             << "centrality bin [%];#LT cos";
+        if (n > 1) titl << ' ' << n;
+        titl << "Δ#Psi #GT";
+
+        auto* p = new TProfile(key.str().c_str(), titl.str().c_str(),
+                               centEdgeD.size() - 1,
+                               centEdgeD.data(), "s");
+        p->SetStats(0);
+        H[key.str()] = p;
+      }
     }
 }
 
@@ -1890,8 +1894,6 @@ void emcal_sepdCorrelator::fillCentralityQA(const std::vector<std::string>& trig
 //----------------------------------------------------------------------
 //  accumulateFlowContribution – single‑tower q‑vector bookkeeping
 //----------------------------------------------------------------------
-//  ➜ Behaviour is byte‑for‑byte identical to the old inline lambda.
-//----------------------------------------------------------------------
 void emcal_sepdCorrelator::accumulateFlowContribution(const std::string& calorimeter,
                                                       unsigned           ieta,
                                                       double             et,
@@ -2913,10 +2915,14 @@ emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
     LOG(3, CLR_CYAN, "[fillFlowHists] cent=" << m_centBin
                        << "  → slice " << lo << "–" << hi << '%');
 
-  /* (1) harmonic basis for the SEPD‑South event plane ---------------- */
-  const double cPsi1 = std::cos(m_psi1_S),         sPsi1 = std::sin(m_psi1_S);
-  const double cPsi2 = std::cos(2.*m_psi2_S),      sPsi2 = std::sin(2.*m_psi2_S);
-  const double cPsi3 = std::cos(3.*m_psi3_S),      sPsi3 = std::sin(3.*m_psi3_S);
+  /* (1) harmonic basis for both SEPD sub‑event planes ---------------- */
+  const double cPsi1S = std::cos(m_psi1_S),  sPsi1S = std::sin(m_psi1_S);
+  const double cPsi2S = std::cos(2.*m_psi2_S), sPsi2S = std::sin(2.*m_psi2_S);
+  const double cPsi3S = std::cos(3.*m_psi3_S), sPsi3S = std::sin(3.*m_psi3_S);
+
+  const double cPsi1N = std::cos(m_psi1_N),  sPsi1N = std::sin(m_psi1_N);
+  const double cPsi2N = std::cos(2.*m_psi2_N), sPsi2N = std::sin(2.*m_psi2_N);
+  const double cPsi3N = std::cos(3.*m_psi3_N), sPsi3N = std::sin(3.*m_psi3_N);
 
   /* ------------------------------------------------------------------ *
    *  helper that prints **once** per anomaly type                      *
@@ -2938,10 +2944,26 @@ emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
 
       const double ptCtr = 0.5 * (m_ptBins[ib].first + m_ptBins[ib].second);
 
-      /* orthogonal projections – keep *raw* v₂ (no resolution yet) --- */
-      const double v1 = (a.qx[1]*cPsi1 + a.qy[1]*sPsi1) / a.sumW;
-      const double v2 = (a.qx[2]*cPsi2 + a.qy[2]*sPsi2) / a.sumW;  // raw
-      const double v3 = (a.qx[3]*cPsi3 + a.qy[3]*sPsi3) / a.sumW;
+      /* -------------  AUTOCORRELATION‑SAFE PROJECTION  ----------------
+       *  - South‑arm towers use the NORTH event‑plane and vice‑versa.
+       *  - Combined “_T” buckets are skipped now and filled later from
+       *    the weighted average of their *_S / *_N counterparts.
+       * --------------------------------------------------------------- */
+      if (det.size() >= 2 && det.rfind("_T") == det.size() - 2)
+          continue;                                     // handle *_T after this loop
+
+      const bool southArm = (det.rfind("_S") == det.size() - 2);
+
+      const double c1 = southArm ? cPsi1N : cPsi1S;
+      const double s1 = southArm ? sPsi1N : sPsi1S;
+      const double c2 = southArm ? cPsi2N : cPsi2S;
+      const double s2 = southArm ? sPsi2N : sPsi2S;
+      const double c3 = southArm ? cPsi3N : cPsi3S;
+      const double s3 = southArm ? sPsi3N : sPsi3S;
+
+      const double v1 = (a.qx[1]*c1 + a.qy[1]*s1) / a.sumW;
+      const double v2 = (a.qx[2]*c2 + a.qy[2]*s2) / a.sumW;
+      const double v3 = (a.qx[3]*c3 + a.qy[3]*s3) / a.sumW;
 
       /* (2a)   sanity checks (printed only once per flavour) --------- */
       auto chk = [&](double v, const char* lab)
@@ -2985,22 +3007,32 @@ emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
                             << "  v=( " << v1 << ", " << v2 << ", " << v3 << " )"
                             << "  Σw=" << a.sumW);
         }
-    }
+     }
   }
 
-  /* (4) store ⟨cos 2 ΔΨ⟩ for later R₂ extraction ---------------------- */
-  const double cos2 = std::cos(2.*(m_psi2_N - m_psi2_S));
-  if (!std::isfinite(cos2) || std::fabs(cos2) > 1.0)
-    warnOnce("cos2_out_of_range",
-             Form("cos 2ΔΨ = %.3f outside [-1,1] (Ψ2N=%.3f, Ψ2S=%.3f)",
-                  cos2, m_psi2_N, m_psi2_S));
+  /* (4) store ⟨cos n ΔΨ⟩ (n = 1,2,3) for later Rₙ extraction ----------- */
+  const double cos1 = std::cos( m_psi1_N - m_psi1_S );
+  const double cos2 = std::cos( 2.*(m_psi2_N - m_psi2_S) );
+  const double cos3 = std::cos( 3.*(m_psi3_N - m_psi3_S) );
+
+  auto chkCos = [&](double c, int n)
+  {
+      if (!std::isfinite(c) || std::fabs(c) > 1.0)
+        warnOnce(Form("cos%d_out_of_range", n),
+                 Form("cos %dΔΨ = %.3f outside [-1,1]", n, c));
+  };
+  chkCos(cos1,1);  chkCos(cos2,2);  chkCos(cos3,3);
 
   for (const std::string& t : trig)
-    if (auto* pR = dynamic_cast<TProfile*>(qaHistogramsByTrigger[t]
-                                           ["p_R2_vs_cent_" + t]))
-      pR->Fill(static_cast<double>(lo), cos2, 1.0);
+  {
+      if (auto* p = dynamic_cast<TProfile*>(qaHistogramsByTrigger[t]["p_R1_vs_cent_" + t]))
+        p->Fill(static_cast<double>(lo), cos1, 1.0);
+      if (auto* p = dynamic_cast<TProfile*>(qaHistogramsByTrigger[t]["p_R2_vs_cent_" + t]))
+        p->Fill(static_cast<double>(lo), cos2, 1.0);
+      if (auto* p = dynamic_cast<TProfile*>(qaHistogramsByTrigger[t]["p_R3_vs_cent_" + t]))
+        p->Fill(static_cast<double>(lo), cos3, 1.0);
+    }
 }
-
 
 
 //==========================================================================
