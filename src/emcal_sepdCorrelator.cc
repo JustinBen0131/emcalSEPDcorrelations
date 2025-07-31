@@ -743,7 +743,7 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
         p->SetStats(0);
         H[key.str()] = p;
       }
-    }
+   }
 }
 
 
