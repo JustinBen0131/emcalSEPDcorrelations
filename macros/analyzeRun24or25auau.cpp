@@ -83,6 +83,7 @@ std::set<std::string> kTriggersWanted{
     "photon_10_plus_MBD_NS_geq_2_vtx_lt_150",
     "photon_12_plus_MBD_NS_geq_2_vtx_lt_150"
 };
+
 inline std::string prettifyTrigger(std::string s)
 {
     // 1.  dedicated multi‑character tokens  (order matters!)
@@ -1379,13 +1380,14 @@ class Pi0QA : public QA
             return;
         }
 
-        /* avoid duplicates when several Pi0QA instances share the same cut */
+        /* avoid duplicates – now distinguish both CUT and TRIGGER */
         static std::unordered_set<std::string> s_done;
-        if (s_done.count(cutTag)) {
-            log(Lvl::INFO,"writeRunSummary(): already written for cut "+cutTag);
+        const std::string tagKey = cutTag + "_" + trig;          // e.g.  E2p00_Chi1p00_Asym0p500_MBD_NS_geq_2_vtx_lt_10
+        if (s_done.count(tagKey)) {
+            log(Lvl::INFO,"writeRunSummary(): already written for "+tagKey);
             return;
         }
-        s_done.insert(cutTag);
+        s_done.insert(tagKey);
 
         log(Lvl::INFO,"▶ building run‑summary  cut="+cutTag+
                          "   slices stored="+std::to_string(s_runPoints.size()));
@@ -1476,8 +1478,7 @@ class Pi0QA : public QA
                                                || slice.rfind("Cent_",0)==0)
                                                 ? slice : "Cent_"+slice;
 
-                    /* store slice‑level run summary directly under “…/Combined/…” */
-                    fs::path pngSlice = root.parent_path() / "EMCal" / "invMassQA" / cutTag /
+                    fs::path pngSlice = root / "EMCal" / "invMassQA" / cutTag /
                                         slDir / "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
                     ensure_dir(pngSlice.parent_path());
 
@@ -1527,7 +1528,7 @@ class Pi0QA : public QA
              * 5)  Save PNG
              * ---------------------------------------------------------- */
             /* same fix – use the parent of <trigger> so the file is not hidden */
-            fs::path pngRun = root.parent_path() / "EMCal" / "invMassQA" / cutTag /
+            fs::path pngRun = root / "EMCal" / "invMassQA" / cutTag /
                               "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
             ensure_dir(pngRun.parent_path());
 
@@ -1939,13 +1940,13 @@ class CorrQA : public QA
 
         const std::string hName = o->GetName();
 
-        /* Reject Jet‑QA and event‑plane families – they are handled elsewhere */
+        /* Reject Jet‑QA, resolution profiles, event‑plane histos, … */
         static const std::vector<std::string> skipPrefixes = {
             "h_leadEt_",          // jet leading/subleading E_T maps
             "h_maxJetEt_",        // jet spectra
             "h_jetEt_",           // 3‑D jet histos
             "h_Psi",              // event‑plane Ψₙ histos
-            "p_R2_",              // resolution proxies
+            "p_R",                // ALL sub‑event‑resolution profiles p_R1_, p_R2_, p_R3_
             "Minv_vs_"
         };
         for (const auto& p : skipPrefixes)
@@ -2589,6 +2590,7 @@ class CorrQA : public QA
 std::unordered_map<std::string, CorrQA::NameMap> CorrQA::s_cache;
 
 
+
 class EmcalQA : public QA
 {
 public:
@@ -2652,8 +2654,8 @@ public:
     const std::string slice = sliceKey(n);
     const bool isMap        = (n.find("_EtaPhiMap_") != std::string::npos);
 
-    // ── helper that turns a raw η‑φ TH2 into a ready‑to‑paint square PNG
-    auto makePanel = [&](TH2* src) -> std::unique_ptr<TH2F>
+    auto makePanel = [&](TH2* src,
+                           const std::string& triggerName) -> std::unique_ptr<TH2F>
     {
       /* 0)  constants -------------------------------------------------- */
       constexpr int nPhi = 256;                 // rows (Y)
@@ -2707,13 +2709,17 @@ public:
         }
       }
         
-      std::string runLabel = root.parent_path().filename().string();   // “00066484” …
-      if (std::all_of(runLabel.begin(), runLabel.end(), ::isdigit))    // numeric?
-            runLabel = std::to_string(std::stoi(runLabel));              // strip leading 0s
+      rot->SetTitle("");    // canvas title left blank – header will be drawn later
 
-      std::string baseTitle = src->GetTitle();                         // keep original
-      if (baseTitle.empty()) baseTitle = src->GetName();               // fallback to name
-      rot->SetTitle( (baseTitle + " (" + runLabel + ")").c_str() );
+      // ------------------------------------------------------------------
+      // prepare header strings (used after the canvas exists)
+      // ------------------------------------------------------------------
+      std::string runID = root.parent_path().filename().string();
+      if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+            runID = std::to_string(std::stoi(runID));              // strip leading zeros
+      std::string runLabel  = "run " + runID;
+      std::string trigLabel = prettifyTrigger(triggerName);
+
 
       /* 3)  save individual PNG (1 bin ⇔ 1 pixel) ---------------------- */
       const int cw = (kEMCalCanvasW > 0) ? kEMCalCanvasW : nEta * px;
@@ -2733,6 +2739,20 @@ public:
       c.SetFixedAspectRatio();                // lock 1 bin = 1 pixel
 
       rot->Draw("COLZ");
+
+      /* draw header once a pad is active */
+      TLatex tl;
+      tl.SetNDC();
+      tl.SetTextSize(0.028);          // smaller font, matches new HCal style
+      tl.SetTextAlign(13);
+
+      Long64_t nEvents = src->GetEntries();        // total entries in this map
+      tl.DrawLatex(0.08, 0.99,
+                     Form("EMCal Hitmap for %s (%s, nEvents = %lld)",
+                          trigLabel.c_str(),
+                          runLabel.c_str(),
+                          static_cast<long long>(nEvents)));
+      gPad->Update();
 
       /* 4)  ultra‑light grid (every 8 towers) -------------------------- */
       TLine l; l.SetLineColor(kBlack); l.SetLineWidth(1);
@@ -2817,7 +2837,8 @@ public:
 
     // ── centralities: keep one rotated copy per slice for the overview
     if (isMap && o->InheritsFrom(TH2::Class())) {
-      auto p = makePanel(static_cast<TH2*>(o));
+      auto p = makePanel(static_cast<TH2*>(o),
+                           root.filename().string());   // raw trigger name
       _centralMaps.emplace(slice, std::move(p));   // silently overwrites duplicates
     }
     // ── any other 2‑D EMCal histogram → PNG with default helper
@@ -2844,16 +2865,19 @@ private:
 };
 
 
-
-
 // ─── HCal QA – proportional η–φ hit‑maps (IHCal / OHCal) ─────────────
 class HcalQA : public QA
 {
-    static inline std::unordered_set<std::string> s_runIDs;   // filled during per‑run passes
+ /* ---------- global run‑level bookkeeping -------------------- */
+ struct Range { int phiMin, phiMax, etaMin, etaMax; };
+ static inline std::unordered_set<std::string>              s_runIDs;      // all runs seen
+ static inline std::unordered_map<std::string,Range>        s_missing;     // run → first empty range
+ static inline std::unordered_set<std::string>              s_scanned;     // guard: check once/run
 
  public:
   using QA::QA;
 
+  static void writeMissingBinReport(const fs::path& txtPath);
   // ==================================================================
   //  helper: safe‑clone (detaches from any directory immediately)
   // ==================================================================
@@ -2886,17 +2910,44 @@ class HcalQA : public QA
         if (id != "Combined") HcalQA::s_runIDs.insert(id);
     }
 
-    const std::string slice = sliceKey(n);                 // Inclusive / Cent_x_y
-    const bool isMap        = n.find("_EtaPhiMap_") != std::string::npos;
+      const std::string slice = sliceKey(n);                 // Inclusive / Cent_x_y
+      const bool isMap        = n.find("_EtaPhiMap_") != std::string::npos;
 
-    log::trace("HcalQA  → processing \"" + n +
+      /* ---------- one‑time missing‑bin scan per run --------------- */
+      if (isMap) {
+          std::string runID = root.parent_path().filename().string();   // e.g. "0068408"
+          if (runID != "Combined" && !s_scanned.count(runID)) {
+              s_scanned.insert(runID);
+
+              const TH2* h2 = static_cast<const TH2*>(o);
+              const int nPhi = h2->GetNbinsX();
+              const int nEta = h2->GetNbinsY();
+
+              int phiMin =  999, phiMax = -1, etaMin =  999, etaMax = -1;
+              for (int ip = 1; ip <= nPhi; ++ip)
+                  for (int ie = 1; ie <= nEta; ++ie)
+                      if (h2->GetBinContent(ip, ie) == 0) {
+                          phiMin = std::min(phiMin, ip - 1);
+                          phiMax = std::max(phiMax, ip - 1);
+                          etaMin = std::min(etaMin, ie - 1);
+                          etaMax = std::max(etaMax, ie - 1);
+                      }
+
+              if (phiMax >= 0 && etaMax >= 0)          // at least one empty cell detected
+                  s_missing[runID] = {phiMin, phiMax, etaMin, etaMax};
+          }
+      }
+
+      log::trace("HcalQA  → processing \"" + n +
                "\"  slice=" + slice +
                (isMap ? "  (map)" : "  (scalar)"));
 
     /* -------------------------------------------------------------- *
      *  1.  Lambda that renders one η–φ map panel                     *
      * -------------------------------------------------------------- */
-    auto makePanel = [&](TH2* src, const fs::path& outPng)
+    auto makePanel = [&](TH2* src,
+                           const fs::path& outPng,
+                           const std::string& triggerName)   // NEW: pass prettified trigger
     {
       try {
           ensure_dir(outPng.parent_path());
@@ -3001,12 +3052,22 @@ class HcalQA : public QA
                   (hName.find("OHCAL") != std::string::npos) ? "OHCal Hitmap"     :
                                                                "TotalHCal Hitmap";
 
-          /* draw header in the top–left corner of the pad */
           TLatex tl;
-          tl.SetNDC(); tl.SetTextSize(0.035); tl.SetTextAlign(13);
-          tl.DrawLatex(0.08, 0.98, Form("%s (%s)", mapType, runLabel.c_str()));
+          tl.SetNDC();
+          tl.SetTextSize(0.028);          // smaller font
+          tl.SetTextAlign(13);
 
-          gPad->Update();                 // make sure user coords are frozen
+          std::string trigLabel  = prettifyTrigger(triggerName);
+          Long64_t    nEvents    = src->GetEntries();          // histogram entry count
+
+          tl.DrawLatex(0.08, 0.98,
+                       Form("%s for %s (%s, nEvents = %lld)",
+                            mapType,
+                            trigLabel.c_str(),
+                            runLabel.c_str(),
+                            static_cast<long long>(nEvents)));
+
+          gPad->Update();
           
           // vertical grid (η index)
           for (int x = 0; x <= nEta; ++x) {
@@ -3042,7 +3103,7 @@ class HcalQA : public QA
     fs::path out    = cPath(root, slice, subDir) / (n + ".png");
 
     if (isMap && o->InheritsFrom(TH2::Class()))
-        makePanel(static_cast<TH2*>(o), out);
+        makePanel(static_cast<TH2*>(o), out, root.filename().string());
     else if (o->InheritsFrom(TH2::Class()))
         save2D(static_cast<TH2*>(o), out);
     else
@@ -3117,7 +3178,7 @@ class HcalQA : public QA
              * ------------------------------------------------------------ */
             fs::path outTot = cPath(root, slice, fs::path("HCal") / "totalHcal")
                                 / (baseName + "_tot.png");
-            makePanel(tot.get(), outTot);
+            makePanel(tot.get(), outTot, root.filename().string());
 
             cache.erase(key);                             // drop pair – not needed any more
         }
@@ -3126,6 +3187,27 @@ class HcalQA : public QA
     return true;
   }
 };
+
+
+void HcalQA::writeMissingBinReport(const fs::path& txtPath)
+{
+    ensure_dir(txtPath.parent_path());
+    std::ofstream rep(txtPath);
+    if (!rep) {
+        log::warn("HcalQA  WARN  cannot open " + txtPath.string() + " for writing");
+        return;
+    }
+
+    rep << "# Runs with empty IHCal / OHCal η–φ bins\n"
+        << "# runID\tphi[min‑max]\teta[min‑max]\n";
+
+    for (const auto& [run,r] : s_missing)
+        rep << run << '\t'
+            << r.phiMin << '-' << r.phiMax << '\t'
+            << r.etaMin << '-' << r.etaMax << '\n';
+
+    log::info("HcalQA  → wrote missing‑bin report to " + txtPath.string());
+}
 
 
 // ------------------------------------------------------------------
@@ -3321,10 +3403,27 @@ class sEPDotherQA : public QA
 
             /* global header ------------------------------------------------- */
             c.cd(0);
-            TLatex tl; tl.SetNDC(); tl.SetTextAlign(22); tl.SetTextFont(42);
-            tl.SetTextSize(0.045);
-            tl.DrawLatex(0.5, 0.94,
-                Form("sEPD ring QA:  %s  ,  %s", trigger.c_str(), slice.c_str()));
+            /* header: detector + trigger + run + events */
+            std::string runID = root.parent_path().filename().string();
+            if (std::all_of(runID.begin(), runID.end(), ::isdigit))
+                runID = std::to_string(std::stoi(runID));              // strip leading zeros
+
+            unsigned long long nEvt =
+                static_cast<unsigned long long>( set[OCC_S]->GetEntries()
+                                               + set[OCC_N]->GetEntries() );
+
+            std::string trigLabel = prettifyTrigger(trigger);
+
+            TLatex tl;
+            tl.SetNDC();
+            tl.SetTextAlign(13);
+            tl.SetTextFont(42);
+            tl.SetTextSize(0.028);          // smaller, consistent with HCal/EMCal
+            tl.DrawLatex(0.08, 0.96,
+                         Form("sEPD Ring QA for %s (run %s, nEvents = %llu)",
+                              trigLabel.c_str(),
+                              runID.c_str(),
+                              static_cast<long long>(nEvt)));
 
             /* output -------------------------------------------------------- */
             fs::path dst = cPath(root, slice, "sEPD/tileQA")
@@ -3421,25 +3520,26 @@ class NSDetectorQA : public QA
 
     MapPair in = _cache.pop(trig + slice); // take ownership
     auto tidy = [](TH2* h)
-      {
-        /* find smallest positive bin content – needed for log‑scale */
-        double zMin = std::numeric_limits<double>::max();
-        for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
-          for (int iy = 1; iy <= h->GetNbinsY(); ++iy)
-          {
-            const double z = h->GetBinContent(ix,iy);
-            if (z > 0.0 && z < zMin) zMin = z;
-          }
-         /*  A — tidy( ) helper  */
-        h->SetLineColor(kBlack);
-        h->SetLineWidth(1);
-        h->GetZaxis()->SetNdivisions(510);    // major + minor ticks on colour bar
+    {
+            /* smallest positive bin – later used for colour‑scale lower bound */
+            double zMin = std::numeric_limits<double>::max();
+            for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+                for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                    const double z = h->GetBinContent(ix,iy);
+                    if (z > 0.0 && z < zMin) zMin = z;
+                }
 
+            /* — cosmetic: hide per‑bin outlines for sEPD (regular TH2),
+                 but keep thin borders for MBD hex‑maps (TH2Poly) — */
+            if (h->InheritsFrom(TH2Poly::Class())) {
+                h->SetLineColor(kBlack);          // hexagon edges remain
+                h->SetLineWidth(1);
+            } else {
+                h->SetLineColor(0);               // invisible → no “squiggly” rings
+                h->SetLineWidth(0);
+            }
 
-        /* keep only local cosmetics – no external variables here */
-        h->SetLineColor(kBlack);
-        h->SetLineWidth(1);
-        h->GetZaxis()->SetNdivisions(510);   // major + minor ticks
+            h->GetZaxis()->SetNdivisions(510);    // major + minor ticks on colour bar
       };
       tidy(in.s); tidy(in.n);
 
@@ -3491,11 +3591,8 @@ class NSDetectorQA : public QA
           zMin = std::min(tinyPositive(in.s), tinyPositive(in.n));
           zMax = 1.05 * std::max(quantile99(in.s), quantile99(in.n));
       }
-
       in.s->SetMinimum(zMin);
-      in.n->SetMinimum(zMin);
-      in.s->SetMaximum(zMax);
-      in.n->SetMaximum(zMax);
+      in.n->SetMinimum(zMin);      /* per‑pad upper limit will be set in drawPad() */
       
       /* ------------------------------------------------------------------ *
        *  finished S–N canvas                                               *
@@ -3531,7 +3628,7 @@ class NSDetectorQA : public QA
       try
       {
           TCanvas c("c_hit", "", 1200, 600);
-          c.Divide(2, 1, 0.01, 0.01);
+          c.Divide(2, 1, 0.00, 0.01);
 
           auto drawPad = [&](TH2* h, const char* ttl, bool withZ)
           {
@@ -3580,22 +3677,47 @@ class NSDetectorQA : public QA
                   //--------------------------------------------------------------------
                   // ❷  Pad style
                   //--------------------------------------------------------------------
-                  gPad->SetLeftMargin (0.10);
+                  /* South pad (withZ == false) expands right‑ward,
+                   * North pad (withZ == true ) expands left‑ward but still keeps 18 % for the palette.
+                   */
+                  if (withZ) {
+                      gPad->SetLeftMargin (0.06);   // slimmer left edge – gains ~4 % width
+                      gPad->SetRightMargin(0.18);   // palette room unchanged
+                  } else {
+                      gPad->SetLeftMargin (0.10);   // original
+                      gPad->SetRightMargin(0.18);   // slimmer right edge – gains ~12 % width
+                  }
                   gPad->SetBottomMargin(0.10);
                   gPad->SetTopMargin  (0.08);
-                  gPad->SetRightMargin(withZ ? 0.18 : 0.12);
                   gPad->SetFixedAspectRatio();
-                  gPad->SetLogz();
+                  gPad->SetLogz(0);                 // linear colour scale
 
                   //--------------------------------------------------------------------
                   // ❸  First draw (heat map) – ensures palette is created
                   //--------------------------------------------------------------------
                   const char* optFirst = withZ ? "COLZ POL AH"      : "COL POL AH";
                   const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
-
+                  
                   h->SetTitle("");
                   h->GetZaxis()->SetTitle("Counts");
                   h->GetZaxis()->SetTitleOffset(1.30);
+
+                  /* --- per‑pad upper bound : 99.5‑percentile + 5 % head‑room -------- */
+                  {
+                      std::vector<double> z;  z.reserve(h->GetNbinsX()*h->GetNbinsY());
+                      for (int ix=1; ix<=h->GetNbinsX(); ++ix)
+                          for (int iy=1; iy<=h->GetNbinsY(); ++iy) {
+                              double v = h->GetBinContent(ix,iy);
+                              if (v>0.0) z.push_back(v);
+                          }
+                      if (!z.empty()) {
+                          std::size_t k = static_cast<std::size_t>(0.995*z.size());
+                          std::nth_element(z.begin(), z.begin()+k, z.end());
+                          h->SetMaximum(1.05 * z[k]);
+                      }
+                  }
+
+                  h->SetMinimum(0.0);               // colour scale anchored at zero
                   h->Draw(optFirst);
 
                   //--------------------------------------------------------------------
@@ -3623,14 +3745,26 @@ class NSDetectorQA : public QA
                       for (int j = 1; j <= nRing; ++j)
                       {
                           const double r = rInner + j * dR;
-                          rings.emplace_back(0., 0., r, r);
-                          rings.back().SetLineColor(kBlack);
-                          rings.back().SetLineStyle(2);
-                          rings.back().SetFillStyle(0);
+                          rings.emplace_back(0., 0., r, r);        // store ring
+                          rings.back().SetFillStyle(0);            // no fill – outline only
+                          rings.back().SetLineColor(kBlack);       // black outline
+                          rings.back().SetLineStyle(1);            // solid
+                          rings.back().SetLineWidth(1);            // skinny
                       }
                   }
-                  for (auto& l : spokes) l.Draw();
-                  for (auto& e : rings)  e.Draw();
+                  for (auto& l : spokes) {
+                      l.SetLineColor(kBlack);
+                      l.SetLineStyle(1);
+                      l.SetLineWidth(1);
+                      l.Draw();
+                  }
+                  for (auto& e : rings) {
+                      e.SetFillStyle(0);
+                      e.SetLineColor(kBlack);
+                      e.SetLineStyle(1);
+                      e.SetLineWidth(1);
+                      e.Draw();
+                  }
 
                   //--------------------------------------------------------------------
                   // ❻  Geometry & count tables  (printed to stdout)
@@ -3687,20 +3821,25 @@ class NSDetectorQA : public QA
                   }
               }
 
-              /* ----------- common augmented title (both styles) ----------------- */
               const unsigned long long nEvt =
                   static_cast<unsigned long long>( h->GetEntries() );
 
-              char buf[128];
-              snprintf(buf, sizeof(buf), "%s  (run %d, nEvents = %llu)",
-                       ttl, runNumber, nEvt);
+              std::string trigLabel = prettifyTrigger(trig);   // ‘trig’ is in outer scope
+
+              char buf[160];
+              snprintf(buf, sizeof(buf),
+                       "%s for %s (run %d, nEvents = %llu)",
+                       ttl,
+                       trigLabel.c_str(),
+                       runNumber,
+                       nEvt);
 
               TLatex lbl;
               lbl.SetNDC();
-              lbl.SetTextAlign(22);
+              lbl.SetTextAlign(13);         // left‑aligned, same as HCal/EMCal
               lbl.SetTextFont(42);
-              lbl.SetTextSize(0.038);
-              lbl.DrawLatex(0.50, 0.955, buf);
+              lbl.SetTextSize(0.028);       // smaller font
+              lbl.DrawLatex(0.08, 0.98, buf);
           };
 
           /* draw both pads ------------------------------------------------ */
@@ -4285,7 +4424,9 @@ class JetQA : public QA
       // Categorise once – fast string‑prefix tests (rfind(...,0) == 0 → starts with)
       const bool is1D = n.rfind("h_maxJetEt_"         ,0) == 0;
       const bool is2D = n.rfind("h_leadEt_vs_subEt_"  ,0) == 0;
-      const bool is3D = n.rfind("h_jetEt_area_nConst_",0) == 0;
+      const bool is3D =   n.rfind("h_jetEt_area_nConst_",0) == 0
+                       || n.rfind("h_jetEt_eta_phi_"     ,0) == 0     // legacy name
+                       || n.rfind("h_jetEtEtaPhi_"       ,0) == 0;    // NEW name
 
       if (!is1D && !is2D && !is3D) {                 // not a Jet‑QA histogram
         log(Lvl::DBG,"process(): \""+n+
@@ -4691,10 +4832,19 @@ class JetQA : public QA
         // main 3‑D view
         save3D(h3, dir/(hname + "_3D.png"));
 
-        // orthogonal projections
-        saveProjection(h3,"yx", dir/(hname + "_Et_vs_Area.png"));    // E_T vs A
-        saveProjection(h3,"xz", dir/(hname + "_Et_vs_Nconst.png"));  // E_T vs N
-        saveProjection(h3,"yz", dir/(hname + "_Area_vs_Nconst.png"));// A  vs N
+        const bool isEtaPhi =
+                  hname.find("_eta_phi_") != std::string::npos   ||   // legacy
+                  hname.find("EtaPhi_")    != std::string::npos;      // NEW
+
+        if (!isEtaPhi) {
+                saveProjection(h3,"yx", dir/(hname + "_Et_vs_Area.png"));    // E_T vs A
+                saveProjection(h3,"xz", dir/(hname + "_Et_vs_Nconst.png"));  // E_T vs N
+                saveProjection(h3,"yz", dir/(hname + "_Area_vs_Nconst.png"));/* A vs N */
+        } else {
+                /* Jet E_T × η × φ  →  two useful views */
+                saveProjection(h3,"zx", dir/(hname + "_Et_vs_Eta.png"));     // E_T vs η
+                saveProjection(h3,"zy", dir/(hname + "_Et_vs_Phi.png"));     // E_T vs φ
+        }
         return true;
       }
       catch (const std::exception& ex) {
@@ -4730,14 +4880,31 @@ class JetQA : public QA
         h->GetZaxis()->SetTitleOffset(1.4);
 
         h->SetTitle("");          // suppress ROOT’s default title
-        h->Draw("BOX2Z");
+
+        const bool isEtaPhi = (strstr(h->GetName(),"EtEtaPhi_")!=nullptr) ||
+                                 (strstr(h->GetName(),"_eta_phi_")!=nullptr);
+
+          /* For η–φ maps we first collapse the E_T axis so that the bar
+             height represents the number of jets in each (η,φ) bin.          */
+        std::unique_ptr<TH2> h2;          // only used for η–φ maps
+        TH1* hDraw = h;                   // histogram actually drawn (TH2/TH3 inherit from TH1)
+
+        if (isEtaPhi) {
+              h2.reset( static_cast<TH2*>( h->Project3D("yx") ) );  // η vs φ
+              h2->SetDirectory(nullptr);
+              h2->SetStats(0);
+              h2->SetContour(99);
+              hDraw = h2.get();
+        }
+
+        hDraw->Draw("LEGO2");
 
         /* ── label the colour scale after the palette has been created ──── */
         gPad->Update();
 
         if (auto* pal =
-                  dynamic_cast<TPaletteAxis*>(h->GetListOfFunctions()
-                                                ->FindObject("palette")))
+                    dynamic_cast<TPaletteAxis*>(hDraw->GetListOfFunctions()
+                                                  ->FindObject("palette")))
         {
                 /* ── move palette farther right ───────────────────────── */
                 const double x1 = 0.84;             // left edge
@@ -4800,7 +4967,8 @@ class JetQA : public QA
 
         h2->SetDirectory(nullptr);                         // detach
         h2->SetStats(0);
-
+        h2->SetTitle("");                                  // no “yx projection”
+          
         /* --- auto‑range identical to handle2D() ------------------------ */
         int fx = h2->GetNbinsX()+1, lx = 0;
         int fy = h2->GetNbinsY()+1, ly = 0;
@@ -4819,10 +4987,12 @@ class JetQA : public QA
 
         /* translate ROOT’s axis code (“yx”, “xz”, “yz”) → human‑readable text */
         const char* axesDesc =
-                    strcmp(axes,"yx")==0 ? "E_{T} vs Area"      :
-                    strcmp(axes,"xz")==0 ? "E_{T} vs N_{const}" :
-                    strcmp(axes,"yz")==0 ? "Area vs N_{const}"  :
-                                           axes;                 /* fallback */
+                      strcmp(axes,"yx")==0 ? "E_{T} vs Area"          :
+                      strcmp(axes,"xz")==0 ? "E_{T} vs N_{const}"     :
+                      strcmp(axes,"yz")==0 ? "Area vs N_{const}"      :
+                      strcmp(axes,"zx")==0 ? "E_{T} vs #eta"          :
+                      strcmp(axes,"zy")==0 ? "E_{T} vs #phi"          :
+                                             axes;                     /* fallback */
 
         /* build “axes‑only” title + radius/cent/trigger descriptor */
         std::string full = makeTitle(h3->GetName());         /* e.g.  "Jet E_T … (R = 0.2, …)" */
@@ -4851,7 +5021,11 @@ class JetQA : public QA
         std::string kind = hname;                // fallback
         if      (hname.rfind("h_maxJetEt_"        ,0) == 0) kind = "Max jet E_{T}";
         else if (hname.rfind("h_leadEt_vs_subEt_" ,0) == 0) kind = "Leading vs subleading jet E_{T}";
-        else if (hname.rfind("h_jetEt_area_nConst_",0) == 0) kind = "Jet E_{T} vs Area vs N_{const}";
+        else if (hname.rfind("h_jetEt_area_nConst_",0) == 0)
+                kind = "Jet E_{T} vs Area vs N_{const}";
+        else if (hname.rfind("h_jetEtEtaPhi_"       ,0) == 0
+              || hname.rfind("h_jetEt_eta_phi_"     ,0) == 0)
+                kind = "Jet E_{T} vs #eta vs #phi";
 
         /* 2.  extract radius, optional centrality, trigger --------------- */
         // pattern:  _r02_(20)_(30)_<trigger>   OR   _r02_<trigger>
@@ -6640,6 +6814,9 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
 {
     using fs::path;
     if (testRun || runFiles.size() <= 1) return;
+
+    /* ---------- dump HCal missing‑bin report -------------------- */
+    HcalQA::writeMissingBinReport( kOutputDir / "MissingHCalBins.txt" );
 
     std::unordered_map<std::string, std::vector<std::string>> badRunMap;
     std::unordered_map<std::string, int>                      sebCount;
