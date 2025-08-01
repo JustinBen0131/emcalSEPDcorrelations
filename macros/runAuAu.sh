@@ -9,6 +9,9 @@
 #      ./runAuAu.sh testRun hcal,pi0      # first run, HCal + Pi0 QA
 #      ./runAuAu.sh testCombined 10       # top‑10 runs merged, full QA suite
 #      ./runAuAu.sh testCombined 10 correlations,hcal
+#      ./runAuAu.sh runFromCurrentCombined
+#       ---- keeps all existing PNG/CSV files, does not revisit individual runs,
+#       ---- and immediately reruns the QA production solely on output_ALL_COMBINED.root, writing fresh plots into …/Combined/…
 #
 #  FULL USAGE
 #  ==========
@@ -47,6 +50,7 @@ macro="analyzeRun24or25auau.cpp"         # C++ macro to build/run
 # 0.  Global verbosity flag (CLI --verbose | -v  or  VERBOSE=1 env var)
 # ────────────────────────────────────────────────────────────────────────────
 verbose="false"
+clean_output="true"
 if [[ "${VERBOSE:-0}" == 1 ]]; then verbose="true"; fi
 if [[ ${1:-} == "--verbose" || ${1:-} == "-v" ]]; then
     verbose="true"; shift         # drop the flag from $@
@@ -73,8 +77,14 @@ case "${mode}" in
         sample_arg="$2"
         shift 2
         ;;
+  runFromCurrentCombined)
+        export COMBINED_ONLY=1          # tells the C++ macro what to do
+        clean_output="false"            # skip rm ‑rf step later
+        shift 1
+        ;;
   *) ;;
 esac
+
 
 # ------------------------------------------------------------------
 # Any remaining positional argument is treated as the QA module list
@@ -115,8 +125,8 @@ root_cmd=(
 # ────────────────────────────────────────────────────────────────────────────
 output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
 
-# ❶ purge old QA PNG / CSV output
-if [[ -d "${output_root}" ]]; then
+# ❶ purge old QA PNG / CSV output  (unless combined‑only run)
+if [[ "${clean_output}" == "true" && -d "${output_root}" ]]; then
     echo "Cleaning old output under ${output_root}" >&2
     rm -rf "${output_root:?}/"*
 fi

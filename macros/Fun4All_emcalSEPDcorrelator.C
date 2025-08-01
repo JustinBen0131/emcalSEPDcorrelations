@@ -268,11 +268,9 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   auto* mb = new MinimumBiasClassifier();
   mb->Verbosity(0);
   mb->setOverwriteScale(
-        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/scales/"
-        "cdb_centrality_scale_54912.root");
+        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityScale/42/6b/426bc1b56ba544201b0213766bee9478_cdb_centrality_scale_54912.root");
   mb->setOverwriteVtx(
-        "/sphenix/user/dlis/Projects/centrality/cdb/calibrations/vertexscales/"
-        "cdb_centrality_vertex_scale_54912.root");
+        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityVertexScale_default/b0/56/b05626ec4ba67f64eb661f7e63e48d72_cdb_centrality_vertex_scale_66701.root");
   se->registerSubsystem(mb);
 
     
@@ -280,12 +278,13 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   auto* cent = new CentralityReco();
   cent->Verbosity(0);
   cent->setOverwriteScale(
-        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/Centrality_default/fb/c6/fbc61c197c51da766818718f441d0767_cdb_centrality_66701.root");
+        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityScale/42/6b/426bc1b56ba544201b0213766bee9478_cdb_centrality_scale_54912.root");
   cent->setOverwriteVtx(
         "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityVertexScale_default/b0/56/b05626ec4ba67f64eb661f7e63e48d72_cdb_centrality_vertex_scale_66701.root");
   cent->setOverwriteDivs(
         "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/Centrality_default/fb/c6/fbc61c197c51da766818718f441d0767_cdb_centrality_66701.root");
   se->registerSubsystem(cent);
+    
     
   std::cout << "building EP info" << std::endl;
   std::unique_ptr<EventPlaneReco> epreco = std::make_unique<EventPlaneReco>();

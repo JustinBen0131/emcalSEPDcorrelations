@@ -99,6 +99,7 @@ class emcal_sepdCorrelator : public SubsysReco
   // ======================================================================
   // 2) Per‑event helpers (called in process_event)
   // ======================================================================
+  bool getCentralitySlice(int& lo, int& hi, std::string& tag) const;
   bool fetchNodes (PHCompositeNode*);                     // guards + cache
   void accumulateFlowContribution(const std::string& calorimeter,
                                     unsigned           ieta,
@@ -125,7 +126,7 @@ class emcal_sepdCorrelator : public SubsysReco
   const GlobalVertex* m_vtx {nullptr};
   double m_vx {0.}, m_vy {0.}, m_vz {0.};
   std::vector<unsigned> m_epdKey;
-  std::vector<int> m_centEdges {0,10,20,30,40,50,60};
+  std::vector<int> m_centEdges{0,10,20,30,40,60,80};
   int                         m_centBin   = -1;   // 0…99
   std::map<std::string,int>   m_centIdxCache;         // "0_10" → 0, etc.
 

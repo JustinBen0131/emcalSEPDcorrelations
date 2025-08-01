@@ -98,6 +98,38 @@ emcal_sepdCorrelator::~emcal_sepdCorrelator()
   
 }
 
+// ----------------------------------------------------------------------
+//  getCentralitySlice  – returns true if the current event falls into
+//                        one of the user–defined centrality intervals
+//                        (lo ≤ cent < hi).  On success it also builds
+//                        the “_lo_hi” tag that all QA routines use
+//                        when addressing centrality‑specific histograms.
+//
+//  • lo,hi   – returned lower / upper edge (undefined if the function
+//              returns false)
+//  • tag     – empty if the function returns false
+// ----------------------------------------------------------------------
+bool emcal_sepdCorrelator::getCentralitySlice(int& lo,
+                                              int& hi,
+                                              std::string& tag) const
+{
+  lo = hi = -1;                       // sentinel → “no valid slice”
+  for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+    if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
+    { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+
+  const bool hasSlice = (lo >= 0);
+  tag.clear();
+  if (hasSlice)
+  {
+    std::ostringstream ss;
+    ss << '_' << lo << '_' << hi;     // e.g. “_30_40”
+    tag = ss.str();
+  }
+  return hasSlice;
+}
+
+
 int emcal_sepdCorrelator::Init(PHCompositeNode* topNode)
 {
   LOG(1, CLR_BLUE, "[Init] emcal_sepdCorrelator – starting");
@@ -770,18 +802,40 @@ emcal_sepdCorrelator::bookEventPlaneCentralityQA(const std::string& trig,
                "#Sigma Q_{MBD} vs #Sigma Q_{sEPD};#Sigma Q_{MBD};#Sigma Q_{sEPD}",
                300, 0, 1200, 300, 0, 1200);
 
-  /* 3. ψ n distributions (South, n = 1,2,3) ------------------------- */
-  H["h_Psi1_sEPD"] =
-      new TH1F(("h_Psi1_sEPD_" + trig).c_str(),
-               "sEPD #Psi_{1};#Psi_{1} [rad]", 120, -TMath::Pi(), TMath::Pi());
+  /* 3. ψ n distributions  (South & North, n = 1,2,3) ---------------- */
+  H["h_Psi1_sEPD_S"] = new TH1F(("h_Psi1_sEPD_S_" + trig).c_str(),
+                                  "sEPD South  #Psi_{1};#Psi_{1} [rad]",
+                                  120, -TMath::Pi(), TMath::Pi());
+  H["h_Psi1_sEPD_N"] = new TH1F(("h_Psi1_sEPD_N_" + trig).c_str(),
+                                  "sEPD North  #Psi_{1};#Psi_{1} [rad]",
+                                  120, -TMath::Pi(), TMath::Pi());
 
-  H["h_Psi2_sEPD"] =
-      new TH1F(("h_Psi2_sEPD_" + trig).c_str(),
-               "sEPD #Psi_{2};#Psi_{2} [rad]", 120, -TMath::Pi(), TMath::Pi());
+  H["h_Psi2_sEPD_S"] = new TH1F(("h_Psi2_sEPD_S_" + trig).c_str(),
+                                  "sEPD South  #Psi_{2};#Psi_{2} [rad]",
+                                  120, -TMath::Pi(), TMath::Pi());
+  H["h_Psi2_sEPD_N"] = new TH1F(("h_Psi2_sEPD_N_" + trig).c_str(),
+                                  "sEPD North  #Psi_{2};#Psi_{2} [rad]",
+                                  120, -TMath::Pi(), TMath::Pi());
 
-  H["h_Psi3_sEPD"] =
-      new TH1F(("h_Psi3_sEPD_" + trig).c_str(),
-               "sEPD #Psi_{3};#Psi_{3} [rad]", 120, -TMath::Pi(), TMath::Pi());
+  H["h_Psi3_sEPD_S"] = new TH1F(("h_Psi3_sEPD_S_" + trig).c_str(),
+                                  "sEPD South  #Psi_{3};#Psi_{3} [rad]",
+                                  120, -TMath::Pi(), TMath::Pi());
+  H["h_Psi3_sEPD_N"] = new TH1F(("h_Psi3_sEPD_N_" + trig).c_str(),
+                                  "sEPD North  #Psi_{3};#Psi_{3} [rad]",
+                                  120, -TMath::Pi(), TMath::Pi());
+
+  /* --- Q‑vector scatter plots for detailed debugging --------------- */
+  for (auto& [det, vec] : m_flowAcc)                // every detector key
+      for (int n : {1,2,3})
+      {
+          std::ostringstream nm;
+          nm << "h_Q" << n << '_' << det << '_' << trig;
+          H[nm.str()] = new TH2F(nm.str().c_str(),
+                                 Form("Q_{%d} (%s);Q_{x};Q_{y}", n, det.c_str()),
+                                 200, -500., 500.,
+                                 200, -500., 500.);
+  }
+
 
   /* 4. sub‑event resolution proxies  ⟨cos n(Ψ^N–Ψ^S)⟩ vs ΣQ --------- */
   const int nBinsQ = 12;              // same binning for all three
@@ -1477,19 +1531,9 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
   /* ------------------------------------------------------------------ */
   /* 2. Determine centrality slice                                      */
   /* ------------------------------------------------------------------ */
-  int lo = 0, hi = 100;                       // default = min‑bias
-  if (m_centBin >= 0)
-  {
-    bool found = false;
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; found = true; break; }
-    if (!found)
-      LOG(1, CLR_YELLOW, "    centrality bin " << m_centBin
-                          << " not within configured edges – treating as MB");
-  }
-  const std::string sliceTag = '_' + std::to_string(lo) + '_' +
-                               std::to_string(hi);
+  int         lo , hi ;
+  std::string sliceTag;
+  const bool  hasSlice = getCentralitySlice(lo,hi,sliceTag);
 
   /* ------------------------------------------------------------------ */
   /* 3. Channel loop  +  radial QA counters                              */
@@ -1532,21 +1576,22 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
         if (auto* ho = dynamic_cast<TH1*>(H[hOcc])) ho->Fill(ring);
         if (auto* hq = dynamic_cast<TH1*>(H[hQ ]))  hq->Fill(ring, w);
 
-        /* centrality‑slice clones (only if they exist) --------------------- */
-        const std::string tag = sliceTag + '_' + t;
+          if (hasSlice) {
+            const std::string tag   = sliceTag + '_' + t;
 
-        const std::string hOccC = (arm == 0)
-            ? "h_SEPD_RingOcc_South_" + tag
-            : "h_SEPD_RingOcc_North_" + tag;
+            const std::string hOccC = (arm == 0)
+                ? "h_SEPD_RingOcc_South_" + tag
+                : "h_SEPD_RingOcc_North_" + tag;
 
-        const std::string hQC   = (arm == 0)
-            ? "h_SEPD_RingQ_South_"   + tag
-            : "h_SEPD_RingQ_North_"   + tag;
+            const std::string hQC   = (arm == 0)
+                ? "h_SEPD_RingQ_South_"   + tag
+                : "h_SEPD_RingQ_North_"   + tag;
 
-        if (auto it = H.find(hOccC); it != H.end())
-            static_cast<TH1*>(it->second)->Fill(ring);
-        if (auto it = H.find(hQC); it != H.end())
-            static_cast<TH1*>(it->second)->Fill(ring, w);
+            if (auto it = H.find(hOccC); it != H.end())
+                static_cast<TH1*>(it->second)->Fill(ring);
+            if (auto it = H.find(hQC); it != H.end())
+                static_cast<TH1*>(it->second)->Fill(ring, w);
+          }
       }
 
 
@@ -1566,12 +1611,14 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
           warnOnce(baseKey + t);
 
         // ---------- centrality slice ----------------------------------
-        const std::string keyC = baseKey.substr(0, baseKey.size() - 1)
-                               + sliceTag + '_' + t;
-        auto itC = H.find(keyC);
-        if (itC != H.end())
-          if (auto* hC = dynamic_cast<TH2*>(itC->second))
-            fillPolar(hC, phiPlot, r, 1.0, key);
+        if (hasSlice) {
+            const std::string keyC = baseKey.substr(0, baseKey.size() - 1)
+                                   + sliceTag + '_' + t;
+            auto itC = H.find(keyC);
+            if (itC != H.end())
+              if (auto* hC = dynamic_cast<TH2*>(itC->second))
+                fillPolar(hC, phiPlot, r, 1.0, key);
+         }
       }
 
       /* ---- 3b. Q‑vector sums (n = 1,2,3) ---------------------------- */
@@ -1667,15 +1714,22 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
 
   for (const std::string& t : trig)
   {
-    auto& H = qaHistogramsByTrigger[t];
-    safeFillH1(H["h_Psi1_sEPD"], m_psi1_S);
-    safeFillH1(H["h_Psi2_sEPD"], m_psi2_S);
-    safeFillH1(H["h_Psi3_sEPD"], m_psi3_S);
+      auto& H = qaHistogramsByTrigger[t];
 
-    safeFillH2(H["h_Psi1_res_vs_Qsum"], m_sepdQ, cos1);
-    safeFillH2(H["h_Psi2_res_vs_Qsum"], m_sepdQ, cos2);
-    safeFillH2(H["h_Psi3_res_vs_Qsum"], m_sepdQ, cos3);
+      /* event‑plane shapes, South & North */
+      safeFillH1(H["h_Psi1_sEPD_S"], m_psi1_S);
+      safeFillH1(H["h_Psi1_sEPD_N"], m_psi1_N);
+      safeFillH1(H["h_Psi2_sEPD_S"], m_psi2_S);
+      safeFillH1(H["h_Psi2_sEPD_N"], m_psi2_N);
+      safeFillH1(H["h_Psi3_sEPD_S"], m_psi3_S);
+      safeFillH1(H["h_Psi3_sEPD_N"], m_psi3_N);
+
+      /* sub‑event correlation versus total charge */
+      safeFillH2(H["h_Psi1_res_vs_Qsum"], m_sepdQ, cos1);
+      safeFillH2(H["h_Psi2_res_vs_Qsum"], m_sepdQ, cos2);
+      safeFillH2(H["h_Psi3_res_vs_Qsum"], m_sepdQ, cos3);
   }
+
 
   /* ------------------------------------------------------------------ */
   /* 7. Summary                                                         */
@@ -1808,11 +1862,9 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
   /* ------------------------------------------------------------------ */
   /* 1. Determine this event’s centrality slice once                    */
   /* ------------------------------------------------------------------ */
-  int lo = 0, hi = 100;               // “minimum‑bias” default
-  if (m_centBin >= 0)
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+  int         lo , hi ;
+  std::string sliceTag;
+  const bool  hasSlice = getCentralitySlice(lo,hi,sliceTag);
 
   /* ------------------------------------------------------------------ */
   /* 2. Loop over all PMTs                                              */
@@ -1842,16 +1894,15 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
           ->Fill(cx, cy, q);
 
       /* ---- (b) centrality‑tagged clone (only if cent info valid) - */
-      if (m_centBin >= 0)
-      {
-        std::ostringstream keyC;
-        keyC << baseKey.substr(0, baseKey.size() - 1)   // drop trailing ‘_’
-             << '_' << lo << '_' << hi << '_' << t;
+        if (hasSlice)
+        {
+          const std::string keyC =
+              baseKey.substr(0, baseKey.size() - 1) + sliceTag + '_' + t;
 
-        auto it = qaHistogramsByTrigger[t].find(keyC.str());
-        if (it != qaHistogramsByTrigger[t].end())
-          static_cast<TH2Poly*>(it->second)->Fill(cx, cy, q);
-      }
+          auto it = qaHistogramsByTrigger[t].find(keyC);
+          if (it != qaHistogramsByTrigger[t].end())
+            static_cast<TH2Poly*>(it->second)->Fill(cx, cy, q);
+        }
     }
 
     /* ---- book‑keeping -------------------------------------------- */
@@ -1969,6 +2020,12 @@ void emcal_sepdCorrelator::doCaloQA(
         const std::vector<std::string>&    trig)
 {
   LOG(3, CLR_BLUE, "[doCaloQA]  ─ processing calorimeter towers");
+  /* ------------------------------------------------------------------ */
+  /* Centrality slice helper                                            */
+  /* ------------------------------------------------------------------ */
+  int         centLo , centHi ;
+  std::string centTag;
+  const bool  hasCentSlice = getCentralitySlice(centLo,centHi,centTag);
 
   //------------------------------------------------------------------------
   // (0)  Reset per‑event flow accumulators
@@ -2044,18 +2101,12 @@ void emcal_sepdCorrelator::doCaloQA(
                 static_cast<TH2F*>(qaHistogramsByTrigger[t][hMapPrefix + t])
                 ->Fill(iphi, ieta, e);
                 
-                /* centrality‑tagged clone (if centrality is valid) ---------- */
-                if (m_centBin >= 0)
+                if (hasCentSlice)
                 {
-                    int lo = 0, hi = 100;
-                    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-                        if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
-                        { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
-                    
                     std::ostringstream k;
                     k << hMapPrefix.substr(0, hMapPrefix.size()-1)   // drop trailing '_'
-                    << '_' << lo << '_' << hi << '_' << t;
-                    
+                      << centTag << '_' << t;
+
                     auto it = qaHistogramsByTrigger[t].find(k.str());
                     if (it != qaHistogramsByTrigger[t].end())
                         static_cast<TH2F*>(it->second)->Fill(iphi, ieta, e);
@@ -2124,16 +2175,10 @@ void emcal_sepdCorrelator::doCaloQA(
                 ->Fill(bestDPhi);
                 
                 /* centrality‑tagged */
-                if (m_centBin >= 0)
+                if (hasCentSlice)
                 {
-                    int lo = 0, hi = 100;
-                    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-                        if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
-                        { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
-                    
-                    std::ostringstream tag; tag << '_' << lo << '_' << hi << '_' << t;
-                    const std::string kEta = "h_dEta_CEMC_IHCAL" + tag.str();
-                    const std::string kPhi = "h_dPhi_CEMC_IHCAL" + tag.str();
+                    const std::string kEta = "h_dEta_CEMC_IHCAL" + centTag + '_' + t;
+                    const std::string kPhi = "h_dPhi_CEMC_IHCAL" + centTag + '_' + t;
                     
                     if (auto it = qaHistogramsByTrigger[t].find(kEta);
                         it != qaHistogramsByTrigger[t].end())
@@ -2180,13 +2225,9 @@ void emcal_sepdCorrelator::doCaloQA(
   if (maxClusE > 0.f)
   {
     /* determine centrality slice (once) ------------------------------ */
-    int lo = 0, hi = 100;                                  // MB default
-    if (m_centBin >= 0)
-      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-        if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i+1])
-        { lo = m_centEdges[i]; hi = m_centEdges[i+1]; break; }
-
-    const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
+    int         lo , hi ;
+    std::string tag;
+    const bool  hasSlice = getCentralitySlice(lo,hi,tag);
 
     /* (A‑1) global & centrality‑tagged histograms -------------------- */
     for (const auto& t : trig)
@@ -2194,10 +2235,13 @@ void emcal_sepdCorrelator::doCaloQA(
       static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_maxClusterE_EMC"])
           ->Fill(maxClusE);
 
-      const std::string key = "h_maxClusterE_EMC" + tag + '_' + t;
-      auto&             H   = qaHistogramsByTrigger[t];
-      if (auto it = H.find(key); it != H.end())
-        static_cast<TH1F*>(it->second)->Fill(maxClusE);
+        if (hasSlice)
+        {
+          const std::string key = "h_maxClusterE_EMC" + tag + '_' + t;
+          auto&             H   = qaHistogramsByTrigger[t];
+          if (auto it = H.find(key); it != H.end())
+            static_cast<TH1F*>(it->second)->Fill(maxClusE);
+        }
 
       /* extra diagnostics if Verbosity()>5 --------------------------- */
       if (Verbosity() > 5)
@@ -2320,15 +2364,11 @@ void emcal_sepdCorrelator::doPi0QA(const std::vector<std::string>& trig)
       << nRejectedChi << " rejected by χ²)");
 
   /* determine centrality slice ----------------------------------------- */
-  int lo = 0, hi = 100;
-  if (m_centBin >= 0)
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] &&
-          m_centBin <  m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
+  int         lo , hi ;
+  std::string centTag;
+  const bool  hasSlice = getCentralitySlice(lo,hi,centTag);
+  if (!hasSlice) { LOG(4, CLR_YELLOW, "    [doPi0QA] event outside slices – skip"); return; }
 
-  std::ostringstream tagSS; tagSS << '_' << lo << '_' << hi;
-  const std::string centTag = tagSS.str();
 
   LOG(4, CLR_CYAN,
       "    [doPi0QA] centrality = " << m_centBin
@@ -2529,14 +2569,9 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
   const double ohcal = m_calo["OHCAL"].sumE;
 
   /* —— 1. Determine centrality slice this event belongs to ———————— */
-  int lo = 0, hi = 100;                      // default = ‘all events’
-  if (m_centBin >= 0)
-  {
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
-  }
-  const std::string tag = '_' + std::to_string(lo) + '_' + std::to_string(hi);
+  int         lo , hi ;
+  std::string tag;
+  const bool  hasSlice = getCentralitySlice(lo,hi,tag);
 
   LOG(4, CLR_CYAN, "    centrality bin = " << m_centBin
                        << "  → slice " << lo << "–" << hi << " %");
@@ -2598,17 +2633,17 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
     binsFilled[t] += safeFill(H["h_OHCAL_vs_CEMC"], ohcal, cemc,
                                 "h_OHCAL_vs_CEMC", t);
 
-    /* — 3.3 centrality‑tagged clones ———————————— */
     auto tryCent = [&](const std::string& base,
-                       double x, double y)
+                         double x, double y)
     {
-      const std::string hkey = base + tag + '_' + t;
-      auto it = H.find(hkey);
-      if (it == H.end()) return false;
-      static_cast<TH2F*>(it->second)->Fill(x, y);
-      return true;
+        if (!hasSlice) return false;
+        const std::string hkey = base + tag + '_' + t;
+        auto it = H.find(hkey);
+        if (it == H.end()) return false;
+        static_cast<TH2F*>(it->second)->Fill(x, y);
+        return true;
     };
-
+      
     binsFilled[t] += tryCent("h_SEPD_vs_CEMC",  m_sepdQ, cemc);
     binsFilled[t] += tryCent("h_SEPD_vs_IHCAL", m_sepdQ, ihcal);
     binsFilled[t] += tryCent("h_SEPD_vs_OHCAL", m_sepdQ, ohcal);
@@ -2705,17 +2740,9 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
   /* ------------------------------------------------------------------ */
   /* 0.  Work out the centrality slice that this event belongs to       */
   /* ------------------------------------------------------------------ */
-  bool hasSlice = false;           // set to true only for a valid slice
-  int  lo = 0, hi = 100;
-
-  if (m_centBin >= 0)
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; hasSlice = true; break; }
-
-  const std::string sliceTag = hasSlice
-                             ? '_' + std::to_string(lo) + '_' + std::to_string(hi)
-                             : "";                      // empty when no slice
+  int         lo , hi ;
+  std::string sliceTag;
+  const bool  hasSlice = getCentralitySlice(lo,hi,sliceTag);
 
   const double psi[4] = {0., m_psi1_S, m_psi2_S, m_psi3_S};
 
@@ -2905,11 +2932,34 @@ void
 emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
 {
   /* (0) map this event to a <lo,hi> centrality slice ----------------- */
-  int lo = 0, hi = 100;
-  if (m_centBin >= 0)
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
-      if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
-      { lo = m_centEdges[i];  hi = m_centEdges[i + 1]; break; }
+  int         lo , hi ;
+  std::string sliceTag;
+  const bool  hasSlice = getCentralitySlice(lo,hi,sliceTag);
+  if (!hasSlice) return;     // skip events outside user slices
+
+  /* -------- DEBUG: store the exact Q‑vectors that feed v_n --------- */
+  for (const auto& [det, vec] : m_flowAcc)
+      for (std::size_t ib = 0; ib < vec.size(); ++ib)
+      {
+          const FlowAcc& a = vec[ib];
+          if (a.sumW <= 0.) continue;
+
+          for (int n : {1,2,3})
+          {
+              const double qx = a.qx[n];
+              const double qy = a.qy[n];
+
+              for (const std::string& t : trig)
+              {
+                  std::ostringstream key;
+                  key << "h_Q" << n << '_' << det << '_' << t;
+                  auto& H = qaHistogramsByTrigger[t];
+                  if (auto it = H.find(key.str()); it != H.end())
+                      static_cast<TH2F*>(it->second)->Fill(qx, qy);
+              }
+          }
+      }
+
 
   if (Verbosity() >= 3)
     LOG(3, CLR_CYAN, "[fillFlowHists] cent=" << m_centBin

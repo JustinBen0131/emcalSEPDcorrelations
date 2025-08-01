@@ -863,6 +863,7 @@ class Pi0QA : public QA
             // ---------- CSV & caches (original logic, unchanged) -----------
             csvFit << trig << ',' << ck.E << ',' << ck.chi << ',' << ck.asy << ','
                    << ck.pLo << ',' << ck.pHi << ','
+                   << slice  << ','                           /* centrality slice */
                    << piMu   << ',' << piMuErr  << ','
                    << piSig  << ',' << piSigErr << ','
                    << etaMu  << ',' << etaMuErr << ','
@@ -1581,7 +1582,6 @@ class Pi0QA : public QA
                 std::unordered_map<std::string,RunPoint>>  s_runPoints;
     static inline bool s_summaryWritten = false;
 };
-
 
 
 
@@ -3210,68 +3210,6 @@ void HcalQA::writeMissingBinReport(const fs::path& txtPath)
 }
 
 
-// ------------------------------------------------------------------
-//  Histogram factory – identical binning to SepdMonDraw
-// ------------------------------------------------------------------
-TH2* makeSepdHitmap(const std::string& name, bool bigTile0 = false)
-{
-  /*  For tiles 1 … 31 we need 24   φ bins (15°)         *
-   *  For tile‑0 we need   12   φ bins (30°) → pass flag */
-  const Int_t nbPhi  = bigTile0 ? 12 : 24;
-  const Int_t nbRing = 16;             // hardware rings
-    /* ----------- variable‑width radial bins: 16 rings × 0.21 cm -------- */
-    static const Double_t rEdge[17] =   // cm – inner radius of each ring
-    {
-      0.15,                       // ring 0
-      0.36, 0.57, 0.78, 0.99,     // rings 1 ‑ 4
-      1.20, 1.41, 1.62, 1.83,     // rings 5 ‑ 8
-      2.04, 2.25, 2.46, 2.67,     // rings 9 ‑12
-      2.88, 3.09, 3.30, 3.51      // rings 13‑15 + outer edge
-    };
-
-    return new TH2F(name.c_str(), name.c_str(),
-                    nbPhi, 0., 2.*TMath::Pi(),   // φ bins (unchanged)
-                    16,    rEdge);              // *** variable r‑bins ***
-}
-
-
-std::pair<TH2*,TH2*> makeEpdHitmaps(const std::string& basename)
-{
-  auto hReg = makeSepdHitmap(basename + "_std");  // tiles 1 … 31
-  auto hT0  = makeSepdHitmap(basename + "_t0" , true); // tile‑0
-  /* cosmetic identical to monitor */
-  for (auto h : {hReg, hT0})
-  {
-    h->SetDirectory(nullptr);
-    h->SetStats(0);
-    h->SetLineColor(kBlack);
-    h->SetLineWidth(1);
-  }
-  return {hReg, hT0};
-}
-
-// ------------------------------------------------------------------
-//  Fill routine – *discrete* φ chosen from sector/tile, not a float
-// ------------------------------------------------------------------
-void fillSepdHitmap(TH2* hReg, TH2* hT0,
-                    int adcChannel,  double weight = 1.0)
-{
-  const int tile   = sepd::energyToTile[adcChannel];        // 0 … 31
-  const int ring   = sepd::returnRing(adcChannel);          // 0 … 15
-  const int sector = sepd::sEPD_energyToSector[adcChannel]; // 0 … 11
-
-  const int odd = (tile + 1) & 1;                // even/odd helper
-  const int phiBin = (tile == 0)                 // → φ‑bin index
-                   ? sector                      // 12 bins, 0 … 11
-                   : sector * 2 + odd;           // 24 bins, 0 … 23
-
-  const double r   = 0.15 + 0.21 * ring + 0.105; // ring centre radius
-  const double phi = (phiBin + 0.5) * (2.*TMath::Pi()/          // bin centre
-                                       (tile==0 ? 12 : 24));
-
-  (tile == 0 ? hT0 : hReg)->Fill(phi, r, weight);
-}
-
 
 // ───────────────── Event‑plane observables (sEPD) ──────────────────────
 class sEPDotherQA : public QA
@@ -3288,15 +3226,16 @@ class sEPDotherQA : public QA
       const std::string n = o->GetName();
       log::trace("[sEPDotherQA] Inspecting \"" + n + "\"");
 
-      /* 1. recognise wanted histograms ----------------------------------- */
       static const std::vector<std::string> keys = {
-        /* event‑plane QA */
-        "h_Psi1_sEPD", "h_Psi2_sEPD", "h_Psi3_sEPD",
-        "h_Psi1_res_vs_Qsum", "h_Psi2_res_vs_Qsum",
-        "h_Psi3_res_vs_Qsum", "p_R2_vs_cent",
-        /* NEW ► per‑ring QA */
-        "h_SEPD_RingOcc_South", "h_SEPD_RingOcc_North",
-        "h_SEPD_RingQ_South",   "h_SEPD_RingQ_North"
+          /* event‑plane QA – now explicit South & North histograms */
+          "h_Psi1_sEPD_S", "h_Psi1_sEPD_N",
+          "h_Psi2_sEPD_S", "h_Psi2_sEPD_N",
+          "h_Psi3_sEPD_S", "h_Psi3_sEPD_N",
+          "h_Psi1_res_vs_Qsum", "h_Psi2_res_vs_Qsum", "h_Psi3_res_vs_Qsum",
+          "p_R1_vs_cent", "p_R2_vs_cent", "p_R3_vs_cent",
+          /* ring‑level QA (unchanged) */
+          "h_SEPD_RingOcc_South", "h_SEPD_RingOcc_North",
+          "h_SEPD_RingQ_South",   "h_SEPD_RingQ_North"
       };
       const bool match = std::any_of(keys.begin(), keys.end(),
                                      [&](const std::string& k){ return n.rfind(k,0)==0; });
@@ -5096,11 +5035,36 @@ class VnPlotQA : public QA
         /* ------------------------------------------------------------------
          *  0. Type gate – accept *only* TProfile objects
          * ------------------------------------------------------------------ */
-        if (!o) {
-            log(Lvl::ERR, "process(): received nullptr TObject* – aborting");
-            return false;
-        }
-        if (!o->InheritsFrom(TProfile::Class())) return false;      // ignore others
+       if (!o) {
+          log(Lvl::ERR, "process(): received nullptr TObject* – aborting");
+          return false;
+       }
+
+       /* ---------- 1.  Q‑vector scatter plots (TH2F) ------------------ */
+       if (o->InheritsFrom(TH2::Class()) &&
+          std::string(o->GetName()).rfind("h_Q", 0) == 0)
+       {
+          auto* h2 = static_cast<TH2*>(o);          // safe – we just checked
+          h2->SetDirectory(nullptr);                // detach from ROOT dir
+
+          TCanvas c("c_q", "Q‑vector", 800, 750);
+          c.SetGrid();
+          h2->SetStats(0);
+          h2->Draw("colz");
+
+          /* build …/vNana/Qvectors/<hist>.png  ----------------------- */
+          fs::path dst = _outDir / "Qvectors"
+                                   / (std::string(h2->GetName()) + ".png");
+          try { std::filesystem::create_directories(dst.parent_path()); }
+          catch (...) {/* directory already exists – ignore */}
+
+          c.SaveAs(dst.string().c_str());
+          log(Lvl::INF, "process(): stored Q‑vector scatter → " + dst.string());
+          return true;                               // histogram handled
+       }
+
+      /* ---------- 2.  standard v_n TProfiles ------------------------ */
+       if (!o->InheritsFrom(TProfile::Class())) return false;  // ignore others
 
         /* ------------------------------------------------------------------
          *  1. Histogram‑name validation
@@ -6278,7 +6242,8 @@ QaMaps runQaProduction(TFile*              in,
         log::err("Cannot open " + csvPath.string() + " for writing – aborting runQaProduction()");
         return {};
     }
-    csv << "trigger,E,Chi,Asym,pTlo,pThi,meanPi0,errPi0,sigmaPi0,errSigmaPi0,"
+    csv << "trigger,E,Chi,Asym,pTlo,pThi,cent,"
+           "meanPi0,errPi0,sigmaPi0,errSigmaPi0,"
            "meanEta,errEta,sigmaEta,errSigmaEta\n";
 
     //------------------------------------------------------------------
@@ -6821,8 +6786,11 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     std::unordered_map<std::string, std::vector<std::string>> badRunMap;
     std::unordered_map<std::string, int>                      sebCount;
 
-    {   /* 4 a. read MissingSEB.txt */
-        std::ifstream miss( (baseDir / "output" / "MissingSEB.txt").string() );
+    {   /* 4 a. read MissingSEB.txt  +  bar‑chart output */
+        const fs::path sebTxt  = baseDir / "output" / "MissingSEB.txt";
+        const fs::path sebPng  = baseDir / "output" / "MissingSEB_distribution.png";
+
+        std::ifstream miss( sebTxt.string() );
         if (!miss) {
             log::warn("MissingSEB.txt not found – merging all runs");
         } else {
@@ -6834,11 +6802,43 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
                 std::string seb;
                 while (iss >> seb) {
                     badRunMap[run].push_back(seb);
-                    ++sebCount[seb];
+                    ++sebCount[seb];                 // accumulate counts
                 }
             }
         }
+
+        /* ---------- create bar‑chart (SEB00 … SEB15) ------------------ */
+        TH1I hSEB("hMissingSEB",
+                  "Runs with missing SEB;SEB index;Number of runs",
+                  16, -0.5, 15.5);                   // 16 integer bins 0…15
+
+        for (const auto& [seb,cnt] : sebCount) {
+            int idx = -1;
+            try { idx = std::stoi( seb.substr(3) ); }  // "SEB7" → 7
+            catch (...) { continue; }
+            if (idx >= 0 && idx < 16) hSEB.SetBinContent(idx + 1, cnt);
+        }
+        hSEB.SetFillColor(kAzure + 1);
+        hSEB.SetBarWidth(0.8);
+        hSEB.SetBarOffset(0.1);
+        hSEB.GetXaxis()->SetTickLength(0);
+        hSEB.LabelsOption("h");                       // horizontal x‑labels
+
+        /* label the x‑axis bins “SEB00” … “SEB15” */
+        for (int i = 1; i <= 16; ++i)
+            hSEB.GetXaxis()->SetBinLabel(i,
+                   Form("SEB%02d", i - 1));
+
+        TCanvas cSEB("cMissingSEB","",800,500);
+        gPad->SetGridy();
+        hSEB.Draw("bar2");
+
+        ensure_dir( sebPng.parent_path() );
+        cSEB.SaveAs( sebPng.string().c_str() );
+
+        log::ok("Missing SEB distribution plot saved → " + sebPng.string());
     }
+
 
     /* 4 b. filter list */
     std::vector<fs::path> mergeFiles;
@@ -6924,6 +6924,20 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
 
 void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
 {
+    /* ── special mode: analyse existing combined file only ───────── */
+    const bool combinedOnly = (std::getenv("COMBINED_ONLY") != nullptr);
+    if (combinedOnly)
+    {
+        fs::path combined = kInputDir / "output_ALL_COMBINED.root";
+        if (!fs::exists(combined)) {
+            log::err("COMBINED_ONLY set but " + combined.string() + " not found");
+            return;
+        }
+        log::banner("Combined‑only mode → " + combined.string());
+        runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
+        return;                                // skip per‑run processing
+    }
+
     /* 0. discover input ROOT files --------------------------------- */
     std::vector<fs::path> runFiles = discoverInputRuns();
     if (runFiles.empty()) return;
