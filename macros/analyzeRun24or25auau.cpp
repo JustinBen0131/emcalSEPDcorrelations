@@ -1376,9 +1376,61 @@ class Pi0QA : public QA
             log(Lvl::INFO,"writeRunSummary(): skipped – not in \"Combined\" pass");
             return;
         }
+        /* ------------------------------------------------------------- *
+         * 0‑B.  If no in‑memory points are present (e.g. we skipped the  *
+         *       per‑run passes and executed only the Combined step),    *
+         *       rebuild s_runPoints from every                           *
+         *              <output>/<run>/InvariantMassSummary.csv          *
+         * ------------------------------------------------------------- */
         if (s_runPoints.empty()) {
-            log(Lvl::WARN,"writeRunSummary(): s_runPoints is EMPTY – nothing to do");
-            return;
+            log(Lvl::INFO,
+                "writeRunSummary(): in‑memory cache empty – loading CSV files");
+
+            /*  helper that parses one CSV file and adds points to the map  */
+            auto loadCsv = [&](const fs::path& csvPath)
+            {
+                std::ifstream csv(csvPath);
+                if (!csv) return;                       // silently ignore
+                std::string line;
+                std::getline(csv, line);                // skip header
+                while (std::getline(csv, line)) {
+                    if (line.empty()) continue;
+                    std::stringstream ss(line);
+                    std::string fld[15];                // we need first 15 cols
+                    for (int i = 0; i < 15 && std::getline(ss, fld[i], ','); ++i) {}
+
+                    /* CSV columns after earlier edit
+                       0 trig | 1 E | 2 Chi | 3 Asym | 4 pTlo | 5 pThi | 6 cent
+                       7 μ | 8 μErr | 9 σ | 10 σErr | …                                    */
+                    if (fld[0] != trig)                 // different trigger
+                        continue;
+                    if (std::stod(fld[4]) >= 0)         // want pT‑integrated only
+                        continue;
+
+                    const std::string& cent = fld[6];
+                    const std::string runIDcsv =
+                            csvPath.parent_path().filename().string();
+
+                    s_runPoints[cent][runIDcsv] = {
+                        std::stod(fld[7]),  std::stod(fld[8]),
+                        std::stod(fld[9]),  std::stod(fld[10])
+                    };
+                }
+            };
+
+            /*  locate every per‑run directory (siblings of “…/Combined/”)   */
+            const fs::path runsRoot = root.parent_path().parent_path();   // …/<output>/
+            for (const auto& de : fs::directory_iterator(runsRoot)) {
+                if (!de.is_directory())                           continue;
+                if (de.path().filename() == "Combined")           continue;
+                loadCsv( de.path() / "InvariantMassSummary.csv" );
+            }
+
+            if (s_runPoints.empty()) {
+                log(Lvl::WARN,
+                    "writeRunSummary(): still no data after CSV scan – aborting");
+                return;
+            }
         }
 
         /* avoid duplicates – now distinguish both CUT and TRIGGER */
