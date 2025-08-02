@@ -113,7 +113,7 @@ bool emcal_sepdCorrelator::getCentralitySlice(int& lo,
                                               int& hi,
                                               std::string& tag) const
 {
-  lo = hi = -1;                       // sentinel → “no valid slice”
+  lo = hi = -1;
   for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
     if (m_centBin >= m_centEdges[i] && m_centBin < m_centEdges[i + 1])
     { lo = m_centEdges[i]; hi = m_centEdges[i + 1]; break; }
@@ -123,7 +123,7 @@ bool emcal_sepdCorrelator::getCentralitySlice(int& lo,
   if (hasSlice)
   {
     std::ostringstream ss;
-    ss << '_' << lo << '_' << hi;     // e.g. “_30_40”
+    ss << '_' << lo << '_' << hi;
     tag = ss.str();
   }
   return hasSlice;

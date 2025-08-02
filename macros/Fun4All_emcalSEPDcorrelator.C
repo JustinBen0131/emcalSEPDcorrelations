@@ -48,6 +48,8 @@
 #include <eventplaneinfo/EventPlaneReco.h>
 #include <eventplaneinfo/Eventplaneinfo.h>
 #include <centrality/CentralityReco.h>
+#include <mbd/MbdEvent.h>
+#include <mbd/MbdReco.h>
 #include <calotrigger/MinimumBiasClassifier.h>   // optional but handy
 #include <zdcinfo/ZdcReco.h>
 #include <phool/recoConsts.h>
@@ -60,8 +62,6 @@
 #include <jetbackground/SubtractTowers.h>
 #include <jetbackground/CopyAndSubtractJets.h>
 
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/mbd/MbdEvent.h"
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/mbd/MbdReco.h"
 // analysis module
 #include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"
 
@@ -87,7 +87,7 @@ R__LOAD_LIBRARY(libcentrality.so)      // always
 R__LOAD_LIBRARY(libcentrality_io.so)   // if you instantiate CentralityReco
 R__LOAD_LIBRARY(libcalotrigger.so)
 R__LOAD_LIBRARY( libzdcinfo.so )
-R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libmbd.so)
+R__LOAD_LIBRARY(libmbd.so)
 R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libEMCalSEPD.so)
 
 //======================================================================
@@ -269,8 +269,6 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   mb->Verbosity(0);
   mb->setOverwriteScale(
         "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityScale/42/6b/426bc1b56ba544201b0213766bee9478_cdb_centrality_scale_54912.root");
-  mb->setOverwriteVtx(
-        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityVertexScale_default/b0/56/b05626ec4ba67f64eb661f7e63e48d72_cdb_centrality_vertex_scale_66701.root");
   se->registerSubsystem(mb);
 
     
@@ -279,10 +277,6 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   cent->Verbosity(0);
   cent->setOverwriteScale(
         "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityScale/42/6b/426bc1b56ba544201b0213766bee9478_cdb_centrality_scale_54912.root");
-  cent->setOverwriteVtx(
-        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/CentralityVertexScale_default/b0/56/b05626ec4ba67f64eb661f7e63e48d72_cdb_centrality_vertex_scale_66701.root");
-  cent->setOverwriteDivs(
-        "/cvmfs/sphenix.sdcc.bnl.gov/calibrations/sphnxpro/cdb/Centrality_default/fb/c6/fbc61c197c51da766818718f441d0767_cdb_centrality_66701.root");
   se->registerSubsystem(cent);
     
     

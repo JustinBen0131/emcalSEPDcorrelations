@@ -798,13 +798,19 @@ class Pi0QA : public QA
                     }
 
                     std::string pTStr = pTInt
-                                      ? "p_{T} IND"
-                                      : Form("%.2f < p_{T} < %.2f GeV/c",ck.pLo,ck.pHi);
+                                      ? "p_{T}-integrated"
+                                      : Form("%.2f < p_{T} < %.2f GeV/#it{c}", ck.pLo, ck.pHi);
 
-                    tl.DrawLatex(0.14,0.93,(centStr+"   "+pTStr).c_str());
-                    tl.DrawLatex(0.14,0.89,
+                    /* line‑1: centrality slice */
+                    tl.DrawLatex(0.14, 0.93, centStr.c_str());
+
+                    /* line‑2: pT interval (or “pT‑integrated”) */
+                    tl.DrawLatex(0.14, 0.88, pTStr.c_str());
+
+                    /* line‑3: numeric cuts (E, asym, χ²) */
+                    tl.DrawLatex(0.14, 0.83,
                                  Form("E #geq %.2f GeV   Asym < %.2f   #chi^{2} < %.2f",
-                                      ck.E,ck.asy,ck.chi));
+                                      ck.E, ck.asy, ck.chi));
 
                     TLegend leg(0.55,0.64,0.88,0.88);
                     leg.SetBorderSize(0); leg.SetTextAlign(12);
@@ -1145,13 +1151,11 @@ class Pi0QA : public QA
             const double headroom = (yMax - yDataTop) / (yMax - yMin);
             const bool   useBottomRight = (headroom < 0.12);   /* 12 % threshold */
 
-            /* anchor coordinates (NDC, relative to the μ–pad only)          */
             const double x0 = 0.5;                // safely inside right margin
             const double yStart = 0.45;
             const double dy = 0.042;                // line spacing
 
-            /* draw the three lines ---------------------------------------- */
-            p1->cd();                              // draw inside the upper pad
+            p1->cd();
             TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.03);
 
             tl.DrawLatex(x0, yStart,
@@ -1210,7 +1214,6 @@ class Pi0QA : public QA
                                    fTot->GetParameter(4),
                                    fTot->GetParameter(5));
 
-                /* draw the spectrum + fits ------------------------------------------------ */
                 hPt->Draw();
                 fBg->SetLineColor(kBlue  + 2);  fBg->SetLineStyle(2);  fBg->SetLineWidth(2);
                 fBg->DrawCopy("SAME");
@@ -1218,13 +1221,9 @@ class Pi0QA : public QA
                 fTot->DrawCopy("SAME");
                 if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
 
-                /* ---------------------------------------------------------------
-                 *  Annotate the pad with centrality and pT‑bin information
-                 * ------------------------------------------------------------- */
                 CutKey tmpCK;
-                if (decodeInvName(hPt->GetName(), tmpCK))          // recover pT range
+                if (decodeInvName(hPt->GetName(), tmpCK))
                 {
-                    /* build human‑readable labels */
                     std::string centLbl;
                     if (sl == "Inclusive")
                         centLbl = "Inclusive";
@@ -1310,10 +1309,6 @@ class Pi0QA : public QA
         }
     }
 
-
-    // -----------------------------------------------------------------------------
-    //  2×3 overview grid + μ,σ vs centrality  (plus pT‑dependent add‑ons)
-    // -----------------------------------------------------------------------------
     void writeSummaryPanels()
     {
         if (_centralHists.empty()) {
@@ -1470,11 +1465,9 @@ class Pi0QA : public QA
                 log(Lvl::DBG, Form("     ↳ %u row(s) imported", nRows));
             };
 
-            /* locate every sibling directory of “…/Combined/” --------------- */
-            const fs::path runsRoot = root.parent_path().parent_path(); // …/<output>/
+            const fs::path runsRoot = root.parent_path().parent_path();
             log(Lvl::INFO,
                 "   • searching run directories under " + runsRoot.string());
-
             unsigned int csvFound = 0;
             for (const auto& de : fs::directory_iterator(runsRoot)) {
                 if (!de.is_directory())                           continue;
@@ -1495,9 +1488,8 @@ class Pi0QA : public QA
                 return;
             }
         }
-
         /* ----------------------------------------------------------------
-         * 3.  Duplicate‑prevention (per CUT × TRIGGER combination)
+         * 3.  Duplicate‑prevention (per TRIGGER × CUT combination)
          * ---------------------------------------------------------------- */
         static std::unordered_set<std::string> s_done;
         const std::string tagKey = cutTag + "_" + trig;   // e.g.  E2p00_Chi1p00_…
@@ -1520,17 +1512,65 @@ class Pi0QA : public QA
                             kOrange+1,kCyan+2,kSpring+5,kPink+1};
         constexpr int nCols = sizeof(cols)/sizeof(int);
 
-        /* ────────────────────────────────────────────────────────────────
-         * 5.  Heavy lifting – wrapped in try/catch so the macro never dies
-         * ──────────────────────────────────────────────────────────────── */
         try
         {
             std::vector<TGraphErrors*> gMuList, gSiList;
             std::vector<std::string>   slicesDone;
-            TLegend leg(0.12,0.73,0.42,0.88); leg.SetBorderSize(0);
-            int colourIdx = 0;
+            /* legend – small font, transparent, top-right corner */
+            TLegend leg(0.70, 0.7, 0.89, 0.9);        // x1,y1,x2,y2 in NDC
+            leg.SetBorderSize(0);                       // no frame
+            leg.SetFillStyle(0);                        // fully transparent
+            leg.SetTextFont(42);
+            leg.SetTextSize(0.03);                     // ≈ 70 % of previous size
+
+            int colourIdx = 0;                          // running colour index used below
+
+            std::vector<std::string> masterRuns;
+            for (const auto& [sl, mp] : s_runPoints)
+                for (const auto& [r, _] : mp) {
+                    if (!std::all_of(r.begin(), r.end(), ::isdigit))     // skip non‑numeric IDs
+                        continue;
+                    if (std::find(masterRuns.begin(), masterRuns.end(), r) == masterRuns.end())
+                        masterRuns.push_back(r);
+                }
+
+            std::sort(masterRuns.begin(), masterRuns.end(),
+                      [](const std::string& a, const std::string& b)
+                      { return std::stoi(a) < std::stoi(b); });
+
+
+            std::unordered_map<std::string,int> runIdx;
+            for (std::size_t i = 0; i < masterRuns.size(); ++i)
+                runIdx[masterRuns[i]] = static_cast<int>(i);
+
+            const auto& runLabels = masterRuns;        // used later for the custom axis
 
             log(Lvl::INFO,"   • regenerating per‑slice graphs");
+            
+            std::vector<std::string> sliceOrder;             // Inclusive first
+            if (s_runPoints.count("Inclusive"))  sliceOrder.push_back("Inclusive");
+            for (const auto& [sl,_] : s_runPoints)
+                if (sl != "Inclusive") sliceOrder.push_back(sl);
+
+            /* numeric sort for “Cent_x_y” etc. so 0‑10 precedes 10‑20 … */
+            std::sort(sliceOrder.begin()+ (sliceOrder.front()=="Inclusive"),
+                      sliceOrder.end(),
+                      [](const std::string& a, const std::string& b)
+                      {
+                          auto num = [](const std::string& s)
+                          {
+                              std::size_t p = s.find_first_of("0123456789");
+                              return (p==std::string::npos) ? 0 : std::stoi(s.substr(p));
+                          };
+                          return num(a) < num(b);
+                      });
+
+            const int   nSl    = static_cast<int>(sliceOrder.size());
+            const double dx    = 0.8 / nSl;                 // bin width ~0.8 units
+            std::unordered_map<std::string,double> sliceOffset;
+            for (int i = 0; i < nSl; ++i)
+                sliceOffset[sliceOrder[i]] = (i - (nSl-1)/2.0) * dx;
+
 
             for (const auto& [slice, mp] : s_runPoints)
             {
@@ -1548,20 +1588,30 @@ class Pi0QA : public QA
                 std::sort(runList.begin(), runList.end(),
                           [](auto& a, auto& b){ return a.first < b.first; });
 
-                /* ---------- fill coordinate arrays ------------------------ */
-                const int n = runList.size();
-                std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
-                for (int i = 0; i < n; ++i) {
-                    const int runNum           = runList[i].first;
-                    const RunPoint& p          = mp.at(runList[i].second);
-                    x[i]  = runNum;
-                    yMu[i]= p.mu;    eMu[i]= p.muErr;
-                    ySi[i]= p.sigma; eSi[i]= p.sigmaErr;
-                }
+                std::vector<double> xOverlay, xCentre, yMu, eMu, ySi, eSi;
+                for (const auto& [runNum, runStr] : runList)
+                {
+                    const int idx         = runIdx[runStr];          // 0,1,2,…
+                    const RunPoint& p     = mp.at(runStr);
 
-                /* ---------- create graphs --------------------------------- */
-                auto gMu = new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
-                auto gSi = new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
+                    const double off      = sliceOffset.at(slice);   // symmetric spread inside bin
+                    xOverlay.push_back(idx + off);                   // overlay coordinate
+                    xCentre .push_back(static_cast<double>(idx));    // exact bin centre
+
+                    yMu.push_back(p.mu);      eMu.push_back(p.muErr);
+                    ySi.push_back(p.sigma);   eSi.push_back(p.sigmaErr);
+                }
+                const int n = static_cast<int>(xOverlay.size());
+
+                /* overlay graphs – smaller markers so they do not overlap */
+                auto gMu = new TGraphErrors(n,xOverlay.data(),yMu.data(),nullptr,eMu.data());
+                auto gSi = new TGraphErrors(n,xOverlay.data(),ySi.data(),nullptr,eSi.data());
+                gMu->SetMarkerSize(0.70);
+                gSi->SetMarkerSize(0.70);
+
+                /* per-slice graphs – points sit centred in the run bin */
+                auto gMuCent = new TGraphErrors(n,xCentre.data(),yMu.data(),nullptr,eMu.data());
+                auto gSiCent = new TGraphErrors(n,xCentre.data(),ySi.data(),nullptr,eSi.data());
 
                 const int col = cols[colourIdx++ % nCols];
                 gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
@@ -1585,31 +1635,133 @@ class Pi0QA : public QA
 
                 /* ---------- per‑slice PNG -------------------------------- */
                 {
-                    TCanvas cS(Form("c_mu_sigma_vs_run_%s",slice.c_str()),
-                               "#pi^{0} peak position / width vs run",900,800);
+                    /* ─────────────────────────────────────────────────────────────────────
+                     * Per‑slice canvas – identical layout to overlay (1600×900, custom
+                     * ticks, run‑number labels, etc.) but containing only this slice.
+                     * ─────────────────────────────────────────────────────────────────── */
+                    TCanvas cS(Form("c_mu_sigma_vs_run_%s",slice.c_str()),"",1600,900);
 
+                    /* ---------- μ‑pad -------------------------------------------------- */
                     TPad *pTop = new TPad("pTop","",0,0.35,1,1);
                     pTop->SetBottomMargin(0.02); pTop->Draw(); pTop->cd();
-                    gMu->SetTitle(";Run number;m_{#pi^{0}} (GeV)");
-                    gMu->Draw("AP");
 
+                    gMuCent->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
+                    gMuCent->SetMarkerStyle(gMu->GetMarkerStyle());
+                    gMuCent->SetMarkerColor(gMu->GetMarkerColor());
+                    gMuCent->SetLineColor  (gMu->GetLineColor());
+                    gMuCent->Draw("AP");
+
+                    /* custom x‑axis (baseline + ticks) – same code as overlay ------------ */
+                    {
+                        const int nPtsLoc = runLabels.size();
+                        gMuCent->GetHistogram()->GetXaxis()->SetLimits(-0.5, nPtsLoc - 0.5);   // <<< align frame
+                        TH1 *fr = gMuCent->GetHistogram();
+                        fr->GetXaxis()->SetLabelOffset(999);
+                        fr->GetXaxis()->SetTickLength(0);
+
+                        gPad->Update();
+                        const double y0    = gPad->GetUymin();
+                        const double yTick = y0 + (gPad->GetUymax()-gPad->GetUymin())*0.03;
+
+                        TLine *base = new TLine(-0.5, y0, nPtsLoc-0.5, y0);
+                        base->SetLineWidth(1); base->Draw();
+
+                        for (int i = 0; i <= nPtsLoc; ++i) {
+                            const double xEdge = -0.5 + i;
+                            TLine *tick = new TLine(xEdge, y0, xEdge, yTick);
+                            tick->SetLineWidth(1); tick->Draw();
+                        }
+                        gPad->Modified(); gPad->Update();
+                    }
+
+                    /* ---------- σ‑pad -------------------------------------------------- */
                     cS.cd();
                     TPad *pBot = new TPad("pBot","",0,0,1,0.32);
                     pBot->SetTopMargin(0.02); pBot->SetBottomMargin(0.30);
                     pBot->Draw(); pBot->cd();
-                    gSi->SetTitle(";Run number;#sigma_{#pi^{0}} (GeV)");
-                    gSi->Draw("AP");
 
-                    const std::string slDir =
-                        (slice=="Inclusive" || slice=="noCentralityDep" ||
-                         slice.rfind("Cent_",0)==0) ? slice : "Cent_"+slice;
+                    gSiCent->SetTitle("; ;#sigma_{#pi^{0}}  (GeV)");
+                    gSiCent->SetMarkerStyle(gSi->GetMarkerStyle());
+                    gSiCent->SetMarkerColor(gSi->GetMarkerColor());
+                    gSiCent->SetLineColor  (gSi->GetLineColor());
+                    gSiCent->Draw("AP");
 
-                    fs::path pngSlice = root / "EMCal" / "invMassQA" / cutTag /
-                                        slDir / "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
-                    ensure_dir(pngSlice.parent_path());
+                    /* identical custom axis + run‑number labels ------------------------- */
+                    {
+                        const int nPtsLoc = runLabels.size();
+                        gSiCent->GetHistogram()->GetXaxis()->SetLimits(-0.5, nPtsLoc - 0.5);   // <<< align frame
+                        TH1 *fr = gSiCent->GetHistogram();
+                        fr->GetXaxis()->SetLabelOffset(999);
+                        fr->GetXaxis()->SetTickLength(0);
+
+                        gPad->Update();
+                        const double y0    = gPad->GetUymin();
+                        const double yTick = y0 + (gPad->GetUymax()-gPad->GetUymin())*0.03;
+
+                        TLine *base = new TLine(-0.5, y0, nPtsLoc-0.5, y0);
+                        base->SetLineWidth(1); base->Draw();
+
+                        for (int i = 0; i <= nPtsLoc; ++i) {
+                            const double xEdge = -0.5 + i;
+                            TLine *tick = new TLine(xEdge, y0, xEdge, yTick);
+                            tick->SetLineWidth(1); tick->Draw();
+                        }
+
+                        /* centred run‑number labels (identical to overlay) */
+                        const double x0   = gPad->GetLeftMargin();
+                        const double xW   = 1.0 - gPad->GetLeftMargin() - gPad->GetRightMargin();
+                        const double yNDC = gPad->GetBottomMargin() * 0.75;
+
+                        TLatex tl; tl.SetNDC(); tl.SetTextFont(42);
+                        tl.SetTextAngle(55); tl.SetTextSize(0.042); tl.SetTextAlign(23);
+
+                        for (int i = 0; i < nPtsLoc; ++i) {
+                            const double xFrac = (i + 0.5) / static_cast<double>(nPtsLoc);
+                            const double xNDC  = x0 + xFrac * xW;
+                            const std::string lbl = std::to_string(std::stoi(runLabels[i]));
+                            tl.DrawLatex(xNDC, yNDC, lbl.c_str());
+                        }
+
+                        gPad->Modified(); gPad->Update();
+                    }
+
+                    std::string subDir  = "";                                    // never create a sub‑folder
+                    std::string fileTag = (slice=="Inclusive" || slice=="noCentralityDep")
+                                            ? slice                              // “Inclusive”, “noCentralityDep”
+                                            : "Cent_" + slice;                   // “Cent_0_10”, “Cent_10_20”, …
+
+
+                    fs::path pngSlice = root / "EMCal" / "invMassQA" / cutTag;
+                    if (!subDir.empty()) pngSlice /= subDir;        // add sub‑folder only if needed
+                    ensure_dir(pngSlice);                           // make sure it exists
+
+                    /* identical headline to overlay ------------------------------------ */
+                    {
+                        const std::string runLo = masterRuns.empty()
+                                                    ? "?" : std::to_string(std::stoi(masterRuns.front()));
+                        const std::string runHi = masterRuns.empty()
+                                                    ? "?" : std::to_string(std::stoi(masterRuns.back()));
+                        const int nRun = static_cast<int>(masterRuns.size());
+
+                        const std::string canvTitle =
+                            Form("Invariant Mass Summary %s #rightarrow %s (%d runs)",
+                                 runLo.c_str(), runHi.c_str(), nRun);
+
+                        cS.cd();
+                        TLatex head;
+                        head.SetNDC();
+                        head.SetTextFont(42);
+                        head.SetTextAlign(22);
+                        head.SetTextSize(0.050);
+                        head.DrawLatex(0.50, 0.97, canvTitle.c_str());
+                        cS.Modified();
+                        cS.Update();
+                    }
+
+                    pngSlice /= "Pi0Mass_Sigma_vs_Run_" + fileTag + ".png";
                     cS.SaveAs(pngSlice.string().c_str());
 
-                    log(Lvl::INFO,"       • per‑slice PNG → " + pngSlice.string());
+                    log(Lvl::INFO,"       • per-slice PNG → " + pngSlice.string());
                 }
             } // end slice loop
 
@@ -1624,43 +1776,210 @@ class Pi0QA : public QA
              * ---------------------------------------------------------------- */
             log(Lvl::INFO,"   • drawing overlay canvas with all slices");
 
-            TCanvas cR("c_mu_sigma_vs_run_allCent",
-                       "#pi^{0} peak position / width vs run", 900, 800);
+            /* build a descriptive canvas title – strip any leading zeros */
+            const std::string runLo = masterRuns.empty()
+                                        ? "?"
+                                        : std::to_string(std::stoi(masterRuns.front()));
+            const std::string runHi = masterRuns.empty()
+                                        ? "?"
+                                        : std::to_string(std::stoi(masterRuns.back()));
+            const int nRun = static_cast<int>(masterRuns.size());
+
+            const std::string canvTitle =
+                Form("Invariant Mass Summary %s #rightarrow %s (%d runs)",
+                     runLo.c_str(), runHi.c_str(), nRun);
+
+            TCanvas cR("c_mu_sigma_vs_run_allCent", "", 1600, 900);
+            
+            /* -------------------------------------------------------------
+             * draw the headline last so it is not hidden by the sub‑pads
+             * ----------------------------------------------------------- */
+            cR.cd();                 // back to the canvas (not to p1 / p2)
 
             TPad* p1 = new TPad("p1","",0,0.35,1,1);
             p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
             gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
-            for (std::size_t i=0;i<gMuList.size();++i)
-                gMuList[i]->Draw(i==0 ? "AP" : "P SAME");
-            leg.Draw();
 
-            /* hide x‑axis labels/ticks on the upper pad so run numbers only
-               appear on the bottom (σ) panel ---------------------------------- */
+            const int nPts = runLabels.size();          // how many runs will be shown
+            /* draw every slice, but ensure “Inclusive” is over‑plotted last so it remains
+               visible (blue markers will sit on top of the others)                         */
+            int idxInc = -1;
+            for (std::size_t i = 0; i < slicesDone.size(); ++i)
+                if (slicesDone[i] == "Inclusive") { idxInc = static_cast<int>(i); break; }
+
+            if (idxInc >= 0) {
+                gMuList[idxInc]->Draw("AP");                 // frame comes from Inclusive
+                for (std::size_t i = 0; i < gMuList.size(); ++i)
+                    if (static_cast<int>(i) != idxInc)
+                        gMuList[i]->Draw("P SAME");          // other slices
+                gMuList[idxInc]->Draw("P SAME");             // Inclusive on top
+            } else {                                         // fallback
+                for (std::size_t i = 0; i < gMuList.size(); ++i)
+                    gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
+            }
+
+            /* expand the x–range so that the first marker sits at the first tick,
+               not on the frame’s left border                                                */
+            if (nPts > 0)
+            {
+                const double xMin = -0.5;               // centre of the first tick
+                const double xMax =  nPts - 0.5;        // centre of the last tick
+
+                gMuList.front()->GetHistogram()->GetXaxis()->SetLimits(xMin, xMax);
+                gSiList.front()->GetHistogram()->GetXaxis()->SetLimits(xMin, xMax);
+                gPad->Modified();                       // force the pad to redraw axes
+            }
+
+            leg.Draw();
+            
             {
                 TH1* fr = gMuList.front()->GetHistogram();
                 if (fr) {
-                    fr->GetXaxis()->SetLabelOffset(999);   // push labels off canvas
-                    fr->GetXaxis()->SetTickLength(0);      // hide tick marks
+                    fr->GetXaxis()->SetLabelOffset(999);   // hide labels
+                    fr->GetXaxis()->SetTickLength(0);      // suppress default ticks
                 }
+
+                gPad->Update();                            // now pad extents are known
+                const double y0 = gPad->GetUymin();        // bottom edge in user coords
+
+                /* -----------------------------------------------------------------
+                 * Hand–built x‑axis: thin baseline plus primary ticks at every bin
+                 * edge (−0.5, 0.5, 1.5 …).  Nothing is left to ROOT’s discretion.
+                 * ----------------------------------------------------------------*/
+                const double xMinUsr = -0.5;
+                const double xMaxUsr =  nPts - 0.5;
+
+                const double yBase   = y0;                                                // axis baseline (bottom of frame)
+                const double yTickHi = y0 + (gPad->GetUymax() - gPad->GetUymin()) * 0.03; // tick length ≈ 3 % pad height
+
+                /* baseline --------------------------------------------------------- */
+                TLine *base = new TLine(xMinUsr, yBase, xMaxUsr, yBase);
+                base->SetLineWidth(1);
+                base->Draw();
+
+                /* primary ticks ---------------------------------------------------- */
+                for (int i = 0; i <= nPts; ++i) {      // i = 0 … nPts   →  (−0.5 … nPts−0.5)
+                    const double xEdge = xMinUsr + i;
+                    TLine *tick = new TLine(xEdge, yBase, xEdge, yTickHi);
+                    tick->SetLineWidth(1);
+                    tick->Draw();
+                }
+
+                gPad->Modified();
+                gPad->Update();
             }
+            
             cR.cd();
             TPad* p2 = new TPad("p2","",0,0,1,0.32);
             p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
             p2->Draw(); p2->cd();
-            gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
-            for (std::size_t i=0;i<gSiList.size();++i)
-                gSiList[i]->Draw(i==0 ? "AP" : "P SAME");
+            gSiList.front()->SetTitle("; ;#sigma_{#pi^{0}}  (GeV)");
+            int idxIncSi = -1;
+            for (std::size_t i = 0; i < slicesDone.size(); ++i)
+                if (slicesDone[i] == "Inclusive") { idxIncSi = static_cast<int>(i); break; }
+
+            if (idxIncSi >= 0) {
+                gSiList[idxIncSi]->Draw("AP");                 // frame from Inclusive
+                for (std::size_t i = 0; i < gSiList.size(); ++i)
+                    if (static_cast<int>(i) != idxIncSi)
+                        gSiList[i]->Draw("P SAME");            // draw other slices
+                gSiList[idxIncSi]->Draw("P SAME");             // Inclusive on top
+            } else {                                           // fallback
+                for (std::size_t i = 0; i < gSiList.size(); ++i)
+                    gSiList[i]->Draw(i == 0 ? "AP" : "P SAME");
+            }
+
+
+            {
+                const int nPts = runLabels.size();
+                if (nPts == 0) {
+                    log(Lvl::WARN,"writeRunSummary(): no run labels");
+                } else {
+
+                    /* -------------------------------------------------------------
+                     * (1)  suppress the default numeric x–axis on the σ‑pad frame
+                     * ----------------------------------------------------------- */
+                    auto *fr = gSiList.front()->GetHistogram();
+                    fr->GetXaxis()->SetLabelOffset(999);
+                    fr->GetXaxis()->SetTickLength(0);
+
+                    /* -------------------------------------------------------------
+                     * (2)  tick marks only – no labels – with an invisible TGaxis
+                     * ----------------------------------------------------------- */
+                    gPad->Update();                             // make sure geometry is fixed
+                    const double y0 = gPad->GetUymin();         // bottom edge of σ‑pad
+
+                    /* -----------------------------------------------------------------
+                     * Hand-built x-axis for σ-pad: baseline plus primary ticks at every
+                     * bin edge (−0.5, 0.5, 1.5 …).  No automatic TGaxis involved.
+                     * ----------------------------------------------------------------*/
+                    const double xMinUsr = -0.5;
+                    const double xMaxUsr =  nPts - 0.5;
+
+                    const double yBase   = y0;                                                // axis baseline
+                    const double yTickHi = y0 + (gPad->GetUymax() - gPad->GetUymin()) * 0.03; // tick length ≈3 %
+
+                    /* baseline --------------------------------------------------------- */
+                    TLine *baseσ = new TLine(xMinUsr, yBase, xMaxUsr, yBase);
+                    baseσ->SetLineWidth(1);
+                    baseσ->Draw();
+
+                    /* primary ticks ---------------------------------------------------- */
+                    for (int i = 0; i <= nPts; ++i) {
+                        const double xEdge = xMinUsr + i;                                     // −0.5, 0.5, …
+                        TLine *tickσ = new TLine(xEdge, yBase, xEdge, yTickHi);
+                        tickσ->SetLineWidth(1);
+                        tickσ->Draw();
+                    }
+
+                    gPad->Modified();
+                    gPad->Update();
+
+                    const double x0   = gPad->GetLeftMargin();
+                    const double xW   = 1.0 - gPad->GetLeftMargin() - gPad->GetRightMargin();
+                    const double yNDC = gPad->GetBottomMargin() * 0.5;
+
+                    TLatex tl;
+                    tl.SetNDC();
+                    tl.SetTextFont(42);
+                    tl.SetTextAngle(55);
+                    tl.SetTextSize(0.045);
+                    tl.SetTextAlign(23);
+
+                    for (int i = 0; i < nPts; ++i)
+                    {
+                        const double xFrac = (i + 0.5) / static_cast<double>(nPts);
+                        const double xNDC  = x0 + xFrac * xW;
+                        const std::string lbl = std::to_string(std::stoi(runLabels[i]));
+
+                        tl.DrawLatex(xNDC, yNDC, lbl.c_str());
+                    }
+                    gPad->Modified();
+                    gPad->Update();
+                }
+            }
+            
+            /* -------------------------------------------------------------
+             * headline: draw it last so it sits on top of both pads
+             * ----------------------------------------------------------- */
+            cR.cd();
+            TLatex head;
+            head.SetNDC();
+            head.SetTextFont(42);
+            head.SetTextAlign(22);      // centred horizontally & vertically
+            head.SetTextSize(0.050);
+            head.DrawLatex(0.50, 0.97, canvTitle.c_str());   // y‑pos a bit below edge
+            cR.Modified();
+            cR.Update();
+
 
             fs::path pngRun = root / "EMCal" / "invMassQA" / cutTag /
                               "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
             ensure_dir(pngRun.parent_path());
             cR.SaveAs(pngRun.string().c_str());
-
+            
             log(Lvl::INFO,"   • global run‑summary PNG → " + pngRun.string());
 
-            /* ----------------------------------------------------------------
-             * 7.  Recap table in terminal
-             * ---------------------------------------------------------------- */
             std::ostringstream oss;
             oss << "\n──────────  RUN‑SUMMARY CONTENTS  ──────────\n"
                 << "Slices plotted  : " << slicesDone.size() << '\n'
@@ -1679,34 +1998,25 @@ class Pi0QA : public QA
                 std::string("writeRunSummary(): fatal exception – ") + ex.what());
         }
 
-        /* ────────────────────────────────────────────────────────────────
-         * 8.  EXIT BANNER
-         * ──────────────────────────────────────────────────────────────── */
         log(Lvl::INFO,
             "writeRunSummary()  ⇦  completed\n"
             "══════════════════════════════════════════════════════════════");
     }
-
     /* ---------------------------------------------------------------- */
     /*  data members                                                    */
     /* ---------------------------------------------------------------- */
     std::ofstream&                                   csvFit;
     std::ofstream                                    csvSB;
-
     std::unordered_map<std::string, TH1*>            _centralHists;
-
     std::unordered_map<std::string, FitPair>         _storedFit;
     std::unordered_map<std::string, std::unique_ptr<TF1>> _storedEtaFit;
-
     std::unordered_map<std::string,
                      std::vector<TH1*>>            _ptHists;
     std::unordered_map<std::string, FitInfo>         _fitSummary;
-
     /* run label of this instance */
     std::string runID;
     /* directory tag that identifies one (E , χ² , asym) cut‑combination */
     std::string cutTag;
-
     /* ---------- static: accumulate #pi0 points per slice & run ---------- */
     struct RunPoint { double mu, muErr, sigma, sigmaErr; };
     /*   slice → runID → RunPoint   */
@@ -1744,14 +2054,6 @@ inline void setupPad(TVirtualPad* p)
     p->SetTopMargin  (0.08);
 }
 
-
-/* ==================================================================== *
- * §‑1  Helpers added for run‑label and “auto‑tight” axis scaling       *
- * ==================================================================== */
-
-/* Strip leading zeroes from a run‑directory name like “00044777” → “44777”.
-   If the directory contains non‑digits (e.g. “Run_00044777”), the numeric
-   suffix is preserved but zeroes are still removed.                     */
 static std::string stripLeadingZeros(const std::string& runDir)
 {
     std::smatch m;
@@ -1779,22 +2081,18 @@ static void tightenAxes(TH2* h, double padFrac = 0.05)
     const int nBX = axX->GetNbins();
     const int nBY = axY->GetNbins();
 
-    /* ── locate the highest X / Y bins that still contain content ── */
     int hiX = nBX;
     while (hiX > 1 && h->Integral(hiX, nBX, 1, nBY) == 0) --hiX;
 
     int hiY = nBY;
     while (hiY > 1 && h->Integral(1, nBX, hiY, nBY) == 0) --hiY;
 
-    /* original lower edges (may be non‑zero for some histograms) */
     const double xLow = axX->GetBinLowEdge(1);
     const double yLow = axY->GetBinLowEdge(1);
 
-    /* upper edges that really contain data */
     double xUp  = axX->GetBinUpEdge(hiX);
     double yUp  = axY->GetBinUpEdge(hiY);
 
-    /* add a small margin (default 5 %) so nothing hugs the frame */
     const double dx = (xUp - xLow) * padFrac;
     const double dy = (yUp - yLow) * padFrac;
 
@@ -1805,14 +2103,11 @@ static void tightenAxes(TH2* h, double padFrac = 0.05)
     axX->CenterTitle(true);   axY->CenterTitle(true);
     axX->SetTitleOffset(1.1F); axY->SetTitleOffset(1.45F);
 }
-
-/* Draw run‑number (without leading zeroes) in the upper‑left corner.    */
 static void drawRunLabel(const std::string& runID)
 {
     TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.035);
     tl.DrawLatex(0.04, 0.94, ("Run " + runID).c_str());
 }
-
 /* ──────────────────────────────────────────────────────────────────────────
  *  Correlation QA
  * ──────────────────────────────────────────────────────────────────────── */
@@ -1838,14 +2133,14 @@ class CorrQA : public QA
            const fs::path&    base,
            const CentList&    cent)
       : QA(trig, base, cent),
-        m_trig(trig)                // keep a local copy for later use
+        m_trig(trig)
     {}
 
     ~CorrQA() override
     {
-        writeCentralityOverviews();   // §4 below
-        writeRunSummaries();          // run‑by‑run pages
-        writeCalorimeterSummary();    // 2×3 calorimeter overview  ← NEW
+        writeCentralityOverviews();
+        writeRunSummaries();
+        writeCalorimeterSummary();
     }
 
  private:
@@ -1855,13 +2150,6 @@ class CorrQA : public QA
      /* ─ calorimeter‑overview helper ─ */
      std::unordered_map<std::string, std::shared_ptr<TH2>> m_calSummary;
 
-    /* ------------------------------------------------------------------ *
-     *  Produce 8 × 8 overview pages for every detector‑pair folder.       *
-     *  ─ Diagnostic verbosity ─                                           *
-     *      – informs about empty caches / folders                         *
-     *      – prints page‑by‑page progress and file names                  *
-     *      – catches all ROOT exceptions so the macro never hard‑crashes *
-     * ------------------------------------------------------------------ */
     void writeRunSummaries()
     {
         const std::string pass = root.parent_path().filename().string();
@@ -1909,12 +2197,6 @@ class CorrQA : public QA
             log(Lvl::INFO,"   ↳ folder \"" + groupDir + "\"  (" +
                           std::to_string(runMap.size()) + " runs)");
 
-            /* ---------------------------------------------------------- *
-             *  Build *one* flat list that contains exactly one histogram *
-             *  per run (the first entry of every vec) and then paginate  *
-             *  this list.  Result:  page1.png, page2.png, … where every  *
-             *  sub‑pad shows a *different run*.                          *
-             * ---------------------------------------------------------- */
             using RunH = std::pair<std::string /*runID*/, std::shared_ptr<TH2>>;
             std::vector<RunH> runs;
             for (auto& [runID, vec] : runMap)
@@ -1955,7 +2237,6 @@ class CorrQA : public QA
                                       stripLeadingZeros(runs[idx + i].first).c_str());
                     }
 
-                    /* global folder label (upper‑left‑hand corner) ------------------- */
                     TLatex header; header.SetNDC();
                     header.SetTextFont(42);
                     header.SetTextAlign(11);
