@@ -707,8 +707,17 @@ class Pi0QA : public QA
             else if (combDir != cutTag)
             {
                 log(Lvl::INFO,"cutTag switch  " + cutTag + " → " + combDir);
+
+                /* 1.  finish the *current* cut‑combination:
+                       – centrality / pT grids
+                       – run‑by‑run overlay (THIS was missing)                         */
                 writeSummaryPanels();
+                writeRunSummary();                         // <<< added line
+
+                /* 2.  reset per‑cut caches _before_ we start the next combination    */
                 _centralHists.clear(); _storedFit.clear(); _storedEtaFit.clear();
+
+                /* 3.  activate the new cut‑combination                              */
                 cutTag = combDir;
             }
 
@@ -1201,14 +1210,38 @@ class Pi0QA : public QA
                                    fTot->GetParameter(4),
                                    fTot->GetParameter(5));
 
+                /* draw the spectrum + fits ------------------------------------------------ */
                 hPt->Draw();
-                fBg->SetLineColor(kBlue  + 2); fBg->SetLineStyle(2); fBg->SetLineWidth(2);
-                fBg->Draw("SAME");
-                fTot->SetLineColor(kRed + 1);  fTot->SetLineWidth(2);
-                fTot->Draw("SAME");
+                fBg->SetLineColor(kBlue  + 2);  fBg->SetLineStyle(2);  fBg->SetLineWidth(2);
+                fBg->DrawCopy("SAME");
+                fTot->SetLineColor(kRed  + 1);  fTot->SetLineWidth(2);
+                fTot->DrawCopy("SAME");
+                if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
 
-                if (_storedEtaFit.count(sl))
-                    _storedEtaFit[sl]->Draw("SAME");
+                /* ---------------------------------------------------------------
+                 *  Annotate the pad with centrality and pT‑bin information
+                 * ------------------------------------------------------------- */
+                CutKey tmpCK;
+                if (decodeInvName(hPt->GetName(), tmpCK))          // recover pT range
+                {
+                    /* build human‑readable labels */
+                    std::string centLbl;
+                    if (sl == "Inclusive")
+                        centLbl = "Inclusive";
+                    else
+                        centLbl = Form("Cent %s %%", sl.c_str());
+
+                    std::string ptLbl;
+                    if (tmpCK.pLo >= 0 && tmpCK.pHi >= 0)
+                        ptLbl = Form("%.2f < p_{T} < %.2f GeV/#it{c}",
+                                     tmpCK.pLo, tmpCK.pHi);
+                    else
+                        ptLbl = "p_{T} IND";
+
+                    TLatex tx; tx.SetNDC(); tx.SetTextSize(0.045); tx.SetTextAlign(13);
+                    tx.DrawLatex(0.14, 0.93, centLbl.c_str());
+                    tx.DrawLatex(0.14, 0.88, ptLbl.c_str());
+                }
             }
 
             const std::string slDir = (sl == "Inclusive" || sl == "noCentralityDep" ||
@@ -1369,157 +1402,197 @@ class Pi0QA : public QA
     //--------------------------------------------------------------------
     void writeRunSummary()
     {
+        /* ────────────────────────────────────────────────────────────────
+         * 0.  ENTRY BANNER
+         * ──────────────────────────────────────────────────────────────── */
+        log(Lvl::INFO,
+            "══════════════════════════════════════════════════════════════");
+        log(Lvl::INFO,
+            "writeRunSummary()  ➜  entering run‑summary builder");
+
         /* ----------------------------------------------------------------
-         * 1) Guard clauses
+         * 1.  Guard clauses
          * ---------------------------------------------------------------- */
         if (runID != "Combined") {
-            log(Lvl::INFO,"writeRunSummary(): skipped – not in \"Combined\" pass");
+            log(Lvl::INFO,
+                "writeRunSummary(): current pass = \"" + runID +
+                "\"  →  run‑summary generation skipped (only generated in "
+                "\"Combined\" pass)");
             return;
         }
-        /* ------------------------------------------------------------- *
-         * 0‑B.  If no in‑memory points are present (e.g. we skipped the  *
-         *       per‑run passes and executed only the Combined step),    *
-         *       rebuild s_runPoints from every                           *
-         *              <output>/<run>/InvariantMassSummary.csv          *
-         * ------------------------------------------------------------- */
+
+        /* ----------------------------------------------------------------
+         * 2.  Ensure we have data  (re‑hydrate from CSV files if needed)
+         * ---------------------------------------------------------------- */
         if (s_runPoints.empty()) {
             log(Lvl::INFO,
-                "writeRunSummary(): in‑memory cache empty – loading CSV files");
+                "writeRunSummary(): in‑memory cache empty – attempting to "
+                "rebuild from per‑run CSV files");
 
-            /*  helper that parses one CSV file and adds points to the map  */
+            /* helper that parses one CSV and populates s_runPoints ---------- */
             auto loadCsv = [&](const fs::path& csvPath)
             {
+                log(Lvl::DBG,"   · scanning " + csvPath.string());
                 std::ifstream csv(csvPath);
-                if (!csv) return;                       // silently ignore
+                if (!csv) {
+                    log(Lvl::DBG,"     ↳ file missing or unreadable – ignored");
+                    return;
+                }
+
                 std::string line;
-                std::getline(csv, line);                // skip header
+                std::getline(csv, line);               // discard header
+                unsigned int nRows = 0;
+
                 while (std::getline(csv, line)) {
                     if (line.empty()) continue;
                     std::stringstream ss(line);
-                    std::string fld[15];                // we need first 15 cols
-                    for (int i = 0; i < 15 && std::getline(ss, fld[i], ','); ++i) {}
+                    std::string fld[15];               // first 15 columns are enough
+                    for (int i = 0; i < 15 &&
+                           std::getline(ss, fld[i], ','); ++i) {}
 
-                    /* CSV columns after earlier edit
+                    /* CSV columns (after earlier edit):
                        0 trig | 1 E | 2 Chi | 3 Asym | 4 pTlo | 5 pThi | 6 cent
-                       7 μ | 8 μErr | 9 σ | 10 σErr | …                                    */
-                    if (fld[0] != trig)                 // different trigger
-                        continue;
-                    if (std::stod(fld[4]) >= 0)         // want pT‑integrated only
-                        continue;
+                       7 μ | 8 μErr | 9 σ | 10 σErr | …                               */
+
+                    if (fld[0] != trig)          continue;      // wrong trigger
+                    if (std::stod(fld[4]) >= 0) continue;      // pT‑integrated only
 
                     const std::string& cent = fld[6];
                     const std::string runIDcsv =
                             csvPath.parent_path().filename().string();
 
                     s_runPoints[cent][runIDcsv] = {
-                        std::stod(fld[7]),  std::stod(fld[8]),
-                        std::stod(fld[9]),  std::stod(fld[10])
+                        std::stod(fld[7]), std::stod(fld[8]),
+                        std::stod(fld[9]), std::stod(fld[10])
                     };
+                    ++nRows;
                 }
+                log(Lvl::DBG, Form("     ↳ %u row(s) imported", nRows));
             };
 
-            /*  locate every per‑run directory (siblings of “…/Combined/”)   */
-            const fs::path runsRoot = root.parent_path().parent_path();   // …/<output>/
+            /* locate every sibling directory of “…/Combined/” --------------- */
+            const fs::path runsRoot = root.parent_path().parent_path(); // …/<output>/
+            log(Lvl::INFO,
+                "   • searching run directories under " + runsRoot.string());
+
+            unsigned int csvFound = 0;
             for (const auto& de : fs::directory_iterator(runsRoot)) {
                 if (!de.is_directory())                           continue;
                 if (de.path().filename() == "Combined")           continue;
-                loadCsv( de.path() / "InvariantMassSummary.csv" );
+
+                const fs::path csvPath = de.path() /
+                                          "InvariantMassSummary.csv";
+                if (fs::exists(csvPath)) ++csvFound;
+                loadCsv(csvPath);
             }
+            log(Lvl::INFO,
+                Form("   • CSV scan finished  |  files found = %u", csvFound));
 
             if (s_runPoints.empty()) {
                 log(Lvl::WARN,
-                    "writeRunSummary(): still no data after CSV scan – aborting");
+                    "writeRunSummary(): still no data after CSV scan – "
+                    "aborting run‑summary generation");
                 return;
             }
         }
 
-        /* avoid duplicates – now distinguish both CUT and TRIGGER */
+        /* ----------------------------------------------------------------
+         * 3.  Duplicate‑prevention (per CUT × TRIGGER combination)
+         * ---------------------------------------------------------------- */
         static std::unordered_set<std::string> s_done;
-        const std::string tagKey = cutTag + "_" + trig;          // e.g.  E2p00_Chi1p00_Asym0p500_MBD_NS_geq_2_vtx_lt_10
+        const std::string tagKey = cutTag + "_" + trig;   // e.g.  E2p00_Chi1p00_…
         if (s_done.count(tagKey)) {
-            log(Lvl::INFO,"writeRunSummary(): already written for "+tagKey);
+            log(Lvl::INFO,
+                "writeRunSummary(): already executed for key \"" + tagKey +
+                "\" – skipping duplicate");
             return;
         }
         s_done.insert(tagKey);
 
-        log(Lvl::INFO,"▶ building run‑summary  cut="+cutTag+
-                         "   slices stored="+std::to_string(s_runPoints.size()));
+        log(Lvl::INFO,
+            "▶ building run‑summary  |  cut = \"" + cutTag +
+            "\"  |  slices = " + std::to_string(s_runPoints.size()));
 
         /* ----------------------------------------------------------------
-         * 2)  Fixed colour palette  (unchanged)
+         * 4.  Fixed colour palette (unchanged)
          * ---------------------------------------------------------------- */
         const int cols[] = {kBlue+1,kRed+1,kGreen+2,kMagenta+2,
                             kOrange+1,kCyan+2,kSpring+5,kPink+1};
         constexpr int nCols = sizeof(cols)/sizeof(int);
 
-        /*  wrap the heavy part so one failure cannot crash the program   */
+        /* ────────────────────────────────────────────────────────────────
+         * 5.  Heavy lifting – wrapped in try/catch so the macro never dies
+         * ──────────────────────────────────────────────────────────────── */
         try
         {
-            /* ------------------------------------------------------------
-             * 3) Build graphs – *and* write an extra PNG for every slice
-             * ---------------------------------------------------------- */
             std::vector<TGraphErrors*> gMuList, gSiList;
+            std::vector<std::string>   slicesDone;
             TLegend leg(0.12,0.73,0.42,0.88); leg.SetBorderSize(0);
-            std::vector<std::string> slicesDone;
             int colourIdx = 0;
+
+            log(Lvl::INFO,"   • regenerating per‑slice graphs");
 
             for (const auto& [slice, mp] : s_runPoints)
             {
-                /* --- collect <runNumber , runID‑string> pairs ---------- */
+                /* ---------- prepare sorted run list ----------------------- */
                 std::vector<std::pair<int,std::string>> runList;
                 for (const auto& [runStr,_] : mp)
                     if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
                         runList.emplace_back(std::stoi(runStr), runStr);
 
                 if (runList.empty()) {
-                    log(Lvl::WARN," · slice \""+slice+"\" skipped – no numeric runs");
+                    log(Lvl::WARN,"     ↳ slice \"" + slice +
+                                   "\" skipped – contains no numeric runs");
                     continue;
                 }
                 std::sort(runList.begin(), runList.end(),
                           [](auto& a, auto& b){ return a.first < b.first; });
 
-                /* --- fill arrays --------------------------------------- */
+                /* ---------- fill coordinate arrays ------------------------ */
                 const int n = runList.size();
                 std::vector<double> x(n), yMu(n), eMu(n), ySi(n), eSi(n);
                 for (int i = 0; i < n; ++i) {
-                    const int runNum = runList[i].first;
-                    const RunPoint& p = mp.at(runList[i].second);
+                    const int runNum           = runList[i].first;
+                    const RunPoint& p          = mp.at(runList[i].second);
                     x[i]  = runNum;
                     yMu[i]= p.mu;    eMu[i]= p.muErr;
                     ySi[i]= p.sigma; eSi[i]= p.sigmaErr;
                 }
 
-                /* --- graphs for the big overlay ------------------------ */
+                /* ---------- create graphs --------------------------------- */
                 auto gMu = new TGraphErrors(n,x.data(),yMu.data(),nullptr,eMu.data());
                 auto gSi = new TGraphErrors(n,x.data(),ySi.data(),nullptr,eSi.data());
+
                 const int col = cols[colourIdx++ % nCols];
                 gMu->SetMarkerStyle(kFullCircle); gMu->SetLineWidth(2);
                 gSi->SetMarkerStyle(kFullCircle); gSi->SetLineWidth(2);
-                gMu->SetMarkerColor(col); gMu->SetLineColor(col);
-                gSi->SetMarkerColor(col); gSi->SetLineColor(col);
+                gMu->SetMarkerColor(col);         gMu->SetLineColor(col);
+                gSi->SetMarkerColor(col);         gSi->SetLineColor(col);
 
                 gMuList.push_back(gMu);
                 gSiList.push_back(gSi);
 
-                const std::string lbl = (slice=="Inclusive") ?
-                                        "Inclusive" : "Cent "+slice+" %";
+                const std::string lbl = (slice=="Inclusive")
+                                            ? "Inclusive"
+                                            : "Cent " + slice + " %";
                 leg.AddEntry(gMu,lbl.c_str(),"pl");
                 slicesDone.push_back(slice);
 
-                /* --------------------------------------------------------
-                 * NEW  ➜  per‑centrality canvas (μ top / σ bottom)
-                 * ------------------------------------------------------ */
+                /* ---------- verbose recap per slice ----------------------- */
+                log(Lvl::DBG,
+                    Form("     ↳ %-10s  runs = %3d  colourIdx = %2d",
+                         slice.c_str(), n, colourIdx-1));
+
+                /* ---------- per‑slice PNG -------------------------------- */
                 {
                     TCanvas cS(Form("c_mu_sigma_vs_run_%s",slice.c_str()),
                                "#pi^{0} peak position / width vs run",900,800);
 
-                    /* μ pad */
                     TPad *pTop = new TPad("pTop","",0,0.35,1,1);
                     pTop->SetBottomMargin(0.02); pTop->Draw(); pTop->cd();
                     gMu->SetTitle(";Run number;m_{#pi^{0}} (GeV)");
                     gMu->Draw("AP");
 
-                    /* σ pad */
                     cS.cd();
                     TPad *pBot = new TPad("pBot","",0,0,1,0.32);
                     pBot->SetTopMargin(0.02); pBot->SetBottomMargin(0.30);
@@ -1527,83 +1600,91 @@ class Pi0QA : public QA
                     gSi->SetTitle(";Run number;#sigma_{#pi^{0}} (GeV)");
                     gSi->Draw("AP");
 
-                    const std::string slDir = (slice=="Inclusive" || slice=="noCentralityDep"
-                                               || slice.rfind("Cent_",0)==0)
-                                                ? slice : "Cent_"+slice;
+                    const std::string slDir =
+                        (slice=="Inclusive" || slice=="noCentralityDep" ||
+                         slice.rfind("Cent_",0)==0) ? slice : "Cent_"+slice;
 
                     fs::path pngSlice = root / "EMCal" / "invMassQA" / cutTag /
                                         slDir / "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
                     ensure_dir(pngSlice.parent_path());
+                    cS.SaveAs(pngSlice.string().c_str());
 
-                    try {
-                        cS.SaveAs(pngSlice.string().c_str());
-                        log(Lvl::DBG,"   per‑centrality PNG → "+pngSlice.string());
-                    }
-                    catch(const std::exception& ex){
-                        log(Lvl::ERR,std::string("ERROR saving per‑centrality <")
-                                      +pngSlice.string()+"> – "+ex.what());
-                    }
+                    log(Lvl::INFO,"       • per‑slice PNG → " + pngSlice.string());
                 }
-
-                log(Lvl::DBG," · slice \""+slice+"\" – runs="+std::to_string(n)+
-                              " colourIdx="+std::to_string(colourIdx-1));
-            }
+            } // end slice loop
 
             if (gMuList.empty()) {
-                log(Lvl::ERR,"writeRunSummary(): ABORT – all slices empty, no graph");
+                log(Lvl::ERR,
+                    "writeRunSummary(): no valid slices – cannot build overlay");
                 return;
             }
 
-            /* ------------------------------------------------------------
-             * 4)  Draw canvas (μ upper, σ lower)
-             * ---------------------------------------------------------- */
+            /* ----------------------------------------------------------------
+             * 6.  Overlay canvas (μ top, σ bottom)   +   global PNG
+             * ---------------------------------------------------------------- */
+            log(Lvl::INFO,"   • drawing overlay canvas with all slices");
+
             TCanvas cR("c_mu_sigma_vs_run_allCent",
                        "#pi^{0} peak position / width vs run", 900, 800);
 
-            // μ pad
-            TPad* p1=new TPad("p1","",0,0.35,1,1);
+            TPad* p1 = new TPad("p1","",0,0.35,1,1);
             p1->SetBottomMargin(0.02); p1->Draw(); p1->cd();
             gMuList.front()->SetTitle(";Run number;m_{#pi^{0}}  (GeV)");
             for (std::size_t i=0;i<gMuList.size();++i)
                 gMuList[i]->Draw(i==0 ? "AP" : "P SAME");
             leg.Draw();
 
-            // σ pad
+            /* hide x‑axis labels/ticks on the upper pad so run numbers only
+               appear on the bottom (σ) panel ---------------------------------- */
+            {
+                TH1* fr = gMuList.front()->GetHistogram();
+                if (fr) {
+                    fr->GetXaxis()->SetLabelOffset(999);   // push labels off canvas
+                    fr->GetXaxis()->SetTickLength(0);      // hide tick marks
+                }
+            }
             cR.cd();
-            TPad* p2=new TPad("p2","",0,0,1,0.32);
+            TPad* p2 = new TPad("p2","",0,0,1,0.32);
             p2->SetTopMargin(0.02); p2->SetBottomMargin(0.30);
             p2->Draw(); p2->cd();
             gSiList.front()->SetTitle(";Run number;#sigma_{#pi^{0}}  (GeV)");
             for (std::size_t i=0;i<gSiList.size();++i)
                 gSiList[i]->Draw(i==0 ? "AP" : "P SAME");
 
-            /* ------------------------------------------------------------
-             * 5)  Save PNG
-             * ---------------------------------------------------------- */
-            /* same fix – use the parent of <trigger> so the file is not hidden */
             fs::path pngRun = root / "EMCal" / "invMassQA" / cutTag /
                               "Pi0Mass_Sigma_vs_Run_AllCentrality.png";
             ensure_dir(pngRun.parent_path());
+            cR.SaveAs(pngRun.string().c_str());
 
-            try {
-                cR.SaveAs(pngRun.string().c_str());
-                log(Lvl::INFO,"✔ run‑summary PNG written → "+pngRun.string());
-            }
-            catch(const std::exception& ex){
-                log(Lvl::ERR,std::string("ERROR while saving \"")+pngRun.string()+
-                              "\" – "+ex.what());
-            }
+            log(Lvl::INFO,"   • global run‑summary PNG → " + pngRun.string());
 
-            /* ------------ Recap table ---------------------------------- */
+            /* ----------------------------------------------------------------
+             * 7.  Recap table in terminal
+             * ---------------------------------------------------------------- */
             std::ostringstream oss;
-            oss<<"writeRunSummary(): slices plotted ("<<slicesDone.size()<<") : ";
-            for(const auto& s: slicesDone) oss<<s<<' ';
+            oss << "\n──────────  RUN‑SUMMARY CONTENTS  ──────────\n"
+                << "Slices plotted  : " << slicesDone.size() << '\n'
+                << "Slice list      : ";
+            for (const auto& s : slicesDone) oss << s << ' ';
+            oss << "\nOutput directory : " << pngRun.parent_path().string()
+                << "\nPNG files        :"
+                << "\n   • Overlay   : " << pngRun.filename().string()
+                << "\n   • Per‑slice : Pi0Mass_Sigma_vs_Run_AllCentrality.png"
+                   " (one for each slice)\n";
             log(Lvl::INFO,oss.str());
         }
         catch(const std::exception& ex)
         {
-            log(Lvl::ERR,std::string("writeRunSummary(): exception – ")+ex.what());
+            log(Lvl::ERR,
+                std::string("writeRunSummary(): fatal exception – ") + ex.what());
         }
+
+        /* ────────────────────────────────────────────────────────────────
+         * 8.  EXIT BANNER
+         * ──────────────────────────────────────────────────────────────── */
+        log(Lvl::INFO,
+            "writeRunSummary()  ⇦  completed\n"
+            "══════════════════════════════════════════════════════════════");
     }
 
     /* ---------------------------------------------------------------- */
