@@ -76,7 +76,7 @@ namespace {
 
     const fs::path kOutputDir = kOnSphenix
         ? baseDir / "outputPlots"       /* per‑run PNGs on sPHENIX node   */
-        : baseDir / "output";           /* local Desktop output           */
+        : baseDir / "outputPlots";           /* local Desktop output           */
 
 }   // anonymous namespace
 

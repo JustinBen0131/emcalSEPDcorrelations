@@ -2841,8 +2841,7 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
       const TwoJets& J = bestPair.at(radKey);
 
       /* fallback jet area if FastJet did not store one ----------------- */
-      const double Rguess       = (radKey.size()>1 && radKey[0]=='r')
-                                ? 0.1 * std::stod(radKey.substr(1)) : 0.4;
+      double Rguess = 0.1 * std::stod(radKey.substr(1));
       const double areaFallback = M_PI * Rguess * Rguess;   // π R²
 
       for (const std::string& trg : trig)

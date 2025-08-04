@@ -292,98 +292,101 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
     // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
     //--------------------------------------------------------------------
     {
-      // helper: uniform banner printer
       auto banner = [](const std::string &m)
-      {
-        std::cout << "\n[BG‑SUB] " << m << std::endl;
-      };
+      { std::cout << "\n[BG‑SUB] " << m << std::endl; };
 
-      const int vLvl = 1;   // verbosity level for all jet‑background modules
+      const int vLvl = 1;            // common verbosity
 
-      //–– (i) 0.025 × 0.025 EMCal re‑tower ––––––––––––––––––––––––––––––––
+      /* (i) – one retower is enough for all radii ----------------------- */
       banner("(i)  Retowering EMCal (0.025×0.025) …");
-      auto *rcemc = new RetowerCEMC("RetowerCEMC_r02");
+      auto *rcemc = new RetowerCEMC("RetowerCEMC");
       rcemc->set_towerinfo(true);
       rcemc->set_frac_cut(0.50);
       rcemc->set_towerNodePrefix("TOWERINFO_CALIB");
       rcemc->Verbosity(vLvl);
       se->registerSubsystem(rcemc);
 
-      //–– (ii) Raw‑seed Anti‑kT (R=0.2) jets ––––––––––––––––––––––––––––––
-      banner("(ii) Reconstructing raw‑seed R=0.2 Anti‑kT jets …");
-      auto *seedReco = new JetReco("HIRecoSeedsRaw_r02");
-      seedReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_RETOWER,
-                                            "TOWERINFO_CALIB"));
-      seedReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO,
-                                            "TOWERINFO_CALIB"));
-      seedReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO,
-                                            "TOWERINFO_CALIB"));
-
-      // *** KEEP THIS STRING EXACTLY – required by DetermineTowerBackground ***
-      seedReco->add_algo(detail::fjAlgo(0.2f),
-                         "AntiKt_TowerInfo_HIRecoSeedsRaw_r02");
-
-      seedReco->set_algo_node("AntiKt_TowerInfo");
-      seedReco->set_input_node("TOWERINFO_CALIB");
-      seedReco->Verbosity(vLvl);
-      se->registerSubsystem(seedReco);
-
-      //–– (iii) ρ estimate from raw‑seed jets –––––––––––––––––––––––––––––
-      banner("(iii) Estimating UE density ρ → TowerInfoBackground_Sub2 …");
-      auto *dtb = new DetermineTowerBackground("DetTowerBkg_Sub2");
-      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub2"); // matches SubtractTowers
-      dtb->SetSeedType(0);         // use jets from step (ii)
-      dtb->SetSeedJetD(2);         // R = 0.2
-      dtb->set_towerinfo(true);
-      dtb->set_towerNodePrefix("TOWERINFO_CALIB");
-      dtb->Verbosity(vLvl);
-      se->registerSubsystem(dtb);
-
-      //–– (iv) Tower‑by‑tower subtraction (produces *_SUB1 containers) ––––
-      banner("(iv) Subtracting UE from towers (creates *_SUB1) …");
+      /* (ii‑½) – tower‑by‑tower subtraction, shared by every radius ----- */
       auto *st = new SubtractTowers("SubtractTowers_Sub1");
       st->set_towerinfo(true);
       st->set_towerNodePrefix("TOWERINFO_CALIB");
       st->Verbosity(vLvl);
       se->registerSubsystem(st);
 
-      //–– (v) Anti‑kT jets on UE‑subtracted towers ––––––––––––––––––––––––
-      banner("(v) Reconstructing jets on UE‑subtracted towers …");
-      auto *subReco = new JetReco("HIRecoSeedsSub_r02");
-      subReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_SUB1,
-                                           "TOWERINFO_CALIB"));
-      subReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO_SUB1,
-                                           "TOWERINFO_CALIB"));
-      subReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO_SUB1,
-                                           "TOWERINFO_CALIB"));
+      /* loop over all radii defined in the header ----------------------- */
+      for (const auto &[radKey, rawNodeName] :
+           emcal_sepdCorrelator::kJetRadii)            // e.g. {"r02","AntiKt_TowerInfo_HIRecoSeedsRaw_r02"}
+      {
+        const int   D = std::stoi(std::string(radKey).substr(1)); // "r02"→2, "r04"→4 …
+        const float R = 0.1f * D;                                 // 0.2, 0.4, …
 
-      // *** KEEP THIS STRING EXACTLY – required by CopyAndSubtractJets etc. ***
-      subReco->add_algo(detail::fjAlgo(0.2f),
-                        "AntiKt_TowerInfo_HIRecoSeedsSub_r02");
+        /* helper names that carry the radius tag ----------------------- */
+        const std::string rawRecoName = "HIRecoSeedsRaw_" + std::string(radKey);
+        const std::string subRecoName = "HIRecoSeedsSub_" + std::string(radKey);
+        const std::string algoRaw     = "AntiKt_TowerInfo_" + rawRecoName;
+        const std::string algoSub = rawNodeName;
 
-      subReco->set_algo_node("AntiKt_TowerInfo");
-      subReco->set_input_node("TOWER");
-      subReco->Verbosity(vLvl);
-      se->registerSubsystem(subReco);
+        /* (ii) – raw‑seed jets ----------------------------------------- */
+        banner("(ii)  Reconstructing raw Anti‑kT jets R=" + std::to_string(R));
+        auto *seedReco = new JetReco(rawRecoName);
+        seedReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_RETOWER,"TOWERINFO_CALIB"));
+        seedReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO,"TOWERINFO_CALIB"));
+        seedReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO,"TOWERINFO_CALIB"));
+        seedReco->add_algo(detail::fjAlgo(R), algoRaw);          // **critical name**
+        seedReco->set_algo_node("AntiKt_TowerInfo");
+        seedReco->set_input_node("TOWERINFO_CALIB");
+        seedReco->Verbosity(vLvl);
+        se->registerSubsystem(seedReco);
 
-      //–– (vi‑a) ρ estimate on UE‑subtracted jets  →  TowerInfoBackground_Sub3
-      banner("(vi‑a) Estimating UE density ρ on SUB1 jets → TowerInfoBackground_Sub3 …");
-      auto *dtb3 = new DetermineTowerBackground("DetTowerBkg_Sub3");
-      dtb3->SetBackgroundOutputName("TowerInfoBackground_Sub3");   //  *** needed by CopyAndSubtractJets ***
-      dtb3->SetSeedType(1);        // use jets from step (v)
-      dtb3->SetSeedJetD(2);        // R = 0.2
-      dtb3->set_towerinfo(true);
-      dtb3->set_towerNodePrefix("TOWERINFO_CALIB");
-      dtb3->Verbosity(vLvl);
-      se->registerSubsystem(dtb3);
+        /* (iii‑a) – UE from raw jets  → TowerInfoBackground_Sub1 -------- */
+        auto *dtb1 = new DetermineTowerBackground("DetTowerBkg_Sub1_"+radKey);
+        dtb1->SetBackgroundOutputName("TowerInfoBackground_Sub1");
+        dtb1->SetSeedType(0);
+        dtb1->SetSeedJetD(D);
+        dtb1->set_towerinfo(true);
+        dtb1->set_towerNodePrefix("TOWERINFO_CALIB");
+        dtb1->Verbosity(vLvl);
+        se->registerSubsystem(dtb1);
 
-      //–– (vi‑b) Copy jet 4‑vectors & subtract residual background (ρ·A)
-      banner("(vi‑b) Copying jets and subtracting residual background (ρ·A) …");
-      auto *casj = new CopyAndSubtractJets("CopyAndSubtractJets_r02");
-      casj->set_towerinfo(true);
-      casj->set_towerNodePrefix("TOWERINFO_CALIB");
-      casj->Verbosity(3);
-      se->registerSubsystem(casj);
+        /* (iii‑b) – UE for tower subtraction  → TowerInfoBackground_Sub2 */
+        auto *dtb2 = new DetermineTowerBackground("DetTowerBkg_Sub2_"+radKey);
+        dtb2->SetBackgroundOutputName("TowerInfoBackground_Sub2");
+        dtb2->SetSeedType(0);
+        dtb2->SetSeedJetD(D);
+        dtb2->set_towerinfo(true);
+        dtb2->set_towerNodePrefix("TOWERINFO_CALIB");
+        dtb2->Verbosity(vLvl);
+        se->registerSubsystem(dtb2);
+
+        /* (v) – jets on UE‑subtracted towers ---------------------------- */
+        banner("(v)   Reconstructing UE‑subtracted jets R=" + std::to_string(R));
+        auto *subReco = new JetReco(subRecoName);
+        subReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_SUB1,"TOWERINFO_CALIB"));
+        subReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO_SUB1,"TOWERINFO_CALIB"));
+        subReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO_SUB1,"TOWERINFO_CALIB"));
+        subReco->add_algo(detail::fjAlgo(R), algoSub);
+        subReco->set_algo_node("AntiKt_TowerInfo");
+        subReco->set_input_node("TOWER");
+        subReco->Verbosity(vLvl);
+        se->registerSubsystem(subReco);
+
+        /* (vi‑a) – UE from subtracted jets  → TowerInfoBackground_Sub3 -- */
+        auto *dtb3 = new DetermineTowerBackground("DetTowerBkg_Sub3_"+radKey);
+        dtb3->SetBackgroundOutputName("TowerInfoBackground_Sub3");
+        dtb3->SetSeedType(1);
+        dtb3->SetSeedJetD(D);
+        dtb3->set_towerinfo(true);
+        dtb3->set_towerNodePrefix("TOWERINFO_CALIB");
+        dtb3->Verbosity(vLvl);
+        se->registerSubsystem(dtb3);
+
+        /* (vi‑b) – copy & residual UE subtraction ----------------------- */
+        auto *casj = new CopyAndSubtractJets("CopyAndSubtractJets_"+radKey);
+        casj->set_towerinfo(true);
+        casj->set_towerNodePrefix("TOWERINFO_CALIB");
+        casj->Verbosity(3);
+        se->registerSubsystem(casj);
+      } // radius loop
     }
 
     

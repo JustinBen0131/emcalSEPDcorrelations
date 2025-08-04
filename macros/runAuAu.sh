@@ -10,7 +10,7 @@
 #
 #  ── sPHENIX analysis nodes  ────────────────────────────────────────────────
 #     ./runAuAu.sh fromSPHENIXnode condorTest # submit one job (smoke test)
-#     ./runAuAu.sh fromSPHENIXnode condor     # full DAG – one job per run
+#     ./runAuAu.sh fromSPHENIXnode condor     # full DAG – one job per run AND a final hadd/process job on all runs
 #
 #  ENVIRONMENT
 #     RUN_LOCATION is set automatically:
@@ -116,61 +116,78 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
           -type f -delete                               2>/dev/null || true
     mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
 
-    dag="${SUBMIT_DIR}/runAuAu.dag"; : >"${dag}"
-    jobIds=()
+    # ──────────────────────────────────────────────────────────────────
+    #  submit one job per run; wait; verify output; run hadd+QA
+    # ──────────────────────────────────────────────────────────────────
+    runLogs=()                          # HTCondor .log files for condor_wait
+    expRuns=${#roots[@]}                # how many runs we expect to finish
 
     for rf in "${roots[@]}"; do
         run="$(basename "${rf}" .root)"; run="${run#output_}"
         sub="${SUBMIT_DIR}/${run}.sub"
 
-        note "Queueing run ${run}"
-        note "   input  → ${rf}"
-        note "   output → ${OUTPUT_DIR}/${run}"
+        note "Submitting run ${run}"
+        note "   input    : ${rf}"
+        note "   out‑dir  : ${OUTPUT_DIR}/${run}"
 
-        cat >"${sub}" <<EOS
-universe        = vanilla
-executable      = ${EXEC_WRAPPER}
-arguments       = ${rf}  ${OUTPUT_DIR}/${run}
-output          = ${STDOUT_DIR}/${run}.out
-error           = ${STDERR_DIR}/${run}.err
-log             = ${LOG_DIR}/${run}.log
-request_memory  = 4GB
-+JobFlavour     = "tomorrow"
-queue
-EOS
-        echo "JOB  J${run}  ${sub}" >>"${dag}"
-        jobIds+=( "J${run}" )
+        cat > "${sub}" <<EOS
+    universe        = vanilla
+    executable      = ${EXEC_WRAPPER}
+    arguments       = ${rf}  ${OUTPUT_DIR}/${run}
+    output          = ${STDOUT_DIR}/${run}.out
+    error           = ${STDERR_DIR}/${run}.err
+    log             = ${LOG_DIR}/${run}.log
+    request_memory  = 4GB
+    +JobFlavour     = "tomorrow"
+    queue
+    EOS
+        condor_submit "${sub}"              || die "condor_submit failed for ${run}"
+        runLogs+=( "${LOG_DIR}/${run}.log" )
     done
-    note "Built ${#jobIds[@]} submission files"
+    note "All ${expRuns} run‑jobs submitted – waiting for completion …"
+    condor_wait "${runLogs[@]}"              || die "At least one run‑job failed"
 
+    # ── sanity check: did every run create its output folder? ─────────────
+    note "Verifying that every run produced an output directory …"
+    tries=0
+    while :; do
+        curr=$(find "${OUTPUT_DIR}" -maxdepth 1 -type d -name '[0-9]*' | wc -l)
+        note "   progress ${curr}/${expRuns}"
+        (( curr >= expRuns )) && break
+        (( tries++ > 60 ))    && die "Timeout waiting for output plots"
+        sleep 30
+    done
+    note "Verification complete – all per‑run outputs present."
+
+    # ── build and submit the final hadd + combined‑QA job ────────────────
     haddSub="${SUBMIT_DIR}/haddAll.sub"
-    cat >"${haddSub}" <<'EOS'
-universe        = vanilla
-executable      = /bin/bash
-arguments       = -c '
-set -euo pipefail
-export RUN_LOCATION=sphenix
-BASE=/sphenix/u/${USER}/scratch/emcalSEPDcorrelations
-INPUT=${BASE}/output
-OUT=${BASE}/output/output_ALL_COMBINED.root
-echo "[HADD] → merging ROOT files into ${OUT}"
-hadd -f -k "${OUT}" "${INPUT}"/output_*.root
-echo "[HADD] → launching combined QA pass"
-root -l -b -q -e ".L ${BASE}/macros/analyzeRun24or25auau.cpp+" \
-               -e "runOneQaPass(\"${OUT}\",\"${BASE}/outputPlots/Combined\")"'
-output          = ${STDOUT_DIR}/hadd.out
-error           = ${STDERR_DIR}/hadd.err
-log             = ${LOG_DIR}/hadd.log
-request_memory  = 4GB
-+JobFlavour     = "tomorrow"
-queue
-EOS
-    echo "JOB  HADD  ${haddSub}"          >> "${dag}"
-    echo "PARENT ${jobIds[*]} CHILD HADD" >> "${dag}"
+    cat > "${haddSub}" <<'EOS'
+    universe        = vanilla
+    executable      = /bin/bash
+    arguments       = -c '
+    set -euo pipefail
+    export RUN_LOCATION=sphenix
+    BASE=/sphenix/u/${USER}/scratch/emcalSEPDcorrelations
+    INPUT=${BASE}/output
+    OUT=${BASE}/output/output_ALL_COMBINED.root
+    echo "[HADD] merging into \$OUT"
+    hadd -f -k "\$OUT" "\$INPUT"/output_*.root
+    echo "[HADD] launching combined QA pass"
+    root -l -b -q -e ".L ${BASE}/macros/analyzeRun24or25auau.cpp+" \
+                   -e "runOneQaPass(\"\$OUT\",\"${BASE}/outputPlots/Combined\")"'
+    output          = ${STDOUT_DIR}/hadd.out
+    error           = ${STDERR_DIR}/hadd.err
+    log             = ${LOG_DIR}/hadd.log
+    request_memory  = 4GB
+    +JobFlavour     = "tomorrow"
+    queue
+    EOS
 
-    note "Submitting DAG ( $((${#jobIds[@]}+1)) jobs total )"
-    condor_submit_dag "${dag}" && note "DAGMan accepted the workflow"
+    note "Submitting final hadd + combined‑QA job"
+    condor_submit "${haddSub}"             || die "condor_submit failed for hadd job"
+    note "Workflow finished – no DAG file was used"
     exit 0
+
 fi
 
 # --------------------------------------------------------------------------
