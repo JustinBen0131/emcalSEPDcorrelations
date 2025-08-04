@@ -29,9 +29,21 @@ macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
 verbose="false"
 clean_output="true"
 
-if [[ "${VERBOSE:-0}" == 1 ]]; then verbose="true"; fi
+# ---------- numeric verbosity (environment or first positional) ----------
+if [[ ${1:-} == VERBOSE=* ]]; then
+    export VERBOSE="${1#VERBOSE=}"     # take the number after '='
+    shift                              # drop this pseudo‑argument
+fi
+: "${VERBOSE:=0}"                      # default if nothing supplied
+
+# ---------- script‑level noisy/quiet switch ------------------------------
+if (( VERBOSE >= 1 )); then
+    verbose="true"                     # enables extra shell messages
+fi
+
+# legacy --verbose / -v still sets VERBOSE=1
 if [[ ${1:-} == "--verbose" || ${1:-} == "-v" ]]; then
-    verbose="true"; shift
+    verbose="true"; export VERBOSE=1; shift
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -130,13 +142,14 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
         note "   input    : ${rf}"
         note "   out‑dir  : ${OUTPUT_DIR}/${run}"
 
-        cat > "${sub}" <<EOS
+cat > "${sub}" <<EOS
         universe        = vanilla
         executable      = ${EXEC_WRAPPER}
         arguments       = ${rf}  ${OUTPUT_DIR}/${run}
         output          = ${STDOUT_DIR}/${run}.out
         error           = ${STDERR_DIR}/${run}.err
         log             = ${LOG_DIR}/${run}.log
+        getenv          = True             # ← pass entire env, incl. VERBOSE
         request_memory  = 4GB
         +JobFlavour     = "tomorrow"
         queue

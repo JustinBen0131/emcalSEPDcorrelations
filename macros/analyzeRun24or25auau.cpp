@@ -65,6 +65,12 @@ namespace {
         return env && std::string(env) == "sphenix";
     }();
 
+    /* global verbosity level: 0 = quiet, 1 = info, 2 = trace …  */
+    const int kVerbosity = []{
+        const char* env = std::getenv("VERBOSE");
+        return env ? std::max(0, std::atoi(env)) : 0;
+    }();
+
     /* Base of the whole analysis directory */
     const fs::path baseDir = kOnSphenix
         ? "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
@@ -180,14 +186,25 @@ namespace ulog {
               << "══════════════════════════════════════════════════════════════"
               << term::CLR_RST << "\n";
   }
-  inline void info (const string& m){ std::cout<<term::CLR_CYAN<<m<<term::CLR_RST<<"\n"; }
-  inline void ok   (const string& m){ std::cout<<term::CLR_GRN <<m<<term::CLR_RST<<"\n"; }
-  inline void warn (const string& m){ std::cout<<term::CLR_YEL <<m<<term::CLR_RST<<"\n"; }
-  inline void err  (const string& m){ std::cerr<<term::CLR_RED <<m<<term::CLR_RST<<"\n"; }
-  inline void trace(const std::string& m)
-  {
-    std::cout << term::CLR_YEL << "[TRACE] " << m << term::CLR_RST << "\n";
+  inline void info (const string& m){
+        if (kVerbosity >= 1)
+            std::cout<<term::CLR_CYAN<<m<<term::CLR_RST<<"\n";
   }
+  inline void ok   (const string& m){
+        if (kVerbosity >= 1)
+            std::cout<<term::CLR_GRN <<m<<term::CLR_RST<<"\n";
+  }
+  inline void warn (const string& m){                   // always show warnings
+        std::cout<<term::CLR_YEL <<m<<term::CLR_RST<<"\n";
+  }
+  inline void err  (const string& m){                   // always show errors
+        std::cerr<<term::CLR_RED <<m<<term::CLR_RST<<"\n";
+  }
+  inline void trace(const std::string& m){
+        if (kVerbosity >= 2)
+            std::cout << term::CLR_YEL << "[TRACE] " << m << term::CLR_RST << "\n";
+  }
+
 }
 
 // helper --------------------------------------------------------------
