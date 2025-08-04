@@ -366,12 +366,23 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
       subReco->Verbosity(vLvl);
       se->registerSubsystem(subReco);
 
-      //–– (vi) Copy jet 4‑vectors & subtract residual background ––––––––––
-      banner("(vi) Copying jets and subtracting residual background (ρ·A) …");
+      //–– (vi‑a) ρ estimate on UE‑subtracted jets  →  TowerInfoBackground_Sub3
+      banner("(vi‑a) Estimating UE density ρ on SUB1 jets → TowerInfoBackground_Sub3 …");
+      auto *dtb3 = new DetermineTowerBackground("DetTowerBkg_Sub3");
+      dtb3->SetBackgroundOutputName("TowerInfoBackground_Sub3");   //  *** needed by CopyAndSubtractJets ***
+      dtb3->SetSeedType(1);        // use jets from step (v)
+      dtb3->SetSeedJetD(2);        // R = 0.2
+      dtb3->set_towerinfo(true);
+      dtb3->set_towerNodePrefix("TOWERINFO_CALIB");
+      dtb3->Verbosity(vLvl);
+      se->registerSubsystem(dtb3);
+
+      //–– (vi‑b) Copy jet 4‑vectors & subtract residual background (ρ·A)
+      banner("(vi‑b) Copying jets and subtracting residual background (ρ·A) …");
       auto *casj = new CopyAndSubtractJets("CopyAndSubtractJets_r02");
       casj->set_towerinfo(true);
       casj->set_towerNodePrefix("TOWERINFO_CALIB");
-      casj->Verbosity(3);               // extra diagnostic output
+      casj->Verbosity(3);
       se->registerSubsystem(casj);
     }
 

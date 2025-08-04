@@ -44,7 +44,12 @@ sample_arg="-1"         # C++ parameter #2
 case "${mode}" in
   "") ;;                                           # desktop – full suite
   fromLocalNode)      export RUN_LOCATION=local  ; shift ;;
-  fromSPHENIXnode)    export RUN_LOCATION=sphenix; mode="condor"; shift ;;
+  fromSPHENIXnode)
+          export RUN_LOCATION=sphenix          # running on a sPHENIX node
+          shift                                # drop the keyword itself
+          mode="${1:-condor}"                  # take next token ⇢ condor / condorTest
+          [[ $# -gt 0 ]] && shift              # consume it when present
+          ;;
   testRun)            test_arg="true"            ; shift ;;
   testCombined)       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] \
                          || { echo "Usage: … testCombined <N>"; exit 1; }
@@ -86,9 +91,23 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
     mapfile -t roots < <(ls "${INPUT_DIR}"/output_*.root 2>/dev/null | sort)
     [[ ${#roots[@]} -gt 0 ]] || die "No ROOT files in ${INPUT_DIR}"
 
+    # pick the ROOT file that has the *most* events (proxy = size)
     if [[ "${mode}" == "condorTest" ]]; then
-        note "condorTest → restricting to first run only"
-        roots=( "${roots[0]}" )
+        note "condorTest → selecting run with the highest statistics"
+
+        largest=""
+        maxSize=0
+        for f in "${roots[@]}"; do
+            # GNU/Linux uses “stat -c%s”, macOS/BSD uses “stat -f%z”
+            sz=$( { stat -c%s "$f" 2>/dev/null || stat -f%z "$f"; } ) || sz=0
+            (( sz > maxSize )) && { maxSize=$sz; largest="$f"; }
+        done
+
+        [[ -n "${largest}" ]] || die "Could not determine the largest ROOT file"
+        roots=( "${largest}" )
+
+        runPick=$(basename "${largest}")
+        note "condorTest → will submit only ${runPick}  (size $((maxSize/1024/1024)) MB)"
     fi
 
     note "Cleaning previous submission artefacts"
