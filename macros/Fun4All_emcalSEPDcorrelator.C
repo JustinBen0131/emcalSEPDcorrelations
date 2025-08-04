@@ -314,21 +314,21 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
       seedReco->set_input_node("TOWERINFO_CALIB");
       seedReco->Verbosity(0);
       se->registerSubsystem(seedReco);
-//
-//      // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
-//      auto* dtb = new DetermineTowerBackground();
-//      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
-//      dtb->SetSeedType(0);
-//      dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
-//      dtb->set_towerinfo(true);
-//      dtb->set_towerNodePrefix("TOWERINFO_CALIB");
-//      se->registerSubsystem(dtb);
 
-//      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
-//      auto* st = new SubtractTowers();
-//      st->set_towerinfo(true);
-//      st->set_towerNodePrefix("TOWERINFO_CALIB");
-//      se->registerSubsystem(st);
+      // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
+      auto* dtb = new DetermineTowerBackground();
+      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
+      dtb->SetSeedType(0);
+      dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
+      dtb->set_towerinfo(true);
+      dtb->set_towerNodePrefix("TOWERINFO_CALIB");
+      se->registerSubsystem(dtb);
+
+      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
+      auto* st = new SubtractTowers();
+      st->set_towerinfo(true);
+      st->set_towerNodePrefix("TOWERINFO_CALIB");
+      se->registerSubsystem(st);
 
 //      // ── (v)  jet reco on *subtracted* towers – names must match DTB ────
 //      auto* subReco = new JetReco();

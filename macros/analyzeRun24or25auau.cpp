@@ -56,12 +56,28 @@ namespace fs = std::filesystem;
 // ───────────────────────────────────────────────
 namespace {
 
-    /* Change this one line whenever you move the whole analysis tree. */
-    const fs::path baseDir = "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations";
+    /* The environment variable RUN_LOCATION selects the platform:
+     *     “local”   → mac / Desktop tree (default)
+     *     “sphenix” → /sphenix/u/… scratch tree
+     */
+    const bool kOnSphenix = []{
+        const char* env = std::getenv("RUN_LOCATION");
+        return env && std::string(env) == "sphenix";
+    }();
 
-    /* All other locations are built from baseDir, so no edits below. */
-    const fs::path kInputDir  = baseDir / "input"  / "output";   // ROOT files
-    const fs::path kOutputDir = baseDir / "output";              // PNGs, CSVs …
+    /* Base of the whole analysis directory */
+    const fs::path baseDir = kOnSphenix
+        ? "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
+        : "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations";
+
+    /* All other locations are built from baseDir – no edits below */
+    const fs::path kInputDir  = kOnSphenix
+        ? baseDir / "output"            /* → output_*.root                */
+        : baseDir / "input" / "output"; /* → Desktop/…/input/output/*.root */
+
+    const fs::path kOutputDir = kOnSphenix
+        ? baseDir / "outputPlots"       /* per‑run PNGs on sPHENIX node   */
+        : baseDir / "output";           /* local Desktop output           */
 
 }   // anonymous namespace
 
@@ -1360,7 +1376,7 @@ class Pi0QA : public QA
                 cGrid.cd();
                 TLatex tl;  tl.SetNDC();  tl.SetTextSize(0.028);  tl.SetTextAlign(22);
                 tl.DrawLatex(0.50, 0.96,
-                    Form("Run %s   |   E > %.2f GeV, #alpha #leq %.2f, #chi^{2} #leq %.2f",
+                    Form("Run %s   |   E #geq %.2f GeV, #alpha < %.2f, #chi^{2} < %.2f",
                          runShort.c_str(), eCut, asyCut, chiCut));
             }
 
@@ -1685,6 +1701,9 @@ class Pi0QA : public QA
                     gSiCent->SetMarkerColor(gSi->GetMarkerColor());
                     gSiCent->SetLineColor  (gSi->GetLineColor());
                     gSiCent->Draw("AP");
+                    
+                    gSiCent->GetYaxis()->SetTitleSize(0.060);   // default ≈0.045
+                    gSiCent->GetYaxis()->SetTitleOffset(0.90);  // move a bit closer
 
                     /* identical custom axis + run‑number labels ------------------------- */
                     {
@@ -1743,9 +1762,14 @@ class Pi0QA : public QA
                                                     ? "?" : std::to_string(std::stoi(masterRuns.back()));
                         const int nRun = static_cast<int>(masterRuns.size());
 
+                        const std::string sliceDesc =
+                                (slice == "Inclusive" || slice == "noCentralityDep")
+                                    ? slice
+                                    : Form("Cent %s %%", slice.c_str());
+
                         const std::string canvTitle =
-                            Form("Invariant Mass Summary %s #rightarrow %s (%d runs)",
-                                 runLo.c_str(), runHi.c_str(), nRun);
+                            Form("Invariant Mass Summary %s #rightarrow %s (%d runs), %s",
+                                 runLo.c_str(), runHi.c_str(), nRun, sliceDesc.c_str());
 
                         cS.cd();
                         TLatex head;
@@ -1786,7 +1810,7 @@ class Pi0QA : public QA
             const int nRun = static_cast<int>(masterRuns.size());
 
             const std::string canvTitle =
-                Form("Invariant Mass Summary %s #rightarrow %s (%d runs)",
+                Form("Invariant Mass Summary %s #rightarrow %s (%d runs), Overlay",
                      runLo.c_str(), runHi.c_str(), nRun);
 
             TCanvas cR("c_mu_sigma_vs_run_allCent", "", 1600, 900);
@@ -1879,7 +1903,10 @@ class Pi0QA : public QA
                 if (slicesDone[i] == "Inclusive") { idxIncSi = static_cast<int>(i); break; }
 
             if (idxIncSi >= 0) {
-                gSiList[idxIncSi]->Draw("AP");                 // frame from Inclusive
+                gSiList[idxIncSi]->Draw("AP");
+                gSiList.front()->GetYaxis()->SetTitleSize(0.060);
+                gSiList.front()->GetYaxis()->SetTitleOffset(0.55);
+                
                 for (std::size_t i = 0; i < gSiList.size(); ++i)
                     if (static_cast<int>(i) != idxIncSi)
                         gSiList[i]->Draw("P SAME");            // draw other slices
@@ -4833,12 +4860,28 @@ class JetQA : public QA
         else            // is3D
           ok = handle3D  (static_cast<TH3*>(o), baseGen, n);
 
-        if (!ok)
-          log(Lvl::WRN,"process(): helper reported failure for \""+n+"\"");
+          if (!ok)
+            log(Lvl::WRN,"process(): helper reported failure for \""+n+"\"");
 
-        log(Lvl::DBG,"process(): finished \""+n+"\"  (status=" +
-                     std::string(ok ? "OK" : "FAIL") + ')');
-        return ok;
+          /* ────────────────────────────────────────────────────────────────
+           * NEW: keep one clone per centrality bin so we can build a 2×3
+           *      overview grid at the very end of the run.
+           * ──────────────────────────────────────────────────────────────── */
+          if (slice.rfind("Cent_",0) == 0)                 /* skip “Inclusive” */
+          {
+              /* strip the “_lo_hi_” part so all six slices map to one key     */
+              std::string base =
+                  std::regex_replace(n, std::regex(R"(_\d{1,3}_\d{1,3}_)"), "_");
+
+              auto cl = std::shared_ptr<TH1>(static_cast<TH1*>(o->Clone()));
+              cl->SetDirectory(nullptr);
+              _centCache[base].emplace_back(slice, std::move(cl));
+          }
+
+          log(Lvl::DBG,"process(): finished \""+n+"\"  (status=" +
+                       std::string(ok ? "OK" : "FAIL") + ')');
+          return ok;
+
       }
       catch (const std::exception& ex)
       {
@@ -4983,8 +5026,11 @@ class JetQA : public QA
           _ownedGraphs.push_back(std::move(gCent));
         }
 
+        writeCentralityGrids();          /* NEW – 2×3 overview per histogram */
+
         log(Lvl::INF,"[JetQA::~JetQA] summary successfully written ("+
-                      std::to_string(maxEtPerSlice.size())+" slice(s))");
+                                std::to_string(maxEtPerSlice.size())+
+                                " slice(s))  and centrality grids");
       }
       catch (const std::exception& ex)
       {
@@ -5407,6 +5453,78 @@ class JetQA : public QA
         /* 3.  assemble final title --------------------------------------- */
         return kind + " (" + radius + ", " + cent + ", " + trig + ")";
     }
+    
+    /* =================================================================
+     *  Centrality‑overview writer – one 2×3 canvas for each histogram
+     *  kind × jet‑radius × trigger.  Saved under
+     *        …/jetQA/generalHistos/<rXX>/centralitySummary/
+     * ================================================================= */
+    void writeCentralityGrids()
+    {
+        if (_centCache.empty()) return;
+
+        /* desired ordering of the six bins */
+        const std::array<std::string,6> order = {
+            "Cent_0_10","Cent_10_20","Cent_20_40",
+            "Cent_40_60","Cent_60_80","Cent_80_100"};
+
+        for (auto& [base, vec] : _centCache)
+        {
+            if (vec.size() < 2) continue;                  /* nothing to plot */
+
+            /* split out radius label and trigger for the title */
+            std::smatch m;
+            if (!std::regex_match(base, m,
+                  std::regex(R"(.*_(r[0-9]+|R[0-9]+)_(.+))"))) continue;
+            const std::string rLab  = m[1];
+            const std::string trig  = prettifyTrigger(m[2]);
+
+            fs::path dir = root / "jetQA/generalHistos" / rLab / "centralitySummary";
+            ensure_dir(dir);
+
+            TCanvas c(("c_"+base).c_str(),"",3*550,2*500);
+            c.Divide(3,2,0.001,0.001);
+
+            /* global header (plot type, trigger, radius) */
+            c.cd();
+            TLatex hd; hd.SetNDC(); hd.SetTextFont(42); hd.SetTextAlign(22);
+            hd.SetTextSize(0.038);
+            hd.DrawLatex(0.50,0.97,(makeTitle(base)+"  ["+trig+", "+rLab+']').c_str());
+
+            /* draw six pads ------------------------------------------------- */
+            int pad = 1;
+            for (const auto& key : order)
+            {
+                c.cd(pad++);
+                auto it = std::find_if(vec.begin(), vec.end(),
+                                       [&](auto& p){return p.first==key;});
+                if (it != vec.end()) {
+                    TH1* h = it->second.get();
+                    if (h->InheritsFrom(TH2::Class())||
+                        h->InheritsFrom(TH3::Class()))
+                        h->Draw("COLZ");
+                    else
+                        h->Draw("HIST");
+
+                    TLatex lb; lb.SetNDC(); lb.SetTextFont(42);
+                    lb.SetTextAlign(23); lb.SetTextSize(0.04);
+                    lb.DrawLatex(0.50,0.92,
+                                 (key.substr(5)+" %").c_str());   /* “lo_hi” → “lo %” */
+                } else {
+                    TLatex na; na.SetNDC(); na.SetTextFont(42);
+                    na.SetTextAlign(22); na.SetTextSize(0.04);
+                    na.DrawLatex(0.50,0.50,"N/A");
+                }
+            }
+
+            c.SaveAs( (dir/(base+"_CentSummary.png")).string().c_str() );
+        }
+        _centCache.clear();
+    }
+
+    /* cache:  base‑histogram‑name  →  {slice, hist‑clone} */
+    using SliceClone = std::pair<std::string,std::shared_ptr<TH1>>;
+    std::unordered_map<std::string,std::vector<SliceClone>> _centCache;
     
     // containers keeping produced objects alive
     std::vector<std::unique_ptr<TH1>>          _owned1D;

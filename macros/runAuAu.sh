@@ -1,46 +1,37 @@
 #!/usr/bin/env bash
 ##############################################################################
-#  runAuAu.sh — build & execute analyzeRun24or25auau.cpp
+#  runAuAu.sh  –  single‑entry driver for the Run‑24/25 Au+Au QA macro
 #
-#  QUICK START
-#  -----------
-#      ./runAuAu.sh                       # all runs, all QA modules
-#      ./runAuAu.sh correlations,jetqa    # all runs, CorrQA + JetQA only
-#      ./runAuAu.sh testRun hcal,pi0      # first run, HCal + Pi0 QA
-#      ./runAuAu.sh testCombined 10       # top‑10 runs merged, full QA suite
-#      ./runAuAu.sh testCombined 10 correlations,hcal
-#      ./runAuAu.sh runFromCurrentCombined
-#       ---- keeps all existing PNG/CSV files, does not revisit individual runs,
-#       ---- and immediately reruns the QA production solely on output_ALL_COMBINED.root, writing fresh plots into …/Combined/…
+#  SUPPORTED INVOCATIONS
+#  ───────────────────────────────────────────────────────────────────────────
+#  DESKTOP  (macOS / personal laptop)
+#  ───────────────────────────────────────────────────────────────────────────
+#    ./runAuAu.sh [qa_list]                     # full pass over all runs
+#    ./runAuAu.sh testRun [qa_list]             # first run only
+#    ./runAuAu.sh testCombined <N> [qa_list]    # top‑N runs, then hadd+QA
+#    ./runAuAu.sh runFromCurrentCombined        # *just* reruns QA on the
+#                                               #   already‑existing hadd file
 #
-#  FULL USAGE
-#  ==========
-#      ./runAuAu.sh [--verbose] [qa_list]
-#      ./runAuAu.sh [--verbose] testRun [qa_list]
-#      ./runAuAu.sh [--verbose] testCombined <N> [qa_list]
-#      ./runAuAu.sh --help | -h
+#  SPHENIX ANALYSIS NODES (scratch area ↔ Condor)
+#  ───────────────────────────────────────────────────────────────────────────
+#    ./runAuAu.sh fromSPHENIXnode condorTest    # 1 Condor job (smoke test)
+#    ./runAuAu.sh fromSPHENIXnode condor        # one Condor job per run,
+#                                               # then automatic hadd+QA
 #
-#  POSITIONAL ARGUMENTS
-#      testRun                 analyse only the first discovered run
-#      testCombined <N>        merge the N highest‑statistics runs, then analyse
-#      qa_list                 (optional) comma‑separated list of QA‑module tags
-#                              to execute, e.g.  correlations,hcal,jetqa
-#                              — omit to run the complete QA suite.
+#  PATH POLICY
+#  ───────────────────────────────────────────────────────────────────────────
+#    • Environment variable RUN_LOCATION is set automatically:
+#        local    → $HOME/Desktop/… tree
+#        sphenix  → /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations
+#    • Those paths are *immutable* – edit only in the C++ macro if required.
 #
-#  OPTIONS
-#      --verbose , -v          show every clang++ / linker command printed by ACLiC
-#      --help    , -h          print this summary and exit
+#  LOG / STDOUT / STDERR DESTINATION (Condor mode)
+#    /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/log
+#    /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/stdout
+#    /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/error
 #
-#  ENVIRONMENT
-#      VERBOSE=1               same effect as --verbose
-#      QA_ONLY                 alternative place to provide <qa_list>;
-#                              the command‑line argument, if present, overrides it
-#
-#  NOTES
-#      • All previous call patterns still work unchanged.
-#      • Output PNG/CSV files under  $HOME/Desktop/auauAnalysis/…  are purged
-#        automatically before each run.
-#      • Duplicate‑rpath warnings from Apple ld are filtered out of the log.
+#  All other behaviour (QA filtering via QA_ONLY, verbosity via ‑v or
+#  VERBOSE=1, cleaning rules, etc.) remains unchanged.
 ##############################################################################
 set -euo pipefail
 
@@ -64,26 +55,128 @@ test_arg="false"     # C++ parm #1
 sample_arg="-1"      # C++ parm #2
 
 case "${mode}" in
-  "") ;;
+  "") ;;                                        # desktop – full suite
+  fromLocalNode)                               # explicit alias; keeps default paths
+        export RUN_LOCATION=local
+        shift 1
+        ;;
+  fromSPHENIXnode)                             # ⇢ Condor launcher (all runs)
+        export RUN_LOCATION=sphenix
+        mode="condor"                          # remember for later logic
+        shift 1
+        ;;
   testRun)
         test_arg="true"
         shift 1
         ;;
   testCombined)
-        if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
-            echo "Usage: ./runAuAu.sh [--verbose] testCombined <N> [qa_list]" >&2
-            exit 1
-        fi
+        [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Usage: … testCombined <N>"; exit 1; }
         sample_arg="$2"
         shift 2
         ;;
   runFromCurrentCombined)
-        export COMBINED_ONLY=1          # tells the C++ macro what to do
-        clean_output="false"            # skip rm ‑rf step later
+        export COMBINED_ONLY=1
+        clean_output="false"
+        shift 1
+        ;;
+  condorTest)                                  # submit *one* Condor job
+        export RUN_LOCATION=sphenix
+        mode="condorTest"
+        shift 1
+        ;;
+  condor)                                      # submit all Condor jobs
+        export RUN_LOCATION=sphenix
+        mode="condor"
         shift 1
         ;;
   *) ;;
 esac
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Condor (and condorTest) submission
+# ──────────────────────────────────────────────────────────────────────────
+if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
+    PROJECT_BASE="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
+    EXEC_WRAPPER="${PROJECT_BASE}/runAuAuExecutable.sh"
+
+    SUBMIT_DIR="${PROJECT_BASE}/tmp_condor_submit"
+
+    LOG_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/log"
+    STDOUT_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/stdout"
+    STDERR_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/error"
+
+    INPUT_DIR="${PROJECT_BASE}/output"
+    OUTPUT_DIR="${PROJECT_BASE}/outputPlots"
+
+    # ── purge artefacts from any previous Condor campaign ──────────────────────
+    rm -rf  "${SUBMIT_DIR:?}/"*            2>/dev/null || true          # stale .sub / .dag
+    find    "${LOG_DIR}"    -type f -delete 2>/dev/null || true         # old .log files
+    find    "${STDOUT_DIR}" -type f -delete 2>/dev/null || true         # old .out files
+    find    "${STDERR_DIR}" -type f -delete 2>/dev/null || true         # old .err files
+    rm -rf  "${OUTPUT_DIR:?}"              2>/dev/null || true          # previous PNG/CSV tree
+
+    # ── recreate the cleaned directories ───────────────────────────────────────
+    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
+
+
+    mapfile -t roots < <(ls "${INPUT_DIR}"/output_*.root 2>/dev/null | sort)
+    [[ ${#roots[@]} -gt 0 ]] || { echo "[FATAL] no ROOT files in ${INPUT_DIR}"; exit 2; }
+
+    [[ "${mode}" == "condorTest" ]] && roots=( "${roots[0]}" )   # 1st run only
+
+    dag="${SUBMIT_DIR}/runAuAu.dag"; >"${dag}"
+    jobIds=()
+
+    for rf in "${roots[@]}"; do
+        bn=$(basename "${rf}")
+        run=${bn#output_}; run=${run%.root}
+        sub="${SUBMIT_DIR}/${run}.sub"
+
+        cat >"${sub}" <<EOS
+universe      = vanilla
+executable    = ${EXEC_WRAPPER}
+arguments     = ${rf}  ${OUTPUT_DIR}/${run}
+output        = ${STDOUT_DIR}/${run}.out
+error         = ${STDERR_DIR}/${run}.err
+log           = ${LOG_DIR}/${run}.log
+request_memory= 4GB
++JobFlavour   = "tomorrow"
+queue
+EOS
+        echo "JOB  J${run}  ${sub}" >>"${dag}"
+        jobIds+=( "J${run}" )
+    done
+
+    # ----- post‑processing (hadd + combined QA) ---------------------------
+    haddSub="${SUBMIT_DIR}/haddAll.sub"
+    cat >"${haddSub}" <<'EOS'
+universe      = vanilla
+executable    = /bin/bash
+arguments     = -c '
+set -euo pipefail
+export RUN_LOCATION=sphenix
+BASE=/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations
+INPUT=${BASE}/output
+OUT=${BASE}/output/output_ALL_COMBINED.root
+hadd -f -k "${OUT}" "${INPUT}"/output_*.root
+root -l -b -q -e ".L ${BASE}/analyzeRun24or25auau.cpp+" \
+                -e "runOneQaPass(\"${OUT}\",\"${BASE}/outputPlots/Combined\")"'
+output        = ${STDOUT_DIR}/hadd.out
+error         = ${STDERR_DIR}/hadd.err
+log           = ${LOG_DIR}/hadd.log
+request_memory= 4GB
++JobFlavour   = "tomorrow"
+queue
+EOS
+
+    echo "JOB  HADD  ${haddSub}"  >>"${dag}"
+    printf 'PARENT %s CHILD HADD\n' "${jobIds[@]}" >>"${dag}"
+
+    condor_submit_dag -update_submit 0 "${dag}"
+    echo "[OK] Condor DAG submitted."
+    exit 0
+fi
 
 
 # ------------------------------------------------------------------
@@ -124,6 +217,7 @@ root_cmd=(
 # 3.5  Clean previous output *and* stale ACLiC artefacts
 # ────────────────────────────────────────────────────────────────────────────
 output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
+[[ "${RUN_LOCATION:-local}" == "local" ]] || clean_output="false"
 
 # ❶ purge old QA PNG / CSV output  (unless combined‑only run)
 if [[ "${clean_output}" == "true" && -d "${output_root}" ]]; then
