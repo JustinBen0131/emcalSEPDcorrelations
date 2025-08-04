@@ -70,10 +70,9 @@ namespace {
         ? "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
         : "/Users/patsfan753/Desktop/auauAnalysis/emcalSEPDcorrelations";
 
-    /* All other locations are built from baseDir – no edits below */
     const fs::path kInputDir  = kOnSphenix
-        ? baseDir / "output"            /* → output_*.root                */
-        : baseDir / "input" / "output"; /* → Desktop/…/input/output/*.root */
+            ? baseDir / "output"            // → output_*.root
+            : baseDir / "input" / "output"; // → Desktop/…/input/output/*.root
 
     const fs::path kOutputDir = kOnSphenix
         ? baseDir / "outputPlots"       /* per‑run PNGs on sPHENIX node   */
@@ -7484,3 +7483,4 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
     /* 3. optional merge + re‑run on combined file ------------------ */
     mergeRunsAndReprocess(runFiles, testRun);
 }
+

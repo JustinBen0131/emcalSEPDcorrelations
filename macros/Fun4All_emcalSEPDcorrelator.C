@@ -288,73 +288,94 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
 
 
     
-  //--------------------------------------------------------------------
-  // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
-  //--------------------------------------------------------------------
-  {
-      // ── (i)  0.025×0.025 retower of the EMCal ─────────────────────────
-      std::cout << "Retowering EMCal Towers" << std::endl;
-      auto* rcemc = new RetowerCEMC();
-      rcemc->set_towerinfo(true);               // use TowerInfo containers
-      rcemc->set_frac_cut(0.5);                 // ≥50 % masked ⇒ mask retower
+    //--------------------------------------------------------------------
+    // 3d)  HI‑style tower‑jet background subtraction (+ jet reco)
+    //--------------------------------------------------------------------
+    {
+      // helper: uniform banner printer
+      auto banner = [](const std::string &m)
+      {
+        std::cout << "\n[BG‑SUB] " << m << std::endl;
+      };
+
+      const int vLvl = 1;   // verbosity level for all jet‑background modules
+
+      //–– (i) 0.025 × 0.025 EMCal re‑tower ––––––––––––––––––––––––––––––––
+      banner("(i)  Retowering EMCal (0.025×0.025) …");
+      auto *rcemc = new RetowerCEMC("RetowerCEMC_r02");
+      rcemc->set_towerinfo(true);
+      rcemc->set_frac_cut(0.50);
       rcemc->set_towerNodePrefix("TOWERINFO_CALIB");
+      rcemc->Verbosity(vLvl);
       se->registerSubsystem(rcemc);
 
-      // ── (ii)  RAW‑SEED JETS  – must precede DetermineTowerBackground ──
-      std::cout << "Building Jets" << std::endl;
-      auto* seedReco = new JetReco();
+      //–– (ii) Raw‑seed Anti‑kT (R=0.2) jets ––––––––––––––––––––––––––––––
+      banner("(ii) Reconstructing raw‑seed R=0.2 Anti‑kT jets …");
+      auto *seedReco = new JetReco("HIRecoSeedsRaw_r02");
       seedReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_RETOWER,
                                             "TOWERINFO_CALIB"));
       seedReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO,
                                             "TOWERINFO_CALIB"));
       seedReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO,
                                             "TOWERINFO_CALIB"));
-      seedReco->add_algo(detail::fjAlgo(0.2f), "AntiKt_TowerInfo_HIRecoSeedsRaw_r02");
+
+      // *** KEEP THIS STRING EXACTLY – required by DetermineTowerBackground ***
+      seedReco->add_algo(detail::fjAlgo(0.2f),
+                         "AntiKt_TowerInfo_HIRecoSeedsRaw_r02");
+
       seedReco->set_algo_node("AntiKt_TowerInfo");
       seedReco->set_input_node("TOWERINFO_CALIB");
-      seedReco->Verbosity(0);
+      seedReco->Verbosity(vLvl);
       se->registerSubsystem(seedReco);
 
-      // ── (iii)  per‑tower background ρ from the raw‑seed jets ───────────
-      auto* dtb = new DetermineTowerBackground();
-      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub1");
-      dtb->SetSeedType(0);
-      dtb->SetSeedJetD(2 /*ΔR = 0.2*/);
+      //–– (iii) ρ estimate from raw‑seed jets –––––––––––––––––––––––––––––
+      banner("(iii) Estimating UE density ρ → TowerInfoBackground_Sub2 …");
+      auto *dtb = new DetermineTowerBackground("DetTowerBkg_Sub2");
+      dtb->SetBackgroundOutputName("TowerInfoBackground_Sub2"); // matches SubtractTowers
+      dtb->SetSeedType(0);         // use jets from step (ii)
+      dtb->SetSeedJetD(2);         // R = 0.2
       dtb->set_towerinfo(true);
       dtb->set_towerNodePrefix("TOWERINFO_CALIB");
+      dtb->Verbosity(vLvl);
       se->registerSubsystem(dtb);
 
-      // ── (iv)  subtract towers event‑by‑event ───────────────────────────
-      auto* st = new SubtractTowers();
+      //–– (iv) Tower‑by‑tower subtraction (produces *_SUB1 containers) ––––
+      banner("(iv) Subtracting UE from towers (creates *_SUB1) …");
+      auto *st = new SubtractTowers("SubtractTowers_Sub1");
       st->set_towerinfo(true);
       st->set_towerNodePrefix("TOWERINFO_CALIB");
+      st->Verbosity(vLvl);
       se->registerSubsystem(st);
 
-//      // ── (v)  jet reco on *subtracted* towers – names must match DTB ────
-//      auto* subReco = new JetReco();
-//
-//      subReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_SUB1,
-//                                           "TOWERINFO_CALIB"));
-//      subReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO_SUB1,
-//                                           "TOWERINFO_CALIB"));
-//      subReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO_SUB1,
-//                                           "TOWERINFO_CALIB"));
-//      subReco  ->Verbosity(1);
-//      subReco->add_algo(detail::fjAlgo(0.2f), "HIRecoSeedsSub_r02");
-//      subReco->set_algo_node("AntiKt_TowerInfo");   // ➜ nodes:
-//                                                    //   AntiKt_TowerInfo_HIRecoSeedsSub_r0X
-//      subReco->set_input_node("TOWER");
-//      subReco->Verbosity(verbose ? 1 : 0);
-//      se->registerSubsystem(subReco);
+      //–– (v) Anti‑kT jets on UE‑subtracted towers ––––––––––––––––––––––––
+      banner("(v) Reconstructing jets on UE‑subtracted towers …");
+      auto *subReco = new JetReco("HIRecoSeedsSub_r02");
+      subReco->add_input(new TowerJetInput(Jet::CEMC_TOWERINFO_SUB1,
+                                           "TOWERINFO_CALIB"));
+      subReco->add_input(new TowerJetInput(Jet::HCALIN_TOWERINFO_SUB1,
+                                           "TOWERINFO_CALIB"));
+      subReco->add_input(new TowerJetInput(Jet::HCALOUT_TOWERINFO_SUB1,
+                                           "TOWERINFO_CALIB"));
 
-//      // ── (vi)  copy jet four‑vectors & subtract residual background ─────
-//      auto* casj = new CopyAndSubtractJets();
-//      casj->set_towerinfo(true);
-//      casj->Verbosity(3);
-//      casj->set_towerNodePrefix("TOWERINFO_CALIB");
-//      se->registerSubsystem(casj);
-  }
+      // *** KEEP THIS STRING EXACTLY – required by CopyAndSubtractJets etc. ***
+      subReco->add_algo(detail::fjAlgo(0.2f),
+                        "AntiKt_TowerInfo_HIRecoSeedsSub_r02");
 
+      subReco->set_algo_node("AntiKt_TowerInfo");
+      subReco->set_input_node("TOWER");
+      subReco->Verbosity(vLvl);
+      se->registerSubsystem(subReco);
+
+      //–– (vi) Copy jet 4‑vectors & subtract residual background ––––––––––
+      banner("(vi) Copying jets and subtracting residual background (ρ·A) …");
+      auto *casj = new CopyAndSubtractJets("CopyAndSubtractJets_r02");
+      casj->set_towerinfo(true);
+      casj->set_towerNodePrefix("TOWERINFO_CALIB");
+      casj->Verbosity(3);               // extra diagnostic output
+      se->registerSubsystem(casj);
+    }
+
+    
   // 3e) Run‑information helper (optional but handy)
   auto* trigInfo = new TriggerRunInfoReco();
   trigInfo->Verbosity(verbose ? 1 : 0);

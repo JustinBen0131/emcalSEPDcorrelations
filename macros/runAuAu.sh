@@ -2,240 +2,192 @@
 ##############################################################################
 #  runAuAu.sh  –  single‑entry driver for the Run‑24/25 Au+Au QA macro
 #
-#  SUPPORTED INVOCATIONS
-#  ───────────────────────────────────────────────────────────────────────────
-#  DESKTOP  (macOS / personal laptop)
-#  ───────────────────────────────────────────────────────────────────────────
-#    ./runAuAu.sh [qa_list]                     # full pass over all runs
-#    ./runAuAu.sh testRun [qa_list]             # first run only
-#    ./runAuAu.sh testCombined <N> [qa_list]    # top‑N runs, then hadd+QA
-#    ./runAuAu.sh runFromCurrentCombined        # *just* reruns QA on the
-#                                               #   already‑existing hadd file
+#  ── Local laptop  ──────────────────────────────────────────────────────────
+#     ./runAuAu.sh [qa_list]                  # analyse all runs
+#     ./runAuAu.sh testRun [qa_list]          # first run only
+#     ./runAuAu.sh testCombined <N> [qa_list] # top‑N runs, then hadd+QA
+#     ./runAuAu.sh runFromCurrentCombined     # QA on existing hadd file
 #
-#  SPHENIX ANALYSIS NODES (scratch area ↔ Condor)
-#  ───────────────────────────────────────────────────────────────────────────
-#    ./runAuAu.sh fromSPHENIXnode condorTest    # 1 Condor job (smoke test)
-#    ./runAuAu.sh fromSPHENIXnode condor        # one Condor job per run,
-#                                               # then automatic hadd+QA
+#  ── sPHENIX analysis nodes  ────────────────────────────────────────────────
+#     ./runAuAu.sh fromSPHENIXnode condorTest # submit one job (smoke test)
+#     ./runAuAu.sh fromSPHENIXnode condor     # full DAG – one job per run
 #
-#  PATH POLICY
-#  ───────────────────────────────────────────────────────────────────────────
-#    • Environment variable RUN_LOCATION is set automatically:
-#        local    → $HOME/Desktop/… tree
-#        sphenix  → /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations
-#    • Those paths are *immutable* – edit only in the C++ macro if required.
+#  ENVIRONMENT
+#     RUN_LOCATION is set automatically:
+#         local    → $HOME/Desktop/… tree
+#         sphenix  → /sphenix/u/<user>/scratch/emcalSEPDcorrelations
 #
-#  LOG / STDOUT / STDERR DESTINATION (Condor mode)
-#    /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/log
-#    /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/stdout
-#    /sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/error
-#
-#  All other behaviour (QA filtering via QA_ONLY, verbosity via ‑v or
-#  VERBOSE=1, cleaning rules, etc.) remains unchanged.
+#  LOG / STDOUT / STDERR (Condor)
+#     /scratch/emcalSEPDcorrelations/{log|stdout|error}
 ##############################################################################
 set -euo pipefail
 
-macro="analyzeRun24or25auau.cpp"         # C++ macro to build/run
-
 # ────────────────────────────────────────────────────────────────────────────
-# 0.  Global verbosity flag (CLI --verbose | -v  or  VERBOSE=1 env var)
+# 0.  Global flags
 # ────────────────────────────────────────────────────────────────────────────
+macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
 verbose="false"
 clean_output="true"
+
 if [[ "${VERBOSE:-0}" == 1 ]]; then verbose="true"; fi
 if [[ ${1:-} == "--verbose" || ${1:-} == "-v" ]]; then
-    verbose="true"; shift         # drop the flag from $@
+    verbose="true"; shift
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# 1.  MODE PARSER  (empty | testRun | testCombined <N>)
+# 1.  MODE PARSER
 # ────────────────────────────────────────────────────────────────────────────
 mode="${1:-}"
-test_arg="false"     # C++ parm #1
-sample_arg="-1"      # C++ parm #2
+test_arg="false"        # C++ parameter #1
+sample_arg="-1"         # C++ parameter #2
 
 case "${mode}" in
-  "") ;;                                        # desktop – full suite
-  fromLocalNode)                               # explicit alias; keeps default paths
-        export RUN_LOCATION=local
-        shift 1
-        ;;
-  fromSPHENIXnode)                             # ⇢ Condor launcher (all runs)
-        export RUN_LOCATION=sphenix
-        mode="condor"                          # remember for later logic
-        shift 1
-        ;;
-  testRun)
-        test_arg="true"
-        shift 1
-        ;;
-  testCombined)
-        [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Usage: … testCombined <N>"; exit 1; }
-        sample_arg="$2"
-        shift 2
-        ;;
+  "") ;;                                           # desktop – full suite
+  fromLocalNode)      export RUN_LOCATION=local  ; shift ;;
+  fromSPHENIXnode)    export RUN_LOCATION=sphenix; mode="condor"; shift ;;
+  testRun)            test_arg="true"            ; shift ;;
+  testCombined)       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] \
+                         || { echo "Usage: … testCombined <N>"; exit 1; }
+                      sample_arg="$2" ; shift 2 ;;
   runFromCurrentCombined)
-        export COMBINED_ONLY=1
-        clean_output="false"
-        shift 1
-        ;;
-  condorTest)                                  # submit *one* Condor job
-        export RUN_LOCATION=sphenix
-        mode="condorTest"
-        shift 1
-        ;;
-  condor)                                      # submit all Condor jobs
-        export RUN_LOCATION=sphenix
-        mode="condor"
-        shift 1
-        ;;
+                      export COMBINED_ONLY=1; clean_output="false"; shift ;;
+  condorTest)         export RUN_LOCATION=sphenix; mode="condorTest"; shift ;;
+  condor)             export RUN_LOCATION=sphenix; mode="condor"    ; shift ;;
   *) ;;
 esac
 
+# ────────────────────────────────────────────────────────────────────────────
+# 2.  Helper logger functions
+# ────────────────────────────────────────────────────────────────────────────
+clr_blu=$'\033[1;34m'; clr_red=$'\033[1;31m'; clr_end=$'\033[0m'
+note() { printf "${clr_blu}[INFO]${clr_end}  %s\n" "$*"; }
+warn() { printf "${clr_red}[WARN]${clr_end}  %s\n" "$*"; }
+die () { printf "${clr_red}[FATAL]${clr_end} %s\n" "$*" >&2; exit 2; }
 
-# ──────────────────────────────────────────────────────────────────────────
-#  Condor (and condorTest) submission
-# ──────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+# 3.  Condor submission pathway
+# ────────────────────────────────────────────────────────────────────────────
 if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
-    PROJECT_BASE="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations"
-    EXEC_WRAPPER="${PROJECT_BASE}/runAuAuExecutable.sh"
+    note "Starting Condor submission (${mode})"
+
+    PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
+    EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"
 
     SUBMIT_DIR="${PROJECT_BASE}/tmp_condor_submit"
-
-    LOG_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/log"
-    STDOUT_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/stdout"
-    STDERR_DIR="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/error"
+    LOG_DIR="${PROJECT_BASE}/log"
+    STDOUT_DIR="${PROJECT_BASE}/stdout"
+    STDERR_DIR="${PROJECT_BASE}/error"
 
     INPUT_DIR="${PROJECT_BASE}/output"
     OUTPUT_DIR="${PROJECT_BASE}/outputPlots"
 
-    # ── purge artefacts from any previous Condor campaign ──────────────────────
-    rm -rf  "${SUBMIT_DIR:?}/"*            2>/dev/null || true          # stale .sub / .dag
-    find    "${LOG_DIR}"    -type f -delete 2>/dev/null || true         # old .log files
-    find    "${STDOUT_DIR}" -type f -delete 2>/dev/null || true         # old .out files
-    find    "${STDERR_DIR}" -type f -delete 2>/dev/null || true         # old .err files
-    rm -rf  "${OUTPUT_DIR:?}"              2>/dev/null || true          # previous PNG/CSV tree
-
-    # ── recreate the cleaned directories ───────────────────────────────────────
-    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
-
+    [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
 
     mapfile -t roots < <(ls "${INPUT_DIR}"/output_*.root 2>/dev/null | sort)
-    [[ ${#roots[@]} -gt 0 ]] || { echo "[FATAL] no ROOT files in ${INPUT_DIR}"; exit 2; }
+    [[ ${#roots[@]} -gt 0 ]] || die "No ROOT files in ${INPUT_DIR}"
 
-    [[ "${mode}" == "condorTest" ]] && roots=( "${roots[0]}" )   # 1st run only
+    if [[ "${mode}" == "condorTest" ]]; then
+        note "condorTest → restricting to first run only"
+        roots=( "${roots[0]}" )
+    fi
 
-    dag="${SUBMIT_DIR}/runAuAu.dag"; >"${dag}"
+    note "Cleaning previous submission artefacts"
+    rm -rf "${SUBMIT_DIR:?}/"* "${OUTPUT_DIR:?}"        2>/dev/null || true
+    find  "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" \
+          -type f -delete                               2>/dev/null || true
+    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
+
+    dag="${SUBMIT_DIR}/runAuAu.dag"; : >"${dag}"
     jobIds=()
 
     for rf in "${roots[@]}"; do
-        bn=$(basename "${rf}")
-        run=${bn#output_}; run=${run%.root}
+        run="$(basename "${rf}" .root)"; run="${run#output_}"
         sub="${SUBMIT_DIR}/${run}.sub"
 
+        note "Queueing run ${run}"
+        note "   input  → ${rf}"
+        note "   output → ${OUTPUT_DIR}/${run}"
+
         cat >"${sub}" <<EOS
-universe      = vanilla
-executable    = ${EXEC_WRAPPER}
-arguments     = ${rf}  ${OUTPUT_DIR}/${run}
-output        = ${STDOUT_DIR}/${run}.out
-error         = ${STDERR_DIR}/${run}.err
-log           = ${LOG_DIR}/${run}.log
-request_memory= 4GB
-+JobFlavour   = "tomorrow"
+universe        = vanilla
+executable      = ${EXEC_WRAPPER}
+arguments       = ${rf}  ${OUTPUT_DIR}/${run}
+output          = ${STDOUT_DIR}/${run}.out
+error           = ${STDERR_DIR}/${run}.err
+log             = ${LOG_DIR}/${run}.log
+request_memory  = 4GB
++JobFlavour     = "tomorrow"
 queue
 EOS
         echo "JOB  J${run}  ${sub}" >>"${dag}"
         jobIds+=( "J${run}" )
     done
+    note "Built ${#jobIds[@]} submission files"
 
-    # ----- post‑processing (hadd + combined QA) ---------------------------
     haddSub="${SUBMIT_DIR}/haddAll.sub"
     cat >"${haddSub}" <<'EOS'
-universe      = vanilla
-executable    = /bin/bash
-arguments     = -c '
+universe        = vanilla
+executable      = /bin/bash
+arguments       = -c '
 set -euo pipefail
 export RUN_LOCATION=sphenix
-BASE=/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations
+BASE=/sphenix/u/${USER}/scratch/emcalSEPDcorrelations
 INPUT=${BASE}/output
 OUT=${BASE}/output/output_ALL_COMBINED.root
+echo "[HADD] → merging ROOT files into ${OUT}"
 hadd -f -k "${OUT}" "${INPUT}"/output_*.root
-root -l -b -q -e ".L ${BASE}/analyzeRun24or25auau.cpp+" \
-                -e "runOneQaPass(\"${OUT}\",\"${BASE}/outputPlots/Combined\")"'
-output        = ${STDOUT_DIR}/hadd.out
-error         = ${STDERR_DIR}/hadd.err
-log           = ${LOG_DIR}/hadd.log
-request_memory= 4GB
-+JobFlavour   = "tomorrow"
+echo "[HADD] → launching combined QA pass"
+root -l -b -q -e ".L ${BASE}/macros/analyzeRun24or25auau.cpp+" \
+               -e "runOneQaPass(\"${OUT}\",\"${BASE}/outputPlots/Combined\")"'
+output          = ${STDOUT_DIR}/hadd.out
+error           = ${STDERR_DIR}/hadd.err
+log             = ${LOG_DIR}/hadd.log
+request_memory  = 4GB
++JobFlavour     = "tomorrow"
 queue
 EOS
+    echo "JOB  HADD  ${haddSub}"          >> "${dag}"
+    echo "PARENT ${jobIds[*]} CHILD HADD" >> "${dag}"
 
-    echo "JOB  HADD  ${haddSub}"  >>"${dag}"
-    printf 'PARENT %s CHILD HADD\n' "${jobIds[@]}" >>"${dag}"
-
-    condor_submit_dag -update_submit 0 "${dag}"
-    echo "[OK] Condor DAG submitted."
+    note "Submitting DAG ( $((${#jobIds[@]}+1)) jobs total )"
+    condor_submit_dag "${dag}" && note "DAGMan accepted the workflow"
     exit 0
 fi
 
-
-# ------------------------------------------------------------------
-# Any remaining positional argument is treated as the QA module list
-# ------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 4.  Optional QA‑module filter on the command line
+# --------------------------------------------------------------------------
 if [[ $# -ge 1 ]]; then
-    export QA_ONLY="$1"          # e.g.  correlations,hcal
-    shift
+    export QA_ONLY="$1"; shift
 fi
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# 2.  Silence duplicate‑rpath warnings from Apple ld
-# ────────────────────────────────────────────────────────────────────────────
+# --------------------------------------------------------------------------
+# 5.  Desktop / interactive execution (unchanged, just more noise if -v)
+# --------------------------------------------------------------------------
 export LDFLAGS="${LDFLAGS:-} -Wl,-no_warn_duplicate_libraries"
-
-# ────────────────────────────────────────────────────────────────────────────
-# 3.  Build the ROOT command line
-#     • use ‑q only in non‑verbose mode
-# ────────────────────────────────────────────────────────────────────────────
 root_flags=(-l -b -q)
 
-# Define a dedicated build directory _once_ per run
 build_dir="$(cd "$(dirname "${macro}")" && pwd)/.aclic_build"
 mkdir -p "${build_dir}"
 
 root_cmd=(
   root "${root_flags[@]}"
-  -e "gSystem->SetBuildDir(\"${build_dir}\", kTRUE)"          # ← key line
+  -e "gSystem->SetBuildDir(\"${build_dir}\",kTRUE)"
   "${macro}+Ok(${test_arg},${sample_arg})"
 )
+[[ "${verbose}" == "true" ]] && note "+ ${root_cmd[*]}"
 
-
-# Optional: show the exact command we are about to run when verbose
-[[ "${verbose}" == "true" ]] && echo "+ ${root_cmd[*]}" >&2
-
-# ────────────────────────────────────────────────────────────────────────────
-# 3.5  Clean previous output *and* stale ACLiC artefacts
-# ────────────────────────────────────────────────────────────────────────────
 output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
 [[ "${RUN_LOCATION:-local}" == "local" ]] || clean_output="false"
 
-# ❶ purge old QA PNG / CSV output  (unless combined‑only run)
 if [[ "${clean_output}" == "true" && -d "${output_root}" ]]; then
-    echo "Cleaning old output under ${output_root}" >&2
+    note "Cleaning old local output under ${output_root}"
     rm -rf "${output_root:?}/"*
 fi
 
-# ❷ purge every ACLiC file that may linger from earlier builds
 macro_dir="$(cd "$(dirname "${macro}")" && pwd)"
 macro_base="$(basename "${macro%.*}")_cpp"
-
-echo "Removing stale ACLiC artefacts in ${macro_dir}" >&2
 find "${macro_dir}" -maxdepth 1 -type f -name "${macro_base}_ACLiC_*" -delete
-rm -f "${macro_dir}/${macro_base}.so" "${macro_dir}/${macro_base}.d"
+rm -f "${macro_dir}/${macro_base}".{so,d}
 
-# ────────────────────────────────────────────────────────────────────────────
-# 4.  Execute — filter only the duplicate-rpath warning
-# ────────────────────────────────────────────────────────────────────────────
-{
-    "${root_cmd[@]}"
-} 2>&1 | grep -vE '^ld: warning: duplicate -rpath .+ ignored$'
+"${root_cmd[@]}" 2>&1 | grep -vE '^ld: warning: duplicate -rpath .+ ignored$'
