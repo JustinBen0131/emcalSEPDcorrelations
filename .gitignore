@@ -1,3 +1,4 @@
 # Analysis artefacts – never push these
+output/
 outputPlots/
 input/

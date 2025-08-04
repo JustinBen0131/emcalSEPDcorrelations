@@ -62,11 +62,10 @@ class PHCompositeNode;
 class emcal_sepdCorrelator : public SubsysReco
 {
  public:
-    static constexpr std::array<std::pair<const char*, const char*>, 1> kJetRadii {{
+  static constexpr std::array<std::pair<const char*, const char*>, 2> kJetRadii {{
             {"r02", "AntiKt_TowerInfo_HIRecoSeedsSub_r02"},
             {"r04", "AntiKt_TowerInfo_HIRecoSeedsSub_r04"}
     }};
-      
   // ---------- construction / destruction ----------------------------------
   explicit emcal_sepdCorrelator(const std::string& out = "caloTreeData.root");
   ~emcal_sepdCorrelator() override;
