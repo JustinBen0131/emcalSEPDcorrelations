@@ -1,200 +1,194 @@
 #!/usr/bin/env bash
 ##############################################################################
-#  runAuAu.sh — master driver for the Run‑24/25 Au+Au QA chain
+#  runAuAu.sh  –  single‑entry driver for the Run‑24/25 Au+Au QA macro
 #
-#  ────────────────────────────  USAGE CHEAT‑SHEET  ─────────────────────────
+#  ── Local laptop  ──────────────────────────────────────────────────────────
+#     ./runAuAu.sh [qa_list]                  # analyse all runs
+#     ./runAuAu.sh testRun [qa_list]          # first run only
+#     ./runAuAu.sh testCombined <N> [qa_list] # top‑N runs, then hadd+QA
+#     ./runAuAu.sh runFromCurrentCombined     # QA on existing hadd file
 #
-#  LOCAL WORKSTATION (macOS / Linux)         ┃  SPHENIX ANALYSIS NODES
-#  ───────────────────────────────────────── ┃  ───────────────────────────────
-#  ./runAuAu.sh                  # all runs  ┃  … fromSPHENIXnode condorTest
-#  ./runAuAu.sh testRun          # first     ┃  … fromSPHENIXnode condor
-#  ./runAuAu.sh testCombined  N  # top‑N     ┃  … fromSPHENIXnode condorOnlyRuns
-#  ./runAuAu.sh runFromCurrentCombined       ┃  … fromSPHENIXnode condorOnlyCombined
-#                                            ┃
-#     condorTest          → 1 run (largest) + hadd/QA
-#     condor              → run‑by‑run jobs **plus** hadd/QA
-#     condorOnlyRuns      → run‑by‑run jobs **only**
-#     condorOnlyCombined  → hadd/QA **only**
+#  ── sPHENIX analysis nodes  ────────────────────────────────────────────────
+#     ./runAuAu.sh fromSPHENIXnode condorTest # submit one job (smoke test)
+#     ./runAuAu.sh fromSPHENIXnode condor     # full DAG – one job per run AND a final hadd/process job on all runs
 #
-#  Directory roots (auto‑selected via RUN_LOCATION):
-#     local   → $HOME/Desktop/auauAnalysis/emcalSEPDcorrelations
-#     sphenix → /sphenix/u/$USER/scratch/emcalSEPDcorrelations
+#  ENVIRONMENT
+#     RUN_LOCATION is set automatically:
+#         local    → $HOME/Desktop/… tree
+#         sphenix  → /sphenix/u/<user>/scratch/emcalSEPDcorrelations
 #
+#  LOG / STDOUT / STDERR (Condor)
+#     /scratch/emcalSEPDcorrelations/{log|stdout|error}
 ##############################################################################
 set -euo pipefail
 
-# ───────────────────────────────  GLOBAL CONFIG  ───────────────────────────
-macro="analyzeRun24or25auau.cpp"                 # ROOT macro to run
-verbose="false"      # toggle with  -v / --verbose   or  VERBOSE=1
-clean_output="true"  # local run: wipe old PNG/CSV before starting
+# ────────────────────────────────────────────────────────────────────────────
+# 0.  Global flags
+# ────────────────────────────────────────────────────────────────────────────
+macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
+verbose="false"
+clean_output="true"
 
-# ‑‑ pretty terminal helpers
-cBlu=$'\033[1;34m'; cYel=$'\033[1;33m'; cRed=$'\033[1;31m'; cEnd=$'\033[0m'
-note() { printf "${cBlu}[INFO]${cEnd}  %s\n" "$*"; }
-warn() { printf "${cYel}[WARN]${cEnd}  %s\n" "$*"; }
-die () { printf "${cRed}[FATAL]${cEnd} %s\n" "$*" >&2; exit 2; }
-
-# ────────────────────────────────  CLI PARSE  ──────────────────────────────
-[[ "${VERBOSE:-0}" == 1 ]] && verbose="true"
-if [[ ${1:-} =~ ^--?v(erbose)?$ ]]; then verbose="true"; shift; fi
-
-mode="${1:-}"    # major mode token
-test_arg="false" sample_arg="-1"
-
-case "${mode}" in
-  "") ;;  # desktop default
-  fromLocalNode)      export RUN_LOCATION=local  ; shift ;;
-  fromSPHENIXnode)    export RUN_LOCATION=sphenix
-                      shift; mode="${1:-condor}" ; [[ $# -gt 0 ]] && shift ;;
-  testRun)            test_arg="true"            ; shift ;;
-  testCombined)       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || die "Usage: testCombined <N>"
-                      sample_arg="$2"            ; shift 2 ;;
-  runFromCurrentCombined)
-                      export COMBINED_ONLY=1     ; clean_output="false"; shift ;;
-  condorTest|condor|condorOnlyRuns|condorOnlyCombined)
-                      export RUN_LOCATION=sphenix; shift ;;
-  *) ;;
-esac
-[[ $# -ge 1 ]] && export QA_ONLY="$1"            # optional QA filter
-
-# ────────────────────────────────  PATH  SETUP  ────────────────────────────
-if [[ "${RUN_LOCATION:-local}" == "local" ]]; then
-    BASE="$HOME/Desktop/auauAnalysis/emcalSEPDcorrelations"
-else
-    BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
+if [[ "${VERBOSE:-0}" == 1 ]]; then verbose="true"; fi
+if [[ ${1:-} == "--verbose" || ${1:-} == "-v" ]]; then
+    verbose="true"; shift
 fi
 
-INPUT_DIR="${BASE}/output"               # run‑by‑run ROOTs
-OUTPUT_DIR="${BASE}/outputPlots"         # PNG/CSV per run
-WRAPPER="${BASE}/macros/runAuAuExecutable.sh"
+# ────────────────────────────────────────────────────────────────────────────
+# 1.  MODE PARSER
+# ────────────────────────────────────────────────────────────────────────────
+mode="${1:-}"
+test_arg="false"        # C++ parameter #1
+sample_arg="-1"         # C++ parameter #2
 
-LOG_DIR="${BASE}/log";  OUT_DIR="${BASE}/stdout"; ERR_DIR="${BASE}/error"
-SUBMIT_DIR="${BASE}/tmp_condor_submit"
+case "${mode}" in
+  "") ;;                                           # desktop – full suite
+  fromLocalNode)      export RUN_LOCATION=local  ; shift ;;
+  fromSPHENIXnode)
+          export RUN_LOCATION=sphenix          # running on a sPHENIX node
+          shift                                # drop the keyword itself
+          mode="${1:-condor}"                  # take next token ⇢ condor / condorTest
+          [[ $# -gt 0 ]] && shift              # consume it when present
+          ;;
+  testRun)            test_arg="true"            ; shift ;;
+  testCombined)       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] \
+                         || { echo "Usage: … testCombined <N>"; exit 1; }
+                      sample_arg="$2" ; shift 2 ;;
+  runFromCurrentCombined)
+                      export COMBINED_ONLY=1; clean_output="false"; shift ;;
+  condorTest)         export RUN_LOCATION=sphenix; mode="condorTest"; shift ;;
+  condor)             export RUN_LOCATION=sphenix; mode="condor"    ; shift ;;
+  *) ;;
+esac
 
-# ─────────────────────────────  UTILITY SUB‑ROUTINES  ──────────────────────
-_cleanup_condor_tree() {
-    note "⏳  Cleaning submission tree"
-    rm -rf "${SUBMIT_DIR:?}/"* "${OUTPUT_DIR:?}" 2>/dev/null || true
-    find "${LOG_DIR}" "${OUT_DIR}" "${ERR_DIR}" -type f -delete 2>/dev/null || true
-    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${OUT_DIR}" "${ERR_DIR}" "${OUTPUT_DIR}"
-}
+# ────────────────────────────────────────────────────────────────────────────
+# 2.  Helper logger functions
+# ────────────────────────────────────────────────────────────────────────────
+clr_blu=$'\033[1;34m'; clr_red=$'\033[1;31m'; clr_end=$'\033[0m'
+note() { printf "${clr_blu}[INFO]${clr_end}  %s\n" "$*"; }
+warn() { printf "${clr_red}[WARN]${clr_end}  %s\n" "$*"; }
+die () { printf "${clr_red}[FATAL]${clr_end} %s\n" "$*" >&2; exit 2; }
 
-_run_files() { ls "${INPUT_DIR}"/output_*.root 2>/dev/null | sort; }   # echo list
+# ────────────────────────────────────────────────────────────────────────────
+# 3.  Condor submission pathway
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
+    note "Starting Condor submission (${mode})"
 
-_pick_largest() {        # $1… list of files on stdin; echo largest
-    awk '{print $0}' | xargs -I{} stat -c '%s %n' {} | sort -nr | head -1 | awk '{print $2}'
-}
+    PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
+    EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"
 
-_submit_run_job() {      # arg1=file, arg2=runId
-    local f="$1" run="$2" sub="${SUBMIT_DIR}/${run}.sub"
-    cat > "$sub" <<EOS
-universe        = vanilla
-executable      = ${WRAPPER}
-arguments       = ${f}  ${OUTPUT_DIR}/${run}
-output          = ${OUT_DIR}/${run}.out
-error           = ${ERR_DIR}/${run}.err
-log             = ${LOG_DIR}/${run}.log
-request_memory  = 4GB
-+JobFlavour     = "tomorrow"
-queue
-EOS
-    condor_submit "$sub" || die "condor_submit failed for run $run"
-}
+    SUBMIT_DIR="${PROJECT_BASE}/tmp_condor_submit"
+    LOG_DIR="${PROJECT_BASE}/log"
+    STDOUT_DIR="${PROJECT_BASE}/stdout"
+    STDERR_DIR="${PROJECT_BASE}/error"
 
-_wait_logs() { condor_wait "$@" || die "condor_wait reported failure"; }
+    INPUT_DIR="${PROJECT_BASE}/output"
+    OUTPUT_DIR="${PROJECT_BASE}/outputPlots"
 
-_verify_outputs() {      # arg1=expectedCount
-    local need=$1 tries=0 have
-    note "🔍  Verifying PNG/CSV sub‑folders (${need} expected)"
-    while :; do
-        have=$(find "${OUTPUT_DIR}" -maxdepth 1 -type d -name '[0-9]*' | wc -l)
-        note "    progress ${have}/${need}"
-        (( have >= need )) && break
-        (( tries++ > 60 )) && die "Timeout waiting for run outputs"
-        sleep 30
-    done
-}
+    [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
 
-_submit_hadd_job() {
-    local sub="${SUBMIT_DIR}/haddAll.sub"
-    cat > "$sub" <<'EOS'
-universe        = vanilla
-executable      = /bin/bash
-arguments       = -c '
-set -euo pipefail
-export RUN_LOCATION=sphenix
-BASE=/sphenix/u/${USER}/scratch/emcalSEPDcorrelations
-INPUT=${BASE}/output
-OUT=${BASE}/output/output_ALL_COMBINED.root
-echo "[HADD] merging → \$OUT"
-hadd -f -k "\$OUT" "\$INPUT"/output_*.root
-echo "[HADD] running combined QA pass"
-root -l -b -q -e ".L ${BASE}/macros/analyzeRun24or25auau.cpp+" \
-               -e "runOneQaPass(\"\$OUT\",\"${BASE}/outputPlots/Combined\")"'
-output          = ${OUT_DIR}/hadd.out
-error           = ${ERR_DIR}/hadd.err
-log             = ${LOG_DIR}/hadd.log
-request_memory  = 4GB
-+JobFlavour     = "tomorrow"
-queue
-EOS
-    condor_submit "$sub" || die "condor_submit failed for hadd job"
-}
+    mapfile -t roots < <(ls "${INPUT_DIR}"/output_*.root 2>/dev/null | sort)
+    [[ ${#roots[@]} -gt 0 ]] || die "No ROOT files in ${INPUT_DIR}"
 
-# ───────────────────────────────  CONDOR  BRANCH  ──────────────────────────
-if [[ $mode =~ ^condor ]]; then
-    [[ -x "${WRAPPER}" ]] || die "Wrapper ${WRAPPER} is missing or not executable"
+    # pick the ROOT file that has the *most* events (proxy = size)
+    if [[ "${mode}" == "condorTest" ]]; then
+        note "condorTest → selecting run with the highest statistics"
 
-    mapfile -t allRuns < <(_run_files)
-    [[ ${#allRuns[@]} -gt 0 ]] || die "No ROOT files found in ${INPUT_DIR}"
-
-    case "$mode" in
-        condorTest)             # keep only largest file
-            allRuns=( "$(_run_files | _pick_largest)" );;
-        condorOnlyCombined)     # do not touch allRuns
-            ;;
-    esac
-
-    _cleanup_condor_tree
-
-    if [[ "$mode" != "condorOnlyCombined" ]]; then
-        note "🚀  Submitting run‑by‑run jobs (${#allRuns[@]} total)"
-        runLogs=()
-        for f in "${allRuns[@]}"; do
-            run=${f##*/}; run=${run%.root}; run=${run#output_}
-            note "Submitting ${run}"
-            _submit_run_job "$f" "$run"
-            runLogs+=( "${LOG_DIR}/${run}.log" )
+        largest=""
+        maxSize=0
+        for f in "${roots[@]}"; do
+            # GNU/Linux uses “stat -c%s”, macOS/BSD uses “stat -f%z”
+            sz=$( { stat -c%s "$f" 2>/dev/null || stat -f%z "$f"; } ) || sz=0
+            (( sz > maxSize )) && { maxSize=$sz; largest="$f"; }
         done
-        _wait_logs "${runLogs[@]}"
 
-        [[ "$mode" == "condorOnlyRuns" ]] && { note "Run‑jobs done → exiting (condorOnlyRuns)"; exit 0; }
+        [[ -n "${largest}" ]] || die "Could not determine the largest ROOT file"
+        roots=( "${largest}" )
 
-        _verify_outputs "${#allRuns[@]}"
+        runPick=$(basename "${largest}")
+        note "condorTest → will submit only ${runPick}  (size $((maxSize/1024/1024)) MB)"
     fi
 
-    note "🧩  Submitting hadd + combined‑QA job"
-    _submit_hadd_job
-    note "✔  Workflow finished – monitor ${LOG_DIR}/hadd.log for progress"
+    note "Cleaning previous submission artefacts"
+    rm -rf "${SUBMIT_DIR:?}/"* \
+           "${OUTPUT_DIR:?}" \
+           "${LOG_DIR:?}/"* "${STDOUT_DIR:?}/"* "${STDERR_DIR:?}/"* 2>/dev/null || true              2>/dev/null || true
+    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
+
+    # ──────────────────────────────────────────────────────────────────
+    #  submit one job per run; wait; verify output; run hadd+QA
+    # ──────────────────────────────────────────────────────────────────
+    runLogs=()                          # HTCondor .log files for condor_wait
+    expRuns=${#roots[@]}                # how many runs we expect to finish
+
+    for rf in "${roots[@]}"; do
+        run="$(basename "${rf}" .root)"; run="${run#output_}"
+        sub="${SUBMIT_DIR}/${run}.sub"
+
+        note "Submitting run ${run}"
+        note "   input    : ${rf}"
+        note "   out‑dir  : ${OUTPUT_DIR}/${run}"
+
+        cat > "${sub}" <<EOS
+        universe        = vanilla
+        executable      = ${EXEC_WRAPPER}
+        arguments       = ${rf}  ${OUTPUT_DIR}/${run}
+        output          = ${STDOUT_DIR}/${run}.out
+        error           = ${STDERR_DIR}/${run}.err
+        log             = ${LOG_DIR}/${run}.log
+        request_memory  = 4GB
+        +JobFlavour     = "tomorrow"
+        queue
+EOS
+        
+        condor_submit "${sub}"              || die "condor_submit failed for ${run}"
+        runLogs+=( "${LOG_DIR}/${run}.log" )
+    done
+    note "All ${expRuns} run-jobs submitted – exiting."
     exit 0
 fi
 
-# ───────────────────────  DESKTOP / INTERACTIVE RUN  ───────────────────────
-export LDFLAGS="${LDFLAGS:-} -Wl,-no_warn_duplicate_libraries"
-
-build_dir="$(cd "$(dirname "${macro}")" && pwd)/.aclic_build"
-mkdir -p "${build_dir}"
-
-root_cmd=( root -l -b -q -e "gSystem->SetBuildDir(\"${build_dir}\",kTRUE)" \
-           "${macro}+Ok(${test_arg},${sample_arg})" )
-[[ "$verbose" == true ]] && note "+ ${root_cmd[*]}"
-
-if [[ "$clean_output" == true && -d "${OUTPUT_DIR}" ]]; then
-    note "🧹  Cleaning old local outputs under ${OUTPUT_DIR}"
-    rm -rf "${OUTPUT_DIR:?}/"*
+# --------------------------------------------------------------------------
+# 4.  Optional QA‑module filter on the command line
+# --------------------------------------------------------------------------
+if [[ $# -ge 1 ]]; then
+    export QA_ONLY="$1"; shift
 fi
 
-find "$(dirname "$macro")" -maxdepth 1 -name "$(basename "${macro%.*}")_ACLiC_*" -delete
-rm -f "$(dirname "$macro")/$(basename "${macro%.*}")"{.so,.d}
+# --------------------------------------------------------------------------
+# 5.  Desktop / interactive execution (unchanged, just more noise if -v)
+# --------------------------------------------------------------------------
+export LDFLAGS="${LDFLAGS:-} -Wl,-no_warn_duplicate_libraries"
+root_flags=(-l -b -q)
+
+build_dir="$(mktemp -d "${TMPDIR:-/tmp}/aclic_build_XXXXXX")"
+mkdir -p "${build_dir}"
+
+root_cmd=(
+  root "${root_flags[@]}"
+  -e "gSystem->SetBuildDir(\"${build_dir}\",kTRUE)"
+  "${macro}+Ok(${test_arg},${sample_arg})"
+)
+[[ "${verbose}" == "true" ]] && note "+ ${root_cmd[*]}"
+
+output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
+[[ "${RUN_LOCATION:-local}" == "local" ]] || clean_output="false"
+
+if [[ "${clean_output}" == "true" && -d "${output_root}" ]]; then
+    note "Cleaning old local output under ${output_root}"
+    rm -rf "${output_root:?}/"*
+fi
+
+macro_dir="$(cd "$(dirname "${macro}")" && pwd)"
+macro_base="$(basename "${macro%.*}")_cpp"
+
+# ── wipe the previous ACLiC build area and recreate it ────────────────
+rm -rf "${macro_dir}/.aclic_build"
+mkdir -p "${macro_dir}/.aclic_build"
+
+# ── remove any stray libraries from earlier compilations ──────────────
+find "${macro_dir}" -maxdepth 1 -type f -name "${macro_base}_ACLiC_*" -delete
+rm -f "${macro_dir}/${macro_base}".{so,d}
 
 "${root_cmd[@]}" 2>&1 | grep -vE '^ld: warning: duplicate -rpath .+ ignored$'

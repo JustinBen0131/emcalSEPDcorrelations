@@ -30,10 +30,10 @@
 #include <iomanip>
 #include <TEllipse.h>
 #include <ROOT/TProcessExecutor.hxx>
-#include <ROOT/TSequentialExecutor.hxx>    // defines ROOT::TSequentialExecutor
+#include <ROOT/TSequentialExecutor.hxx>
 #include <ROOT/TProcessExecutor.hxx>
-#include <Math/MinimizerOptions.h>         // defines ROOT::Math::MinimizerOptions
-#include <TLegend.h>                       // full definition of TLegend
+#include <Math/MinimizerOptions.h>
+#include <TLegend.h>
 #include <iostream>
 #include <TGraphErrors.h>
 #include <memory>
@@ -43,7 +43,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-#include <cstdint>   // uintptr_t cast
+#include <cstdint>
 #include <algorithm>
 #include <cmath>
 #include "sepdgeomGrid.h"
@@ -171,7 +171,7 @@ namespace term {
   constexpr const char* CLR_RED  = "\033[31m";
 }
 
-namespace log {
+namespace ulog {
   inline void banner(const string& m)
   {
     std::cout << "\n" << term::CLR_BOLD << term::CLR_CYAN
@@ -184,8 +184,6 @@ namespace log {
   inline void ok   (const string& m){ std::cout<<term::CLR_GRN <<m<<term::CLR_RST<<"\n"; }
   inline void warn (const string& m){ std::cout<<term::CLR_YEL <<m<<term::CLR_RST<<"\n"; }
   inline void err  (const string& m){ std::cerr<<term::CLR_RED <<m<<term::CLR_RST<<"\n"; }
-
-  // new ultra‑light trace channel
   inline void trace(const std::string& m)
   {
     std::cout << term::CLR_YEL << "[TRACE] " << m << term::CLR_RST << "\n";
@@ -290,13 +288,13 @@ static inline int binAt(const TH1* h, double x)
 // ╚══════════════════════════════════════════════╝
 void save1D(TH1* h,const fs::path& p)
 {
-  log::trace("save1D → " + p.string());
+  ulog::trace("save1D → " + p.string());
   TCanvas c; h->SetStats(0); h->Draw();
   ensure_dir(p.parent_path()); c.SaveAs(p.string().c_str());
 }
 void save2D(TH2* h,const fs::path& p,const char* opt="COLZ")
 {
-  log::trace("save2D → " + p.string());
+  ulog::trace("save2D → " + p.string());
   TCanvas c; h->SetStats(0); h->Draw(opt);
   ensure_dir(p.parent_path()); c.SaveAs(p.string().c_str());
 }
@@ -3378,7 +3376,7 @@ class HcalQA : public QA
           }
       }
 
-      log::trace("HcalQA  → processing \"" + n +
+      ulog::trace("HcalQA  → processing \"" + n +
                "\"  slice=" + slice +
                (isMap ? "  (map)" : "  (scalar)"));
 
@@ -3527,10 +3525,10 @@ class HcalQA : public QA
 
           c.Modified(); c.Update();        // register all new primitives
           c.SaveAs(outPng.string().c_str());
-          log::trace("HcalQA  → wrote " + outPng.string());
+          ulog::trace("HcalQA  → wrote " + outPng.string());
       }
       catch (const std::exception& ex) {
-          log::warn(std::string("HcalQA  WARN  failed to save panel for \"")
+          ulog::warn(std::string("HcalQA  WARN  failed to save panel for \"")
                     + src->GetName() + "\": " + ex.what());
       }
     };
@@ -3576,7 +3574,7 @@ class HcalQA : public QA
           if (isO) p.o.reset( cloneDetach(static_cast<TH2*>(o)) );
       }
       catch (const std::exception& ex) {
-          log::warn("HcalQA  WARN  clone failed for \"" + n + "\": " + ex.what());
+          ulog::warn("HcalQA  WARN  clone failed for \"" + n + "\": " + ex.what());
           return true;
       }
 
@@ -3634,7 +3632,7 @@ void HcalQA::writeMissingBinReport(const fs::path& txtPath)
     ensure_dir(txtPath.parent_path());
     std::ofstream rep(txtPath);
     if (!rep) {
-        log::warn("HcalQA  WARN  cannot open " + txtPath.string() + " for writing");
+        ulog::warn("HcalQA  WARN  cannot open " + txtPath.string() + " for writing");
         return;
     }
 
@@ -3646,7 +3644,7 @@ void HcalQA::writeMissingBinReport(const fs::path& txtPath)
             << r.phiMin << '-' << r.phiMax << '\t'
             << r.etaMin << '-' << r.etaMax << '\n';
 
-    log::info("HcalQA  → wrote missing‑bin report to " + txtPath.string());
+    ulog::info("HcalQA  → wrote missing‑bin report to " + txtPath.string());
 }
 
 
@@ -3660,11 +3658,11 @@ class sEPDotherQA : public QA
 
     bool process(TObject* o) override
     {
-      if (!o) { log::err("[sEPDotherQA] nullptr TObject – skip"); return false; }
+      if (!o) { ulog::err("[sEPDotherQA] nullptr TObject – skip"); return false; }
       if (!o->InheritsFrom(TH1::Class())) return false;
 
       const std::string n = o->GetName();
-      log::trace("[sEPDotherQA] Inspecting \"" + n + "\"");
+      ulog::trace("[sEPDotherQA] Inspecting \"" + n + "\"");
 
       static const std::vector<std::string> keys = {
           /* event‑plane QA – now explicit South & North histograms */
@@ -3690,7 +3688,7 @@ class sEPDotherQA : public QA
       fs::path out = cPath(root, sliceKey(n), subdir) / (n + ".png");
       try { ensure_dir(out.parent_path()); }
       catch (const std::exception& e) {
-        log::err("[sEPDotherQA] mkdir failed for \"" +
+        ulog::err("[sEPDotherQA] mkdir failed for \"" +
                  out.parent_path().string() + "\": " + e.what());
         return false;
       }
@@ -3809,7 +3807,7 @@ class sEPDotherQA : public QA
                          / ("sEPD_RingQA_" + slice + "_" + trigger + ".png");
             ensure_dir(dst.parent_path());
             c.SaveAs(dst.string().c_str());
-            log::ok("[sEPDotherQA] Saved combined tile QA → " + dst.string());
+            ulog::ok("[sEPDotherQA] Saved combined tile QA → " + dst.string());
 
             cache.erase(key);                               // free memory
             return true;
@@ -3821,9 +3819,9 @@ class sEPDotherQA : public QA
          * ----------------------------------------------------------------- */
         try {
           save1D(static_cast<TH1*>(o), out);
-          log::ok("[sEPDotherQA] Saved → " + out.string());
+          ulog::ok("[sEPDotherQA] Saved → " + out.string());
         } catch (const std::exception& e) {
-          log::err("[sEPDotherQA] save1D failed for \"" + n + "\": " + e.what());
+          ulog::err("[sEPDotherQA] save1D failed for \"" + n + "\": " + e.what());
           return false;
         }
         return true;
@@ -3846,7 +3844,7 @@ class NSDetectorQA : public QA
   bool process(TObject* o) override
   {
     if (!o) {
-      log::err("[NSDetectorQA] nullptr TObject received – skipping.");
+      ulog::err("[NSDetectorQA] nullptr TObject received – skipping.");
       return false;
     }
     if (!o->InheritsFrom(TH1::Class())) return false;
@@ -3856,7 +3854,7 @@ class NSDetectorQA : public QA
 
     const std::string slice = sliceKey(hName);
     const bool south = hName.find("_South_") != std::string::npos;
-    log::trace("[NSDetectorQA] " + std::string(south ? "South" : "North") +
+    ulog::trace("[NSDetectorQA] " + std::string(south ? "South" : "North") +
                " arm histogram \"" + hName + "\" accepted.");
 
     /* ------------------------------------------------------------------ *
@@ -3868,9 +3866,9 @@ class NSDetectorQA : public QA
       try {
         ensure_dir(out.parent_path());
         save1D(static_cast<TH1*>(o), out);
-        log::ok("[NSDetectorQA] Saved 1‑D histo → " + out.string());
+        ulog::ok("[NSDetectorQA] Saved 1‑D histo → " + out.string());
       } catch (const std::exception& e) {
-        log::err("[NSDetectorQA] Failed to save \"" + hName + "\": " + e.what());
+        ulog::err("[NSDetectorQA] Failed to save \"" + hName + "\": " + e.what());
         return false;
       }
       return true;
@@ -3884,7 +3882,7 @@ class NSDetectorQA : public QA
     // clone so the original can be deleted without affecting us
     TH2* hClone = static_cast<TH2*>(o->Clone());
     if (!hClone) {
-      log::err("[NSDetectorQA] Clone failed for \"" + hName + "\" – skipping.");
+      ulog::err("[NSDetectorQA] Clone failed for \"" + hName + "\" – skipping.");
       return false;
     }
     hClone->SetDirectory(nullptr);
@@ -3892,7 +3890,7 @@ class NSDetectorQA : public QA
 
     south ? mp.s = hClone : mp.n = hClone;
     if (!_cache.ready(trig + slice)) {
-      log::trace("[NSDetectorQA] Waiting for partner arm to arrive ("
+      ulog::trace("[NSDetectorQA] Waiting for partner arm to arrive ("
                  + slice + ").");
       return true;                         // partner not yet seen
     }
@@ -3986,7 +3984,7 @@ class NSDetectorQA : public QA
       }
       catch (const std::exception& e)
       {
-          log::err("[NSDetectorQA] Cannot create output dir \"" +
+          ulog::err("[NSDetectorQA] Cannot create output dir \"" +
                    png.parent_path().string() + "\": " + e.what());
           return false;
       }
@@ -4045,12 +4043,12 @@ class NSDetectorQA : public QA
                   const double dPhi   = 2.0 * TMath::Pi() / nPhi;
                   const double dR     = (rOuter - rInner) / nRing;
 
-                  log::trace("      sEPD polar view:");
-                  log::trace("         nPhi  = " + std::to_string(nPhi)  +
+                  ulog::trace("      sEPD polar view:");
+                  ulog::trace("         nPhi  = " + std::to_string(nPhi)  +
                              "  (Δφ = " + std::to_string(TMath::RadToDeg() * dPhi) + "°)");
-                  log::trace("         nRing = " + std::to_string(nRing) +
+                  ulog::trace("         nRing = " + std::to_string(nRing) +
                              "  (ΔR = " + std::to_string(dR) + " cm)");
-                  log::trace("         rInner = " + std::to_string(rInner) + " cm"
+                  ulog::trace("         rInner = " + std::to_string(rInner) + " cm"
                              "  |  rOuter = " + std::to_string(rOuter) + " cm");
 
                   //--------------------------------------------------------------------
@@ -4191,10 +4189,10 @@ class NSDetectorQA : public QA
                   //--------------------------------------------------------------------
                   if (auto* c = gPad->GetCanvas())
                   {
-                      log::trace("         canvas  WxH = "
+                      ulog::trace("         canvas  WxH = "
                                  + std::to_string(c->GetWw()) + " × "
                                  + std::to_string(c->GetWh()) + " px");
-                      log::trace("         pad      WxH = "
+                      ulog::trace("         pad      WxH = "
                                  + std::to_string(gPad->GetWw()) + " × "
                                  + std::to_string(gPad->GetWh()) + " px");
                   }
@@ -4226,11 +4224,11 @@ class NSDetectorQA : public QA
           c.cd(2); drawPad(in.n, DERIVED::titleNorth, true );
 
           c.SaveAs(png.string().c_str());
-          log::ok("[NSDetectorQA] Combined S/N map saved → " + png.string());
+          ulog::ok("[NSDetectorQA] Combined S/N map saved → " + png.string());
       }
       catch (const std::exception& e)
       {
-          log::err("[NSDetectorQA] Error while drawing/saving \"" +
+          ulog::err("[NSDetectorQA] Error while drawing/saving \"" +
                    png.string() + "\": " + e.what());
           return false;
       }
@@ -4774,13 +4772,13 @@ class JetQA : public QA
   static void log(Lvl level, const std::string& msg)
   {
         switch (level) {
-            case Lvl::DBG: ::log::trace(msg); break;
-            case Lvl::INF: ::log::info (msg); break;
-            case Lvl::WRN: ::log::warn (msg); break;
-            case Lvl::ERR: ::log::err  (msg); break;
+            case Lvl::DBG: ulog::trace(msg); break;
+            case Lvl::INF: ulog::info (msg); break;
+            case Lvl::WRN: ulog::warn (msg); break;
+            case Lvl::ERR: ulog::err  (msg); break;
         }
   }
-    
+
   // =================================================================
   // 1. Per‑histogram processing (called many times per file)
   // =================================================================
@@ -5047,17 +5045,17 @@ class JetQA : public QA
     // ------------------------------------------------------------------
     static std::string radiusTag(const std::string& hname)
     {
-      log::trace("[JetQA] radiusTag()  →  hname=\"" + hname + '"');
+      ulog::trace("[JetQA] radiusTag()  →  hname=\"" + hname + '"');
       try {
         std::smatch m;  std::regex re(R"(_(r[0-9]+|R[0-9]+)_)");
         if (std::regex_search(hname, m, re)) {
-          log::trace("[JetQA] radiusTag()  ←  \"" + m[1].str() + '"');
+          ulog::trace("[JetQA] radiusTag()  ←  \"" + m[1].str() + '"');
           return m[1].str();
         }
-        log::warn("[JetQA] radiusTag()  –  pattern not found in \"" + hname + '"');
+        ulog::warn("[JetQA] radiusTag()  –  pattern not found in \"" + hname + '"');
       }
       catch (const std::exception& ex) {
-        log::err(std::string("[JetQA] radiusTag() exception – ")+ex.what());
+        ulog::err(std::string("[JetQA] radiusTag() exception – ")+ex.what());
       }
       return "UnknownR";
     }
@@ -5067,8 +5065,8 @@ class JetQA : public QA
     // ------------------------------------------------------------------
     bool save1Dplot(TH1* h, const fs::path& dir, const std::string& hname)
     {
-      log::trace("[JetQA] save1Dplot() enter – " + hname);
-      if (!h) { log::err("[JetQA] save1Dplot() received nullptr"); return false; }
+      ulog::trace("[JetQA] save1Dplot() enter – " + hname);
+      if (!h) { ulog::err("[JetQA] save1Dplot() received nullptr"); return false; }
 
       try {
         ensure_dir(dir);
@@ -5086,11 +5084,11 @@ class JetQA : public QA
 
         const fs::path png = dir/(hname + ".png");
         c.SaveAs(png.string().c_str());
-        log::info("[JetQA] 1‑D plot saved → " + png.string());
+        ulog::info("[JetQA] 1‑D plot saved → " + png.string());
         return true;
       }
       catch (const std::exception& ex) {
-        log::err(std::string("[JetQA] save1Dplot() exception – ")+ex.what());
+        ulog::err(std::string("[JetQA] save1Dplot() exception – ")+ex.what());
         return false;
       }
     }
@@ -5098,8 +5096,8 @@ class JetQA : public QA
     // =============== 2‑D ==================================================
     bool handle2D(TH2* h, const fs::path& dir, const std::string& hname)
     {
-      log::trace("[JetQA] handle2D() enter – " + hname);
-      if (!h) { log::err("[JetQA] handle2D() nullptr"); return false; }
+      ulog::trace("[JetQA] handle2D() enter – " + hname);
+      if (!h) { ulog::err("[JetQA] handle2D() nullptr"); return false; }
 
       try {
         ensure_dir(dir);
@@ -5158,11 +5156,11 @@ class JetQA : public QA
 
         const fs::path png = dir/(hname + ".png");
         c.SaveAs(png.string().c_str());
-        log::info("[JetQA] 2‑D plot saved → " + png.string());
+        ulog::info("[JetQA] 2‑D plot saved → " + png.string());
         return true;
       }
       catch (const std::exception& ex) {
-        log::err(std::string("[JetQA] handle2D() exception – ")+ex.what());
+        ulog::err(std::string("[JetQA] handle2D() exception – ")+ex.what());
         return false;
       }
     }
@@ -5172,7 +5170,7 @@ class JetQA : public QA
     // ------------------------------------------------------------------
     static void saveJetQA2D(TH2* h, const fs::path& png)
     {
-        if (!h) { log::err("[JetQA] saveJetQA2D() nullptr"); return; }
+        if (!h) { ulog::err("[JetQA] saveJetQA2D() nullptr"); return; }
 
         try {
             ensure_dir(png.parent_path());
@@ -5213,15 +5211,15 @@ class JetQA : public QA
             c.SaveAs(png.string().c_str());
         }
         catch (const std::exception& ex) {
-            log::err(std::string("[JetQA] saveJetQA2D() exception – ")+ex.what());
+            ulog::err(std::string("[JetQA] saveJetQA2D() exception – ")+ex.what());
         }
     }
 
     // =============== 3‑D ==================================================
     bool handle3D(TH3* h3, const fs::path& dir, const std::string& hname)
     {
-      log::trace("[JetQA] handle3D() enter – " + hname);
-      if (!h3) { log::err("[JetQA] handle3D() nullptr"); return false; }
+      ulog::trace("[JetQA] handle3D() enter – " + hname);
+      if (!h3) { ulog::err("[JetQA] handle3D() nullptr"); return false; }
 
       try {
         ensure_dir(dir);
@@ -5246,7 +5244,7 @@ class JetQA : public QA
         return true;
       }
       catch (const std::exception& ex) {
-        log::err(std::string("[JetQA] handle3D() exception – ")+ex.what());
+        ulog::err(std::string("[JetQA] handle3D() exception – ")+ex.what());
         return false;
       }
     }
@@ -5256,8 +5254,8 @@ class JetQA : public QA
     // ------------------------------------------------------------------
     static void save3D(TH3* h, const fs::path& png)
     {
-      if (!h) { log::err("[JetQA] save3D() nullptr"); return; }
-      log::trace("[JetQA] save3D() → " + png.string());
+      if (!h) { ulog::err("[JetQA] save3D() nullptr"); return; }
+      ulog::trace("[JetQA] save3D() → " + png.string());
 
       try {
         ensure_dir(png.parent_path());
@@ -5337,7 +5335,7 @@ class JetQA : public QA
         c.SaveAs(png.string().c_str());
       }
       catch (const std::exception& ex) {
-        log::err(std::string("[JetQA] save3D() exception – ")+ex.what());
+        ulog::err(std::string("[JetQA] save3D() exception – ")+ex.what());
       }
     }
     
@@ -5349,15 +5347,15 @@ class JetQA : public QA
                                const char* axes,
                                const fs::path& png)
     {
-      if (!h3) { log::err("[JetQA] saveProjection() nullptr"); return; }
-      log::trace(std::string("[JetQA] saveProjection(")+axes+") → "+png.string());
+      if (!h3) { ulog::err("[JetQA] saveProjection() nullptr"); return; }
+      ulog::trace(std::string("[JetQA] saveProjection(")+axes+") → "+png.string());
 
       try {
         TH1* tmp = h3->Project3D(axes);                    // ROOT returns TH1*
         auto h2  = std::unique_ptr<TH2>(dynamic_cast<TH2*>(tmp));
 
         if (!h2) {
-          log::warn(std::string("[JetQA] projection '")+axes+
+          ulog::warn(std::string("[JetQA] projection '")+axes+
                     "' of '"+h3->GetName()+"' is not TH2 – skipped");
           delete tmp;
           return;
@@ -5404,7 +5402,7 @@ class JetQA : public QA
         saveJetQA2D(h2.get(), png);        // new helper that keeps the header text
       }
       catch (const std::exception& ex) {
-        log::err(std::string("[JetQA] saveProjection() exception – ")+ex.what());
+        ulog::err(std::string("[JetQA] saveProjection() exception – ")+ex.what());
       }
     }
 
@@ -6687,7 +6685,7 @@ struct _InitQaFilter_
             std::ostringstream o;
             o << "QA filter active → ";
             for (const auto& t : gQaFilter) o << t << ' ';
-            log::info(o.str());
+            ulog::info(o.str());
         }
     }
 } _initQaFilter_;
@@ -6698,8 +6696,8 @@ struct _InitQaFilter_
 std::unique_ptr<TFile> openInputFile(const std::string& file)
 {
     std::unique_ptr<TFile> in( TFile::Open(file.c_str(), "READ") );
-    if (!in || in->IsZombie()) { log::err("Cannot open " + file); return nullptr; }
-    log::ok("Input file opened");
+    if (!in || in->IsZombie()) { ulog::err("Cannot open " + file); return nullptr; }
+    ulog::ok("Input file opened");
     return in;
 }
 
@@ -6712,7 +6710,7 @@ CentList discoverAndReportSlices(TFile* in)
     {
         std::ostringstream o; o << "Centrality slices: ";
         for (auto& s : slices) o << s << "  ";
-        log::info(o.str());
+        ulog::info(o.str());
     }
     return slices;
 }
@@ -6724,7 +6722,7 @@ void catalogueHistograms(TFile*             in,
                          const std::string& outBase,
                          const std::string& inFile)
 {
-    log::banner("Pass 0 – Catalogue");
+    ulog::banner("Pass 0 – Catalogue");
 
     fs::path catTxt = fs::path(outBase) / "AllHistogramNames.txt";
     ensure_dir(catTxt.parent_path());
@@ -6742,7 +6740,7 @@ void catalogueHistograms(TFile*             in,
             cat << "[" << trg << "] " << kh->GetName() << "\n"; ++hCnt[trg];
         }
     }
-    log::ok("Histogram list written → " + catTxt.string());
+    ulog::ok("Histogram list written → " + catTxt.string());
 }
 
 /* ===================================================================
@@ -6760,7 +6758,7 @@ QaMaps runQaProduction(TFile*              in,
                        const std::string&  outBase,
                        const CentList&     slices)
 {
-    log::banner("Pass 1 – QA Production  (outBase = \"" + outBase + "\")");
+    ulog::banner("Pass 1 – QA Production  (outBase = \"" + outBase + "\")");
 
     //------------------------------------------------------------------
     // 0. CSV initialisation
@@ -6770,7 +6768,7 @@ QaMaps runQaProduction(TFile*              in,
 
     std::ofstream csv(csvPath);
     if (!csv) {
-        log::err("Cannot open " + csvPath.string() + " for writing – aborting runQaProduction()");
+        ulog::err("Cannot open " + csvPath.string() + " for writing – aborting runQaProduction()");
         return {};
     }
     csv << "trigger,E,Chi,Asym,pTlo,pThi,cent,"
@@ -6799,7 +6797,7 @@ QaMaps runQaProduction(TFile*              in,
         if (!kTriggersWanted.count(trg)) continue;
 
         const auto t0 = std::chrono::steady_clock::now();
-        log::banner("Trigger \"" + trg + "\" — analysis START");
+        ulog::banner("Trigger \"" + trg + "\" — analysis START");
 
         try
         {
@@ -6810,7 +6808,7 @@ QaMaps runQaProduction(TFile*              in,
                 static_cast<TDirectory*>(kd->ReadObj()));
 
             if (!trigDir || trigDir->IsZombie()) {
-                log::warn("  ↳ directory unreadable – skipping trigger \"" + trg + '"');
+                ulog::warn("  ↳ directory unreadable – skipping trigger \"" + trg + '"');
                 continue;
             }
 
@@ -6849,7 +6847,7 @@ QaMaps runQaProduction(TFile*              in,
             if (minimal)
             {
                 /* MB‑only folder  or  scaled counts = 0 */
-                log::trace("  ↳ scaled counts = 0 or minimal folder – writing to "
+                ulog::trace("  ↳ scaled counts = 0 or minimal folder – writing to "
                            + trgBase.string());
                 ensure_dir(trgBase / "triggerQA");
             }
@@ -6870,7 +6868,7 @@ QaMaps runQaProduction(TFile*              in,
                         ensure_dir(trgBase / sd);
                     }
                     catch (const std::exception& ex) {
-                        log::warn("  ↳ cannot create \"" +
+                        ulog::warn("  ↳ cannot create \"" +
                                   (trgBase / sd).string() +
                                   "\" – " + ex.what());
                     }
@@ -6901,7 +6899,7 @@ QaMaps runQaProduction(TFile*              in,
                 push("vn",    std::make_unique<VnPlotQA>(trg, trgBase, slices));
             }
 
-            log::trace("  ↳ instantiated "
+            ulog::trace("  ↳ instantiated "
                        + std::to_string(qa.size()) + " QA modules");
 
             //------------------------------------------------------------------
@@ -6942,7 +6940,7 @@ QaMaps runQaProduction(TFile*              in,
             const auto dt = std::chrono::duration<double>(
                                 std::chrono::steady_clock::now() - t0).count();
 
-            log::ok("Trigger \"" + trg + "\"  – done in "
+            ulog::ok("Trigger \"" + trg + "\"  – done in "
                     + std::to_string(dt).substr(0,5) + " s"
                     + "   |   used "
                     + std::to_string(maps.stat[trg].used) + "/"
@@ -6951,15 +6949,15 @@ QaMaps runQaProduction(TFile*              in,
         }
         catch (const std::exception& ex)
         {
-            log::err("‼  Fatal exception while processing trigger \""
+            ulog::err("‼  Fatal exception while processing trigger \""
                      + trg + "\": " + ex.what());
         }
-        log::banner("Trigger \"" + trg + "\" — analysis END");
+        ulog::banner("Trigger \"" + trg + "\" — analysis END");
     } // <- end trigger loop
 
 
     csv.close();
-    log::info("Pass 1 – QA Production finished, CSV written → " + csvPath.string());
+    ulog::info("Pass 1 – QA Production finished, CSV written → " + csvPath.string());
     return maps;  // ––––––––––––––––––––––––––––––––––––––––––––––––––
 }
 
@@ -6969,7 +6967,7 @@ QaMaps runQaProduction(TFile*              in,
  * =================================================================== */
 void printScaledTriggerSummary(const std::unordered_map<std::string,int>& runsActive)
 {
-    log::banner("Scaled‑trigger activity summary");
+    ulog::banner("Scaled‑trigger activity summary");
 
     std::size_t trigCol = 0;
     for (const auto& [t,_] : runsActive) trigCol = std::max(trigCol, t.size());
@@ -7005,7 +7003,7 @@ void printScaledTriggerSummary(const std::unordered_map<std::string,int>& runsAc
 void printMbCorrelationSummary(TFile* in,
                                const std::unordered_map<std::string,Cnt>& stat)
 {
-    log::banner("Trigger ↔ MB correlation");
+    ulog::banner("Trigger ↔ MB correlation");
 
     std::size_t trigW = 0;
     for (const auto& [t,_] : stat) trigW = std::max(trigW, t.size());
@@ -7092,7 +7090,7 @@ void printMbCorrelationSummary(TFile* in,
               << term::CLR_RST << "\n";
     printRule('=');
 
-    log::ok("All outputs under " + kOutputBase);
+    ulog::ok("All outputs under " + kOutputBase);
 }
 
 void printRunEventSummary()
@@ -7111,7 +7109,7 @@ void printRunEventSummary()
     std::sort(rows.begin(), rows.end(),
               [](auto a, auto b){ return a.first < b.first; });
 
-    log::banner("Run‑by‑run event statistics");
+    ulog::banner("Run‑by‑run event statistics");
     std::cout << CLR_BOLD
               << std::left  << std::setw(12) << "Run"
               << std::right << std::setw(15) << "Events"
@@ -7128,7 +7126,7 @@ void printRunEventSummary()
               << std::right << std::setw(15) << totalEv
               << CLR_RST << "\n\n";
 
-    log::ok("Runs analysed : " + std::to_string(rows.size()) +
+    ulog::ok("Runs analysed : " + std::to_string(rows.size()) +
             "   |   Total events : " + std::to_string(totalEv));
 }
 
@@ -7157,7 +7155,7 @@ void runOneQaPass(const std::string& inFile,
     kOutputBase = outBase;
     gStyle->SetOptStat(0);
 
-    log::banner("sPHENIX Run‑24 Au+Au QA – Enhanced Macro");
+    ulog::banner("sPHENIX Run‑24 Au+Au QA – Enhanced Macro");
 
     std::unique_ptr<TFile> in = openInputFile(kInputFile);
     if (!in) return;
@@ -7175,7 +7173,7 @@ static std::vector<fs::path> discoverInputRuns()
 {
     std::vector<fs::path> runFiles = listRunFiles(kInputDir);
     if (runFiles.empty())
-        log::err("No input files found in " + kInputDir.string());
+        ulog::err("No input files found in " + kInputDir.string());
     return runFiles;                        // calling code checks empty()
 }
 
@@ -7188,7 +7186,7 @@ static void selectTopNRuns(int                     nSample,
     struct RunStat { fs::path file; long long nEvt; std::string run; };
     std::vector<RunStat> ranked;   ranked.reserve(runFiles.size());
 
-    log::banner("Run pre‑scan – counting entries in h_vertexZ_<trigger>");
+    ulog::banner("Run pre‑scan – counting entries in h_vertexZ_<trigger>");
 
     for (const auto& f : runFiles)
     {
@@ -7199,7 +7197,7 @@ static void selectTopNRuns(int                     nSample,
 
         std::unique_ptr<TFile> tf( TFile::Open(f.c_str(), "READ") );
         if (!tf || tf->IsZombie()) {
-            log::warn("   ↳ " + runStr + "  – file unreadable, skipped");
+            ulog::warn("   ↳ " + runStr + "  – file unreadable, skipped");
             continue;
         }
 
@@ -7219,14 +7217,14 @@ static void selectTopNRuns(int                     nSample,
                               static_cast<long long>(h->GetEntries()));
         }
 
-        log::trace("   ↳ run " + runStr +
+        ulog::trace("   ↳ run " + runStr +
                    "   entries = " + std::to_string(bestInFile));
 
         if (bestInFile > 0) ranked.push_back( {f, bestInFile, runStr} );
     }
 
     if (ranked.empty()) {
-        log::err("No non‑empty runs found – aborting sampling.");
+        ulog::err("No non‑empty runs found – aborting sampling.");
         runFiles.clear();
         return;
     }
@@ -7234,7 +7232,7 @@ static void selectTopNRuns(int                     nSample,
     std::sort(ranked.begin(), ranked.end(),
               [](const RunStat& a, const RunStat& b){ return a.nEvt > b.nEvt; });
 
-    log::banner("Top‑run ranking (h_vertexZ entries)");
+    ulog::banner("Top‑run ranking (h_vertexZ entries)");
     std::cout << term::CLR_BOLD
               << std::left  << std::setw(6)  << "Rank"
               << std::setw(12) << "Run"
@@ -7252,7 +7250,7 @@ static void selectTopNRuns(int                     nSample,
     if (static_cast<int>(ranked.size()) > nSample)
         ranked.resize(nSample);
 
-    log::info("Selected " + std::to_string(ranked.size()) +
+    ulog::info("Selected " + std::to_string(ranked.size()) +
               " run(s) with the highest statistics for combined pass.");
 
     runFiles.clear();
@@ -7270,7 +7268,7 @@ static void processRunsSequentially(const std::vector<fs::path>& runFiles,
     if (testRun && runs.size() > 1) runs.resize(1);
 
     ROOT::TSequentialExecutor exec;
-    log::banner("Running " + std::to_string(runs.size()) +
+    ulog::banner("Running " + std::to_string(runs.size()) +
                 " runs sequentially (shared memory)");
 
     auto worker = [&](unsigned int idx)->int
@@ -7285,7 +7283,7 @@ static void processRunsSequentially(const std::vector<fs::path>& runFiles,
 
         const std::string outBase = (kOutputDir / run).string();
 
-        log::info(std::string("▶  (") +
+        ulog::info(std::string("▶  (") +
                   (idx + 1 < 10 ? " " : "") + std::to_string(idx + 1) + "/" +
                   std::to_string(runs.size()) + ")  Run " + run + "  –  start");
 
@@ -7294,7 +7292,7 @@ static void processRunsSequentially(const std::vector<fs::path>& runFiles,
         const auto dt = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t0).count();
 
-        log::ok(std::string("✓  (") +
+        ulog::ok(std::string("✓  (") +
                 (idx + 1 < 10 ? " " : "") + std::to_string(idx + 1) + "/" +
                 std::to_string(runs.size()) + ")  Run " + run +
                 "  –  done in " + std::to_string(dt).substr(0,5) + " s");
@@ -7323,7 +7321,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
 
         std::ifstream miss( sebTxt.string() );
         if (!miss) {
-            log::warn("MissingSEB.txt not found – merging all runs");
+            ulog::warn("MissingSEB.txt not found – merging all runs");
         } else {
             std::string line;
             while (std::getline(miss, line)) {
@@ -7367,7 +7365,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
         ensure_dir( sebPng.parent_path() );
         cSEB.SaveAs( sebPng.string().c_str() );
 
-        log::ok("Missing SEB distribution plot saved → " + sebPng.string());
+        ulog::ok("Missing SEB distribution plot saved → " + sebPng.string());
     }
 
 
@@ -7383,7 +7381,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     }
 
     /* 4 c. terminal summary */
-    log::banner("Missing SEB summary");
+    ulog::banner("Missing SEB summary");
     std::size_t nBad = badRunMap.size(), nBad1 = 0, nBadMul = 0;
     for (const auto& [_,v] : badRunMap) (v.size()==1 ? ++nBad1 : ++nBadMul);
 
@@ -7409,24 +7407,24 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
 
     /* 4 d. hadd */
     if (mergeFiles.size() < 2) {
-        log::warn("Skipping hadd – need ≥2 good runs, have "
+        ulog::warn("Skipping hadd – need ≥2 good runs, have "
                   + std::to_string(mergeFiles.size()));
         return;
     }
 
     const path combined = kInputDir / "output_ALL_COMBINED.root";
-    log::banner("Hadd – building " + combined.string());
+    ulog::banner("Hadd – building " + combined.string());
 
-    log::info("Files to be merged (" + std::to_string(mergeFiles.size()) + " total):");
+    ulog::info("Files to be merged (" + std::to_string(mergeFiles.size()) + " total):");
     std::uintmax_t totBytes = 0;
     for (const auto& f : mergeFiles) {
         const auto sz = fs::file_size(f);
         totBytes += sz;
-        log::info("   + " + f.filename().string() +
+        ulog::info("   + " + f.filename().string() +
                   "  (" + std::to_string(sz / 1'024'000) + " MB)");
     }
-    log::info("   ------------------------------------------------");
-    log::info("Accumulated input size : " +
+    ulog::info("   ------------------------------------------------");
+    ulog::info("Accumulated input size : " +
               std::to_string(totBytes / 1'024'000) + " MB");
 
     const auto t0Hadd = std::chrono::steady_clock::now();
@@ -7436,7 +7434,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     for (const auto& f : mergeFiles) merger.AddFile(f.c_str());
 
     if (!merger.Merge()) {
-        log::err("TFileMerger failed – combined QA skipped");
+        ulog::err("TFileMerger failed – combined QA skipped");
         return;
     }
 
@@ -7444,7 +7442,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
                            std::chrono::steady_clock::now() - t0Hadd).count();
     const auto outSize = fs::file_size(combined);
 
-    log::ok("Combined ROOT file created in " +
+    ulog::ok("Combined ROOT file created in " +
             std::to_string(dHadd).substr(0,5) + " s,  size " +
             std::to_string(outSize / 1'024'000) + " MB");
 
@@ -7461,10 +7459,10 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
     {
         fs::path combined = kInputDir / "output_ALL_COMBINED.root";
         if (!fs::exists(combined)) {
-            log::err("COMBINED_ONLY set but " + combined.string() + " not found");
+            ulog::err("COMBINED_ONLY set but " + combined.string() + " not found");
             return;
         }
-        log::banner("Combined‑only mode → " + combined.string());
+        ulog::banner("Combined‑only mode → " + combined.string());
         runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
         return;                                // skip per‑run processing
     }
@@ -7483,4 +7481,3 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
     /* 3. optional merge + re‑run on combined file ------------------ */
     mergeRunsAndReprocess(runFiles, testRun);
 }
-
