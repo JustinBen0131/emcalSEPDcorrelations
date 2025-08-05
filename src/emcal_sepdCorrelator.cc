@@ -899,8 +899,8 @@ void emcal_sepdCorrelator::bookJetQA(const std::string& trig, HistMap& H)
            ");E_{T} [GeV];Area;N_{const}").c_str(),
           nbEt, 0, etMax, nbA, 0, aMax, nbN, 0, nMax);
 
-      /* NEW ►  E_{T} × η × φ */
-      const int nbEta = 120;  const double etaMin = -6.0, etaMax = 6.0;
+      /* NEW ►  E_{T} × η × φ   — use barrel acceptance only */
+      const int nbEta = 22;   const double etaMin = -1.1, etaMax = 1.1;   // 0.1‑wide bins
       const int nbPhi = 128;  const double phiMin = -TMath::Pi(), phiMax =  TMath::Pi();
       H[base4 + "_" + trig] = new TH3F(
           (base4 + "_" + trig).c_str(),
@@ -2822,7 +2822,7 @@ int emcal_sepdCorrelator::doJetQA(PHCompositeNode*                topNode,
     /* ------------------------------------------------------------------ */
     /* 2.  Histogram fills  +  verbose geometry diagnostics               */
     /* ------------------------------------------------------------------ */
-    constexpr double etaMinDbg = -6.0, etaMaxDbg = 6.0;
+    constexpr double etaMinDbg = -1.1, etaMaxDbg = 1.1;
     constexpr double phiMinDbg = -M_PI, phiMaxDbg =  M_PI;
 
     for (const auto& [radKey, etMax] : maxEt)

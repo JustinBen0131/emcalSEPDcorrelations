@@ -179,12 +179,14 @@ namespace term {
 
 namespace ulog {
   inline void banner(const string& m)
-  {
-    std::cout << "\n" << term::CLR_BOLD << term::CLR_CYAN
-              << "══════════════════════════════════════════════════════════════\n"
-              << "  " << m << "\n"
-              << "══════════════════════════════════════════════════════════════"
-              << term::CLR_RST << "\n";
+    {
+        if (kVerbosity == 0) return;          /* fully silent mode */
+
+        std::cout << "\n" << term::CLR_BOLD << term::CLR_CYAN
+                  << "══════════════════════════════════════════════════════════════\n"
+                  << "  " << m << "\n"
+                  << "══════════════════════════════════════════════════════════════"
+                  << term::CLR_RST << "\n";
   }
   inline void info (const string& m){
         if (kVerbosity >= 1)
@@ -366,10 +368,16 @@ class Pi0QA : public QA
     static void log(Lvl l, const std::string& m)
     {
         static const char* tag[]{"DBG","INF","WRN","ERR"};
-        std::ostream& os = (l == Lvl::ERR) ? std::cerr : std::cout;
-        os << "[Pi0QA] " << tag[static_cast<int>(l)] << "  " << m << '\n';
-    }
+        const int code = static_cast<int>(l);
 
+        /* 0 = quiet, 1 = info, 2 = debug/trace */
+        if ( (code == 0 && kVerbosity < 2) ||   /* DBG  */
+             (code == 1 && kVerbosity < 1) )    /* INF  */
+            return;
+
+        std::ostream& os = (l == Lvl::ERR) ? std::cerr : std::cout;
+        os << "[Pi0QA] " << tag[code] << "  " << m << '\n';
+    }
  public:
     /* pT bins that appear in the file names – must match CutKey values */
     const std::vector<std::pair<float,float>> m_ptBins {
@@ -4935,7 +4943,6 @@ class JetQA : public QA
             if (hPtr && hPtr->Integral() > 0)
                 maxEtPerSlice[slice].reset(static_cast<TH1*>(hPtr->Clone()));
 
-
         //----------------------------------------------------------------
         // 2. Prepare output directory
         //----------------------------------------------------------------
@@ -5568,12 +5575,17 @@ class VnPlotQA : public QA
     
   enum class Lvl { DBG, INF, WRN, ERR };
   static void log(Lvl l, const std::string& m)
-  {
+    {
         static const char* tag[]{"DBG","INF","WRN","ERR"};
-        std::ostream& os = (l == Lvl::ERR) ? std::cerr : std::cout;
-        os << "[VnPlotQA] " << tag[static_cast<int>(l)] << "  " << m << '\n';
-  }
+        const int code = static_cast<int>(l);
 
+        if ( (code == 0 && kVerbosity < 2) ||   /* DBG */
+             (code == 1 && kVerbosity < 1) )    /* INF */
+            return;
+
+        std::ostream& os = (l == Lvl::ERR) ? std::cerr : std::cout;
+        os << "[VnPlotQA] " << tag[code] << "  " << m << '\n';
+  }
 
   // ─────────────────────────────── 1. cache every TProfile ──────────
   bool process(TObject* o) override
@@ -6240,8 +6252,14 @@ class TriggerQA : public QA
     static void log(Lvl l, const std::string& m)
     {
         static const char* tag[]{"DBG","INF","WRN","ERR"};
+        const int code = static_cast<int>(l);
+
+        if ( (code == 0 && kVerbosity < 2) ||   /* DBG */
+             (code == 1 && kVerbosity < 1) )    /* INF */
+            return;
+
         std::ostream& os = (l==Lvl::ERR) ? std::cerr : std::cout;
-        os << "[TriggerQA] " << tag[static_cast<int>(l)] << "  " << m << '\n';
+        os << "[TriggerQA] " << tag[code] << "  " << m << '\n';
     }
 
 public:
@@ -7470,20 +7488,35 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
 
 void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
 {
-    /* ── special mode: analyse existing combined file only ───────── */
+    /* ── special mode: “final‑only” – build fresh hadd, then run QA ── */
     const bool combinedOnly = (std::getenv("COMBINED_ONLY") != nullptr);
     if (combinedOnly)
     {
-        fs::path combined = kInputDir / "output_ALL_COMBINED.root";
-        if (!fs::exists(combined)) {
-            ulog::err("COMBINED_ONLY set but " + combined.string() + " not found");
-            return;
-        }
-        ulog::banner("Combined‑only mode → " + combined.string());
-        runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
-        return;                                // skip per‑run processing
-    }
+        /* gather every per‑run file currently under kInputDir */
+        std::vector<fs::path> runFiles = discoverInputRuns();
 
+        /* if we have ≥2 inputs, redo the hadd + combined QA pass        *
+         * (mergeRunsAndReprocess will also call runOneQaPass() on the  *
+         * freshly‑created output_ALL_COMBINED.root)                     */
+        if (runFiles.size() >= 2)
+        {
+            ulog::banner("Combined‑only mode → rebuilding combined file via hadd");
+            mergeRunsAndReprocess(runFiles, /*testRun=*/false);
+        }
+        else
+        {
+            /* fallback: use the already‑existing combined file */
+            fs::path combined = kInputDir / "output_ALL_COMBINED.root";
+            if (!fs::exists(combined)) {
+                ulog::err("COMBINED_ONLY set but neither per‑run ROOT files "
+                           "nor " + combined.string() + " found");
+                return;
+            }
+            ulog::banner("Combined‑only mode → using existing " + combined.string());
+            runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
+        }
+        return;   // nothing else to do in combined‑only mode
+    }
     /* 0. discover input ROOT files --------------------------------- */
     std::vector<fs::path> runFiles = discoverInputRuns();
     if (runFiles.empty()) return;

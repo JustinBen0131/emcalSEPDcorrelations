@@ -3,22 +3,29 @@
 #  runAuAu.sh  –  single‑entry driver for the Run‑24/25 Au+Au QA macro
 #
 #  ── Local laptop  ──────────────────────────────────────────────────────────
-#     ./runAuAu.sh [qa_list]                  # analyse all runs
-#     ./runAuAu.sh testRun [qa_list]          # first run only
-#     ./runAuAu.sh testCombined <N> [qa_list] # top‑N runs, then hadd+QA
-#     ./runAuAu.sh runFromCurrentCombined     # QA on existing hadd file
+#     ./runAuAu.sh [qa_list]                     # analyse all runs
+#     ./runAuAu.sh testRun [qa_list]             # first run only
+#     ./runAuAu.sh testCombined <N> [qa_list]    # top‑N runs, then hadd+QA
+#     ./runAuAu.sh runFromCurrentCombined        # QA on existing hadd file
 #
 #  ── sPHENIX analysis nodes  ────────────────────────────────────────────────
-#     ./runAuAu.sh fromSPHENIXnode condorTest # submit one job (smoke test)
-#     ./runAuAu.sh fromSPHENIXnode condor     # full DAG – one job per run AND a final hadd/process job on all runs
+#     ./runAuAu.sh fromSPHENIXnode condorTest    # one “smoke‑test” job
+#     ./runAuAu.sh fromSPHENIXnode condor        # full DAG – one job per run
+#     ./runAuAu.sh fromSPHENIXnode condor \
+#                   haddAndFinalize              # single job: merge + final QA
+#
+#  MODE SUMMARY
+#     condor            : per‑run jobs (and later the user triggers finalize)
+#     haddAndFinalize   : *only* the final merge + combined QA pass
+#     VERBOSE=<n>       : 0 = silent, 1 = info, 2 = debug/trace
 #
 #  ENVIRONMENT
 #     RUN_LOCATION is set automatically:
-#         local    → $HOME/Desktop/… tree
+#         local    → \$HOME/Desktop/…
 #         sphenix  → /sphenix/u/<user>/scratch/emcalSEPDcorrelations
 #
 #  LOG / STDOUT / STDERR (Condor)
-#     /scratch/emcalSEPDcorrelations/{log|stdout|error}
+#     \$PROJECT_BASE/{log | stdout | error}
 ##############################################################################
 set -euo pipefail
 
@@ -28,6 +35,7 @@ set -euo pipefail
 macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
 verbose="false"
 clean_output="true"
+finalOnly="false"
 
 # ---------- numeric verbosity (environment or first positional) ----------
 if [[ ${1:-} == VERBOSE=* ]]; then
@@ -61,6 +69,10 @@ case "${mode}" in
           shift                                # drop the keyword itself
           mode="${1:-condor}"                  # take next token ⇢ condor / condorTest
           [[ $# -gt 0 ]] && shift              # consume it when present
+          if [[ ${1:-} == "haddAndFinalize" ]]; then
+              finalOnly="true"                 # special one‑job mode
+              shift
+          fi
           ;;
   testRun)            test_arg="true"            ; shift ;;
   testCombined)       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] \
@@ -85,6 +97,45 @@ die () { printf "${clr_red}[FATAL]${clr_end} %s\n" "$*" >&2; exit 2; }
 # 3.  Condor submission pathway
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
+
+    # ------------------------------------------------------------------
+    #  haddAndFinalize  →  exactly one job that merges all runs and
+    #                      performs the combined QA pass
+    # ------------------------------------------------------------------
+   if [[ "${finalOnly}" == "true" ]]; then
+        note "haddAndFinalize mode – submitting single finalize job"
+
+        PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
+        EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"   # ← reuse one wrapper
+
+        SUBMIT_DIR="${PROJECT_BASE}/tmp_condor_submit"
+        LOG_DIR="${PROJECT_BASE}/log"
+        STDOUT_DIR="${PROJECT_BASE}/stdout"
+        STDERR_DIR="${PROJECT_BASE}/error"
+
+        [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
+        rm -rf "${SUBMIT_DIR:?}/"* "${LOG_DIR:?}/"* "${STDOUT_DIR:?}/"* "${STDERR_DIR:?}/"* 2>/dev/null || true
+        mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}"
+        # ⚠  deliberate: we do NOT touch \$OUTPUT_DIR here → existing plots stay intact
+
+cat > "${SUBMIT_DIR}/haddAndFinalize.sub" <<EOS
+        universe        = vanilla
+        executable      = ${EXEC_WRAPPER}
+        arguments       = --final
+        output          = ${STDOUT_DIR}/haddAndFinalize.out
+        error           = ${STDERR_DIR}/haddAndFinalize.err
+        log             = ${LOG_DIR}/haddAndFinalize.log
+        getenv          = True
+        request_memory  = 8GB
+        +JobFlavour     = "tomorrow"
+        queue
+EOS
+        condor_submit "${SUBMIT_DIR}/haddAndFinalize.sub" \
+            || die "condor_submit failed for finalize job"
+        note "Finalize job submitted – exiting."
+        exit 0
+    fi
+
     note "Starting Condor submission (${mode})"
 
     PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"

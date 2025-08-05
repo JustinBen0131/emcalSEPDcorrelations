@@ -6,12 +6,26 @@ set -euo pipefail
 
 export RUN_LOCATION=sphenix          # force scratch tree
 
-inputRoot="$1"; shift
-outDir="$1"  ; shift
-mkdir -p "${outDir}"
+# ------------------------------------------------------------
+#  Detect “final” mode  (no arguments OR first arg == --final)
+# ------------------------------------------------------------
+if [[ $# -eq 0 || ${1:-} == "--final" ]]; then
+    finalMode="true"
+else
+    finalMode="false"
+fi
+
+if [[ "${finalMode}" == "false" ]]; then
+    inputRoot="$1"; shift
+    outDir="$1"  ; shift
+    mkdir -p "${outDir}"
+fi
 
 MACRO="/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/macros/analyzeRun24or25auau.cpp"
-buildDir="$(dirname "${MACRO}")/.aclic_build"
+
+# one unique build folder per job (falls back to /tmp if the env‑var is absent)
+buildDir="${_CONDOR_SCRATCH_DIR:-/tmp}/aclic_build_$$"
+mkdir -p "${buildDir}"
 
 # ────────────────────────────────────────────────────────────────────────────
 #  restore a usable environment for ROOT
@@ -30,6 +44,15 @@ export HOME
 export ROOTENV_NO_HOME=1
 # ────────────────────────────────────────────────────────────────────────────
 
-root -l -b -q -e "gSystem->SetBuildDir(\"${buildDir}\",kTRUE)" \
-     -e ".L ${MACRO}+"                                          \
-     -e "runOneQaPass(\"${inputRoot}\",\"${outDir}\")"
+if [[ "${finalMode}" == "true" ]]; then
+    export COMBINED_ONLY=1          # ← tell the C++ macro to skip per‑run loops
+    root -l -b -q \
+         -e "gSystem->SetBuildDir(\"${buildDir}\",kTRUE)" \
+         -e ".L ${MACRO}+" \
+         -e "analyzeRun24or25auau(false,-1)"
+else
+    root -l -b -q \
+         -e "gSystem->SetBuildDir(\"${buildDir}\",kTRUE)" \
+         -e ".L ${MACRO}+" \
+         -e "runOneQaPass(\"${inputRoot}\",\"${outDir}\")"
+fi
