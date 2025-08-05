@@ -301,7 +301,8 @@ static void buildSummaryPages(const fs::path& combinedRoot,
     const int canW    = nCols * 350;      // 350 px per pad looks good
     const int canH    = nRows * 350;
 
-    fs::path sumDir = targetDir / "summaryPlots";
+    const std::string stem = fs::path(pngName).stem().string();   // e.g.  "h_maxJetEt_r02"
+    fs::path          sumDir = targetDir / ("summaryPlots_" + stem);
     ensure_dir(sumDir);
 
     for (int p = 0; p < nPages; ++p)
@@ -2284,7 +2285,6 @@ class CorrQA : public QA
     ~CorrQA() override
     {
         writeCentralityOverviews();
-        writeRunSummaries();
         writeCalorimeterSummary();
     }
 
@@ -2295,121 +2295,6 @@ class CorrQA : public QA
      /* ─ calorimeter‑overview helper ─ */
      std::unordered_map<std::string, std::shared_ptr<TH2>> m_calSummary;
 
-    void writeRunSummaries()
-    {
-        const std::string pass = root.parent_path().filename().string();
-
-        /* execute only once – during the Combined pass */
-        if (pass != "Combined") {
-            log(Lvl::DBG,"writeRunSummaries(): pass = \"" + pass +
-                          "\" – skipped (only runs in Combined)");
-            return;
-        }
-        if (s_cache.empty()) {
-            log(Lvl::DBG,"writeRunSummaries(): s_cache empty – nothing to summarise");
-            return;
-        }
-
-        using HVec   = std::vector<std::shared_ptr<TH2>>;
-        using RunMap = std::unordered_map<std::string, HVec>;     // runID → vec
-        std::unordered_map<std::string, RunMap> groupRun;         // groupDir → …
-
-        /* ---------------- collect all TH2 clones --------------------- */
-        for (auto& [groupDir, nameMap] : s_cache)
-            for (auto& [hName, runMap] : nameMap)
-                for (auto& [runID, h] : runMap)
-                    if (runID != "Combined" && h)
-                        groupRun[groupDir][runID].push_back(h);
-
-        if (groupRun.empty()) {
-            log(Lvl::WARN,"writeRunSummaries(): no non‑empty histogram sets found");
-            return;
-        }
-
-        /* ---------------- static geometry constants ------------------ */
-        constexpr int nCols = 8, nRows = 8;
-        constexpr int canW  = nCols * 350, canH = nRows * 350;
-        constexpr int perPage = nCols * nRows;
-
-        log(Lvl::INFO,"writeRunSummaries(): starting – "
-                      + std::to_string(groupRun.size()) + " detector‑pair folders");
-
-        /* ---------------- iterate over folders ----------------------- */
-        for (auto& [groupDir, runMap] : groupRun)
-        {
-            fs::path baseDir = root / "correlations" / groupDir;
-            ensure_dir(baseDir);
-            log(Lvl::INFO,"   ↳ folder \"" + groupDir + "\"  (" +
-                          std::to_string(runMap.size()) + " runs)");
-
-            using RunH = std::pair<std::string /*runID*/, std::shared_ptr<TH2>>;
-            std::vector<RunH> runs;
-            for (auto& [runID, vec] : runMap)
-                if (!vec.empty())
-                    runs.emplace_back(runID, vec.front());      // take the first map for the run
-
-            if (runs.empty()) {
-                log(Lvl::WARN,"      • folder \"" + groupDir + "\" – no runs, skipped");
-                continue;
-            }
-
-            std::size_t page = 0;
-            for (std::size_t idx = 0; idx < runs.size(); idx += perPage)
-            {
-                ++page;
-                const std::size_t nThis = std::min<std::size_t>(perPage,
-                                                                runs.size() - idx);
-
-                log(Lvl::INFO,Form("      • page %zu  (%zu runs)", page, nThis));
-
-                try {
-                    TCanvas c(Form("c_%s_page%zu", groupDir.c_str(), page),
-                              "", canW, canH);
-                    c.Divide(nCols, nRows, 0.001, 0.001);
-
-                    for (std::size_t i = 0; i < nThis; ++i) {
-                        c.cd(static_cast<int>(i) + 1);
-                        gPad->SetLogz();
-                        tightenAxes(runs[idx + i].second.get());
-                        runs[idx + i].second->Draw("COLZ");
-
-                        /* tiny run‑label centred below each sub‑pad ---------------- */
-                        TLatex lab; lab.SetNDC();
-                        lab.SetTextFont(42);
-                        lab.SetTextAlign(23);      // centred horizontally
-                        lab.SetTextSize(0.032);
-                        lab.DrawLatex(0.50, 0.02,
-                                      stripLeadingZeros(runs[idx + i].first).c_str());
-                    }
-
-                    TLatex header; header.SetNDC();
-                    header.SetTextFont(42);
-                    header.SetTextAlign(11);
-                    header.SetTextSize(0.034);
-                    header.DrawLatex(0.02, 0.97, groupDir.c_str());
-
-                    fs::path png = baseDir /
-                        (std::string("page") + std::to_string(page) + ".png");
-                    c.SaveAs(png.string().c_str());
-
-                    log(Lvl::INFO,"         ↳ saved " + png.string());
-                }
-                catch (const std::exception& ex) {
-                    log(Lvl::ERR,"         ✖ ROOT exception on page "
-                                 + std::to_string(page) + " – " + ex.what());
-                }
-                catch (...) {
-                    log(Lvl::ERR,"         ✖ unknown exception on page "
-                                 + std::to_string(page));
-                }
-            }
-        }
-
-        /* clear cache to free memory */
-        log(Lvl::DBG,"writeRunSummaries(): clearing s_cache");
-        s_cache.clear();
-    }
-    
     /* ------------------------------------------------------------------ *
      *  2×3 calorimeter summary (EMCal/IHCal/OHCal  ×  MBD/sEPD)          *
      * ------------------------------------------------------------------ */
@@ -2699,6 +2584,10 @@ class CorrQA : public QA
             }
             drawRunLabel( stripLeadingZeros(root.parent_path().filename().string()) );
             c.SaveAs(pngFile.string().c_str());
+            buildSummaryPages(root,              // “…/outputPlots/Combined”
+                              outDir,            // folder that now holds pngFile
+                              pngFile.filename().string(),
+                              plotTitle);        // header on each summary page
 
             /* cache six inclusive maps for the 2×3 calorimeter summary */
             if (!hasCent && h2) {
@@ -2761,7 +2650,6 @@ class CorrQA : public QA
         /* ─────────── existing E-F-G blocks stay exactly as before ───────── */
         handleNorthSouthPairing(hName, isNorth, isSouth, hasCent,
                                 groupDir, slice, o);
-        cacheForRunSummary(groupDir, hName, o);
         aggregateTotalHCal(hasIH, hasOH, otherDet, hName,
                            hasCent, slice, groupDir, o);
         return true;
@@ -2899,61 +2787,6 @@ class CorrQA : public QA
     }
 
     /* ==================================================================== *
-     * §2  Combined run‑summary cache – verbose, exception‑safe             *
-     * ==================================================================== */
-    void cacheForRunSummary(const std::string& groupDir,
-                            const std::string& hName,
-                            TObject* o)
-    {
-        const std::string runID = root.parent_path().filename().string();
-
-        /* never cache the synthetic “Combined” pass itself */
-        if (runID == "Combined") {
-            log(Lvl::DBG,"cacheForRunSummary(): Combined pass – histogram \"" +
-                          hName + "\" ignored");
-            return;
-        }
-
-        /* guard against non‑TH2 objects – should never happen, but better safe */
-        if (!o || !o->InheritsFrom(TH2::Class())) {
-            const char* what = o ? o->IsA()->GetName() : "nullptr";
-            log(Lvl::WARN,"cacheForRunSummary(): object \"" + hName +
-                           "\" is " + what + ", expected TH2 – skipped");
-            return;
-        }
-
-        try {
-            auto* cl = static_cast<TH2*>(o->Clone());
-
-            if (!cl) {
-                log(Lvl::ERR,"cacheForRunSummary(): Clone() returned nullptr – \"" +
-                              hName + "\" not cached");
-                return;
-            }
-
-            cl->SetDirectory(nullptr);            /* detach from any TDirectory  */
-            cl->SetBit(kCanDelete,false);         /* ROOT ownership protection   */
-
-            tidyAxes(cl);
-            styleAxes(cl,true);
-
-            /* store in 3‑level cache:  detPair ▸ histName ▸ runID             */
-            s_cache[groupDir][hName][runID].reset(cl);
-
-            log(Lvl::DBG,"cacheForRunSummary(): cached \"" + hName +
-                          "\" for run " + runID + " under \"" + groupDir + '"');
-        }
-        catch (const std::exception& ex) {
-            log(Lvl::ERR,"cacheForRunSummary(): std::exception while cloning \"" +
-                          hName + "\" – " + ex.what());
-        }
-        catch (...) {
-            log(Lvl::ERR,"cacheForRunSummary(): unknown exception while cloning \"" +
-                          hName + '"');
-        }
-    }
-
-    /* ==================================================================== *
      * §3  total-HCal aggregation (unchanged, moved to helper)              *
      * ==================================================================== */
     void aggregateTotalHCal(bool hasIH,bool hasOH,
@@ -3012,12 +2845,6 @@ class CorrQA : public QA
             cTot.SaveAs(hPng.string().c_str());                   // duplicate write
         }
         /* ─────────────────────────────────────────────────────────────────── */
-
-        if (runID != "Combined") {
-            auto* cl = static_cast<TH2*>(a.h->Clone());
-            cl->SetDirectory(nullptr); styleAxes(cl,true);
-            s_cache[totGroup][canonName][runID].reset(cl);
-        }
     }
 
     /* ==================================================================== *
@@ -3378,11 +3205,11 @@ public:
 
                 if (!missingSEB.empty())
                 {
-                    const fs::path txt = baseDir / "output" / "MissingSEB.txt";
+                    const fs::path txt = root.parent_path() / "MissingSEB.txt";   // one file per run
                     ensure_dir(txt.parent_path());
 
-                    std::ofstream ofs(txt, std::ios::app);
-                    ofs << runLabel;                       // first column = run number (no leading zeros)
+                    std::ofstream ofs(txt);                                       // overwrite, no append
+                    ofs << runLabel;                                              // run number (no leading zeros)
                     for (int seb : missingSEB) ofs << '\t' << "SEB" << seb;
                     ofs << '\n';
               }
@@ -3390,6 +3217,16 @@ public:
       }
 
       c.SaveAs(outPng.string().c_str());
+
+      /* one‑shot 8×8 overview (only during the Combined pass) */
+      {
+            std::string pageTitle = "EMCal Hit‑map  (" + trigLabel + ")";
+            buildSummaryPages(root,               // “…/outputPlots/Combined”
+                              outPng.parent_path(),
+                              outPng.filename().string(),
+                              pageTitle);
+      }
+
       return rot;
 
     }; // makePanel
@@ -3402,13 +3239,23 @@ public:
     }
     // ── any other 2‑D EMCal histogram → PNG with default helper
     else if (o->InheritsFrom(TH2::Class())) {
-      fs::path out = cPath(root, slice, "EMCal") / (n + ".png");
-      save2D(static_cast<TH2*>(o), out);
+        fs::path out = cPath(root, slice, "EMCal") / (n + ".png");
+        save2D(static_cast<TH2*>(o), out);
+
+        buildSummaryPages(root,
+                          out.parent_path(),
+                          out.filename().string(),
+                          n);                       // title = histogram name
     }
     // ── plain 1‑D EMCal histogram
     else {
-      fs::path out = cPath(root, slice, "EMCal") / (n + ".png");
-      save1D(static_cast<TH1*>(o), out);
+        fs::path out = cPath(root, slice, "EMCal") / (n + ".png");
+        save1D(static_cast<TH1*>(o), out);
+
+        buildSummaryPages(root,
+                          out.parent_path(),
+                          out.filename().string(),
+                          n);                       // title = histogram name
     }
     return true;
   }
@@ -3646,6 +3493,16 @@ class HcalQA : public QA
 
           c.Modified(); c.Update();        // register all new primitives
           c.SaveAs(outPng.string().c_str());
+
+          /* build 8×8 overview pages (Combined pass only) */
+          {
+              std::string pageTitle = std::string(mapType) + " (" + trigLabel + ")";
+              buildSummaryPages(root,
+                                outPng.parent_path(),          // …/HCal/IHCal/… (etc.)
+                                outPng.filename().string(),    // the PNG we just saved
+                                pageTitle);
+          }
+
           ulog::trace("HcalQA  → wrote " + outPng.string());
       }
       catch (const std::exception& ex) {
@@ -3663,10 +3520,20 @@ class HcalQA : public QA
 
     if (isMap && o->InheritsFrom(TH2::Class()))
         makePanel(static_cast<TH2*>(o), out, root.filename().string());
-    else if (o->InheritsFrom(TH2::Class()))
+    else if (o->InheritsFrom(TH2::Class())) {
         save2D(static_cast<TH2*>(o), out);
-    else
+        buildSummaryPages(root,
+                          out.parent_path(),
+                          out.filename().string(),
+                          n);                               // title = histogram name
+    }
+    else {
         save1D(static_cast<TH1*>(o), out);
+        buildSummaryPages(root,
+                          out.parent_path(),
+                          out.filename().string(),
+                          n);                               // title = histogram name
+    }
 
     /* -------------------------------------------------------------- *
      *  3.  Build totalHCal maps once both IHCal & OHCal are present  *
@@ -4091,6 +3958,26 @@ class NSDetectorQA : public QA
       }
       in.s->SetMinimum(zMin);
       in.n->SetMinimum(zMin);      /* per‑pad upper limit will be set in drawPad() */
+      /* ---------- save arm‑specific PNGs and build 8×8 summaries ---- */
+      {
+          auto saveArm = [&](TH2* h, const char* armLabel, const char* titleTxt)
+          {
+              fs::path armDir = cPath(root, slice, DERIVED::subdir) / armLabel;   // …/MBD/otherQA/South
+              ensure_dir(armDir);
+
+              std::string armPngName =
+                  std::string(DERIVED::fileName(trig)) + "_" + armLabel + ".png";
+              fs::path armPng = armDir / armPngName;
+
+              /* simple default save; the z‑range has just been fixed above */
+              save2D(h, armPng);
+
+              std::string pageHeader = std::string(titleTxt) + " (" + prettifyTrigger(trig) + ")";
+              buildSummaryPages(root, armDir, armPngName, pageHeader);
+          };
+          saveArm(in.s, "South", DERIVED::titleSouth);
+          saveArm(in.n, "North", DERIVED::titleNorth);
+      }
       
       /* ------------------------------------------------------------------ *
        *  finished S–N canvas                                               *
@@ -4563,6 +4450,12 @@ public:
                 tx.DrawLatex(0.15,0.88,Form("#mu = %.2f #pm %.2f cm", mu,  muErr));
                 tx.DrawLatex(0.15,0.84,Form("#sigma = %.2f #pm %.2f cm", sigma, sigErr));
                 c.SaveAs(outPng.string().c_str());
+
+                /* build 8×8 overview pages during the Combined pass */
+                buildSummaryPages(root,
+                                  outPng.parent_path(),
+                                  outPng.filename().string(),
+                                  "Primary‑vertex Z");
             }
 
             /* ------------------------------------------------------- *
@@ -5204,6 +5097,12 @@ class JetQA : public QA
 
         const fs::path png = dir/(hname + ".png");
         c.SaveAs(png.string().c_str());
+
+        /* ── build 8×8 run‑by‑run overview during the Combined pass ── */
+        buildSummaryPages(root, dir,
+                            png.filename().string(),
+                            makeTitle(hname));
+
         ulog::info("[JetQA] 1‑D plot saved → " + png.string());
         return true;
       }
@@ -5276,6 +5175,11 @@ class JetQA : public QA
 
         const fs::path png = dir/(hname + ".png");
         c.SaveAs(png.string().c_str());
+
+        buildSummaryPages(root, dir,
+                            png.filename().string(),
+                            makeTitle(hname));
+
         ulog::info("[JetQA] 2‑D plot saved → " + png.string());
         return true;
       }
@@ -5346,7 +5250,11 @@ class JetQA : public QA
         h3->SetTitle(makeTitle(hname).c_str());
 
         // main 3‑D view
-        save3D(h3, dir/(hname + "_3D.png"));
+        { fs::path png3 = dir/(hname + "_3D.png");
+            save3D(h3, png3);
+            buildSummaryPages(root, dir,
+                              png3.filename().string(),
+                              makeTitle(hname) + " (3D)"); }
 
         const bool isEtaPhi =
                   hname.find("_eta_phi_") != std::string::npos   ||   // legacy
@@ -6451,6 +6359,28 @@ public:
             }
 
 
+            /* ----  (B‑1a)  cache the first‑bin counts -------------------- */
+            {
+                const long long v = static_cast<long long>( h1->GetBinContent(1) );
+
+                if (n.rfind("cnt_",0) == 0) {
+                    std::string rest = n.substr(4);               // drop "cnt_"
+                    auto store = [&](const std::string& suf,
+                                     std::unordered_map<std::string,long long>& dst)
+                    {
+                        if (rest.size() > suf.size() &&
+                            rest.compare(rest.size()-suf.size(), suf.size(), suf) == 0)
+                        {
+                            const std::string key = rest.substr(0, rest.size()-suf.size());
+                            dst[key] = v;
+                        }
+                    };
+                    store("_raw",    _raw);
+                    store("_live",   _live);
+                    store("_scaled", _scaled);
+                }
+            }
+
             /* corrected code – four functional changes
              *   (1) strip *all* leading zeros after “…_lt_”
              *   (2) ignore empty histograms (Integral() == 0)
@@ -6540,25 +6470,50 @@ public:
     ~TriggerQA() override
     {
         /* --------------------------------------------------------------
-         * 0.  Entry banner & one‑time guard
+         * 0.  Always emit  triggerCounts.csv   (one per run)
          * -------------------------------------------------------------- */
-        const std::string runID = root.parent_path().filename().string();   // e.g. "69420", "Combined"
-        log(Lvl::DBG, "~TriggerQA()  –  enter  (runID = \"" + runID + "\")");
+        const std::string runID = root.parent_path().filename().string();   // "00694200", "Combined", …
+        {
+            fs::path csv = root / "triggerQA" / "triggerCounts.csv";
+            try {
+                ensure_dir(csv.parent_path());
+                std::ofstream out(csv);
+                out << "trigger,raw,live,scaled\n";
 
-        if (runID != "Combined") {
-            log(Lvl::DBG, "~TriggerQA()  –  non‑Combined pass → nothing to do");
-            return;
+                std::unordered_set<std::string> keys;
+                for (auto& p : _raw)    keys.insert(p.first);
+                for (auto& p : _live)   keys.insert(p.first);
+                for (auto& p : _scaled) keys.insert(p.first);
+
+                for (const auto& k : keys) {
+                    const long long r = _raw.count(k)    ? _raw.at(k)    : 0;
+                    const long long l = _live.count(k)   ? _live.at(k)   : 0;
+                    const long long s = _scaled.count(k) ? _scaled.at(k) : 0;
+                    out << k << ',' << r << ',' << l << ',' << s << '\n';
+                }
+                log(Lvl::INF, "triggerCounts CSV written → " + csv.string());
+            }
+            catch (const std::exception& ex) {
+                log(Lvl::ERR, std::string("failed to write triggerCounts.csv – ") + ex.what());
+            }
         }
-        if (_emitted) {
+
+        /* --------------------------------------------------------------
+         * 1.  Prepare output directory
+         *       • per‑run  →  …/<run>/<trigger>/triggerQA/turnOnCurves/
+         *       • Combined →  …/turnOnCurveSummaries/   (one per trigger)
+         * -------------------------------------------------------------- */
+        fs::path outDir = (runID == "Combined")
+                            ? root.parent_path() / "turnOnCurveSummaries"
+                            : root / "triggerQA" / "turnOnCurves";
+
+        /* Combined‑pass guard – run exactly once */
+        if (runID == "Combined" && _emitted) {
             log(Lvl::WRN, "~TriggerQA()  –  already executed once, skipping");
             return;
         }
-        _emitted = true;
+        if (runID == "Combined") _emitted = true;
 
-        /* --------------------------------------------------------------
-         * 1.  Prepare unified output directory
-         * -------------------------------------------------------------- */
-        fs::path outDir = root.parent_path() / "turnOnCurveSummaries";
         try {
             ensure_dir(outDir);
             log(Lvl::INF, "Created / verified summary folder:  " + outDir.string());
@@ -6568,6 +6523,7 @@ public:
                           "\") failed – " + ex.what());
             return;
         }
+
 
         /* --------------------------------------------------------------
          * 2.  Define trigger groups (MB reference + photon hierarchy)
@@ -6765,6 +6721,25 @@ public:
         makeOverlay(grp150, "TurnOn_scaled_vtx_lt_150.png",     _spectraScaled);
         makeOverlay(grp10 , "TurnOn_scaled_vtx_lt_10.png",      _spectraScaled);
 
+        /* --------------------------------------------------------------
+         * 5.  In the Combined pass, gather every run’s PNG into
+         *     paginated summary grids using buildSummaryPages().
+         * -------------------------------------------------------------- */
+        if (runID == "Combined")
+        {
+            const std::vector<std::string> pngs = {
+                "TurnOn_doNotScale_vtx_lt_150.png",
+                "TurnOn_doNotScale_vtx_lt_10.png",
+                "TurnOn_scaled_vtx_lt_150.png",
+                "TurnOn_scaled_vtx_lt_10.png"
+            };
+            for (const auto& png : pngs)
+                buildSummaryPages(root.parent_path(),     // …/outputPlots/Combined
+                                  outDir,                 // turnOnCurveSummaries
+                                  png,                    // file name
+                                  "Trigger turn‑on curves");
+        }
+
         log(Lvl::INF, "~TriggerQA()  –  completed successfully");
     }
 
@@ -6772,6 +6747,12 @@ private:
     /* one‑per‑trigger cache of the “doNotScale” spectra */
     static inline std::unordered_map<std::string,TH1*> _spectra;        // doNotScale
     static inline std::unordered_map<std::string,TH1*> _spectraScaled;  // per‑event / scaled
+
+    /* per‑run first‑bin counts (populated in process(), written to CSV in ~TriggerQA) */
+    std::unordered_map<std::string,long long> _raw;
+    std::unordered_map<std::string,long long> _live;
+    std::unordered_map<std::string,long long> _scaled;
+
     static inline bool _emitted = false;   // only once in Combined pass
 };
 
@@ -7165,14 +7146,34 @@ void printMbCorrelationSummary(TFile* in,
 
         TDirectory* dTrig = static_cast<TDirectory*>(kDir->ReadObj());
 
-        auto getCnt = [&](const std::string& h)->long long {
-            if (auto* h1 = dynamic_cast<TH1*>( dTrig->Get(h.c_str()) ))
-                return static_cast<long long>(h1->GetBinContent(1));
+        auto csvCnt = [&](const std::string& trig, const std::string& col)->long long
+        {
+            fs::path csv = fs::path(kOutputBase) / trig / "triggerQA" / "triggerCounts.csv";
+            std::ifstream fin(csv);
+            if (!fin) return 0LL;
+
+            std::string line;                       // skip header
+            std::getline(fin, line);
+            while (std::getline(fin, line)) {
+                std::stringstream ss(line);
+                std::string name, raw, live, scaled;
+                std::getline(ss, name,   ',');
+                std::getline(ss, raw,    ',');
+                std::getline(ss, live,   ',');
+                std::getline(ss, scaled, ',');
+                if (name == trig) {
+                    if      (col == "raw")    return std::stoll(raw);
+                    else if (col == "live")   return std::stoll(live);
+                    else if (col == "scaled") return std::stoll(scaled);
+                    else                      return 0LL;
+                }
+            }
             return 0LL;
         };
-        const long long nRaw    = getCnt("cnt_" + trgName + "_raw");
-        const long long nLive   = getCnt("cnt_" + trgName + "_live");
-        const long long nScaled = getCnt("cnt_" + trgName + "_scaled");
+        const long long nRaw    = csvCnt(trgName, "raw");
+        const long long nLive   = csvCnt(trgName, "live");
+        const long long nScaled = csvCnt(trgName, "scaled");
+
 
         long long mb_and_trig = 0, mb_only = 0, trig_only = 0;
         if (auto* h2 = dynamic_cast<TH2*>( dTrig->Get("h_MB_vs_Trigger") )) {
@@ -7224,42 +7225,7 @@ void printMbCorrelationSummary(TFile* in,
     ulog::ok("All outputs under " + kOutputBase);
 }
 
-void printRunEventSummary()
-{
-    using term::CLR_BOLD; using term::CLR_RST;
-    const auto& ev = EventQA::eventCounts();
-    if (ev.empty()) return;
 
-    std::vector<std::pair<int,long long>> rows;
-    rows.reserve(ev.size());
-
-    for (const auto& [runStr,n] : ev)
-        if (std::all_of(runStr.begin(), runStr.end(), ::isdigit))
-            rows.emplace_back(std::stoi(runStr), n);
-
-    std::sort(rows.begin(), rows.end(),
-              [](auto a, auto b){ return a.first < b.first; });
-
-    ulog::banner("Run‑by‑run event statistics");
-    std::cout << CLR_BOLD
-              << std::left  << std::setw(12) << "Run"
-              << std::right << std::setw(15) << "Events"
-              << CLR_RST << "\n";
-
-    long long totalEv = 0;
-    for (auto [run,n] : rows) {
-        totalEv += n;
-        std::cout << std::left  << std::setw(12) << run
-                  << std::right << std::setw(15) << n   << "\n";
-    }
-    std::cout << CLR_BOLD
-              << std::left  << std::setw(12) << "TOTAL"
-              << std::right << std::setw(15) << totalEv
-              << CLR_RST << "\n\n";
-
-    ulog::ok("Runs analysed : " + std::to_string(rows.size()) +
-            "   |   Total events : " + std::to_string(totalEv));
-}
 
 /* ===================================================================
  * H‑4  :  helper that prints the MB‑/trigger‑summary + events
@@ -7268,9 +7234,7 @@ void printAllSummaries(TFile* in, const QaMaps& maps)
 {
     printScaledTriggerSummary(maps.runsActive);
     printMbCorrelationSummary(in, maps.stat);
-    printRunEventSummary();
 }
-
 } // anonymous namespace
 
 
@@ -7446,59 +7410,61 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     std::unordered_map<std::string, std::vector<std::string>> badRunMap;
     std::unordered_map<std::string, int>                      sebCount;
 
-    {   /* 4 a. read MissingSEB.txt  +  bar‑chart output */
-        const fs::path sebTxt  = baseDir / "output" / "MissingSEB.txt";
-        const fs::path sebPng  = baseDir / "output" / "MissingSEB_distribution.png";
+    {   /* 4 a. collect per‑run MissingSEB.txt files + bar‑chart output */
+            const fs::path sebPng  = kOutputDir / "Combined" / "MissingSEB_distribution.png";
 
-        std::ifstream miss( sebTxt.string() );
-        if (!miss) {
-            ulog::warn("MissingSEB.txt not found – merging all runs");
-        } else {
-            std::string line;
-            while (std::getline(miss, line)) {
-                if (line.empty()) continue;
-                std::istringstream iss(line);
-                std::string run;  iss >> run;
-                std::string seb;
-                while (iss >> seb) {
-                    badRunMap[run].push_back(seb);
-                    ++sebCount[seb];                 // accumulate counts
+            /* loop over all runs that will participate in the merge */
+            for (const auto& f : runFiles) {
+                std::smatch m;
+                const std::string fname = f.filename().string();
+                if (!std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)")))
+                    continue;
+                const std::string run = m[1].str();
+
+                fs::path txt = kOutputDir / run / "MissingSEB.txt";
+                std::ifstream miss(txt.string());
+                if (!miss) continue;                      // run had no per‑run file
+
+                std::string tok;
+                if (!(miss >> tok)) continue;             // first token = run label
+                while (miss >> tok) {                     // remaining tokens = “SEB##”
+                    badRunMap[run].push_back(tok);
+                    ++sebCount[tok];
                 }
             }
-        }
 
-        /* ---------- create bar‑chart (SEB00 … SEB15) ------------------ */
-        TH1I hSEB("hMissingSEB",
-                  "Runs with missing SEB;SEB index;Number of runs",
-                  16, -0.5, 15.5);                   // 16 integer bins 0…15
+            if (sebCount.empty()) {
+                ulog::warn("No missing‑SEB information found – merging all runs");
+            }
 
-        for (const auto& [seb,cnt] : sebCount) {
-            int idx = -1;
-            try { idx = std::stoi( seb.substr(3) ); }  // "SEB7" → 7
-            catch (...) { continue; }
-            if (idx >= 0 && idx < 16) hSEB.SetBinContent(idx + 1, cnt);
-        }
-        hSEB.SetFillColor(kAzure + 1);
-        hSEB.SetBarWidth(0.8);
-        hSEB.SetBarOffset(0.1);
-        hSEB.GetXaxis()->SetTickLength(0);
-        hSEB.LabelsOption("h");                       // horizontal x‑labels
+            /* ---------- create bar‑chart (SEB00 … SEB15) ------------------ */
+            TH1I hSEB("hMissingSEB",
+                      "Runs with missing SEB;SEB index;Number of runs",
+                      16, -0.5, 15.5);                   // 16 integer bins 0…15
 
-        /* label the x‑axis bins “SEB00” … “SEB15” */
-        for (int i = 1; i <= 16; ++i)
-            hSEB.GetXaxis()->SetBinLabel(i,
-                   Form("SEB%02d", i - 1));
+            for (const auto& [seb,cnt] : sebCount) {
+                int idx = -1;
+                try { idx = std::stoi( seb.substr(3) ); }  // "SEB7" → 7
+                catch (...) { continue; }
+                if (idx >= 0 && idx < 16) hSEB.SetBinContent(idx + 1, cnt);
+            }
+            hSEB.SetFillColor(kAzure + 1);
+            hSEB.SetBarWidth(0.8);
+            hSEB.SetBarOffset(0.1);
+            hSEB.GetXaxis()->SetTickLength(0);
+            hSEB.LabelsOption("h");                       // horizontal x‑labels
+            for (int i = 1; i <= 16; ++i)
+                hSEB.GetXaxis()->SetBinLabel(i, Form("SEB%02d", i - 1));
 
-        TCanvas cSEB("cMissingSEB","",800,500);
-        gPad->SetGridy();
-        hSEB.Draw("bar2");
+            TCanvas cSEB("cMissingSEB","",800,500);
+            gPad->SetGridy();
+            hSEB.Draw("bar2");
 
-        ensure_dir( sebPng.parent_path() );
-        cSEB.SaveAs( sebPng.string().c_str() );
+            ensure_dir( sebPng.parent_path() );
+            cSEB.SaveAs( sebPng.string().c_str() );
 
-        ulog::ok("Missing SEB distribution plot saved → " + sebPng.string());
+            ulog::ok("Missing SEB distribution plot saved → " + sebPng.string());
     }
-
 
     /* 4 b. filter list */
     std::vector<fs::path> mergeFiles;
@@ -7624,6 +7590,9 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
     /* 2. process every run sequentially */
     processRunsSequentially(runFiles, testRun);
 
-    /* 3. optional merge + re‑run on combined file ------------------ */
-    mergeRunsAndReprocess(runFiles, testRun);
+    /* 3. optional merge + re‑run on combined file ------------------
+       Perform this step **only** when the wrapper sets
+       HADD_AND_FINALIZE=1  (i.e. in “haddAndFinalize” modes).        */
+    if (std::getenv("HADD_AND_FINALIZE"))
+        mergeRunsAndReprocess(runFiles, testRun);
 }

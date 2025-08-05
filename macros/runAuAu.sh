@@ -1,32 +1,45 @@
 #!/usr/bin/env bash
 ##############################################################################
-#  runAuAu.sh  –  single‑entry driver for the Run‑24/25 Au+Au QA macro
+#  runAuAu.sh  –  single‑entry driver for the Run‑24/25 Au+Au QA workflow
 #
-#  ── Local laptop  ──────────────────────────────────────────────────────────
-#     ./runAuAu.sh [qa_list]                     # analyse all runs
-#     ./runAuAu.sh testRun [qa_list]             # first run only
-#     ./runAuAu.sh testCombined <N> [qa_list]    # top‑N runs, then hadd+QA
-#     ./runAuAu.sh runFromCurrentCombined        # QA on existing hadd file
+#  QUICK REFERENCE ──────────────────────────────────────────────────────────
+#  Local machine
+#    ./runAuAu.sh                           : analyse every run found locally
+#    ./runAuAu.sh testRun                   : analyse the very first run only
+#    ./runAuAu.sh testCombined <N>          : top‑N runs → hadd → full QA pass
+#    ./runAuAu.sh runFromCurrentCombined    : QA pass on an existing COMBINED file
 #
-#  ── sPHENIX analysis nodes  ────────────────────────────────────────────────
-#     ./runAuAu.sh fromSPHENIXnode condorTest    # one “smoke‑test” job
-#     ./runAuAu.sh fromSPHENIXnode condor        # full DAG – one job per run
-#     ./runAuAu.sh fromSPHENIXnode condor \
-#                   haddAndFinalize              # single job: merge + final QA
+#  sPHENIX analysis node
+#    ./runAuAu.sh fromSPHENIXnode condorTest               : smoke‑test (1 HTCondor job)
+#    ./runAuAu.sh fromSPHENIXnode condor                   : full grid (1 job / run)
+#    ./runAuAu.sh fromSPHENIXnode haddAndFinalize local    : **local** merge + combined QA
+#      ├─ optional  haddAndFinalize        → submit only the merge + combined QA job (Condor)
+#      ├─ optional  wipePrevPlots          → delete **all** PNGs under $OUTPUT_DIR before run
+#      └─ examples
+#             ./runAuAu.sh fromSPHENIXnode condor haddAndFinalize        # remote final pass
+#             ./runAuAu.sh fromSPHENIXnode condorTest wipePrevPlots      # smoke‑test, clean PNGs
 #
-#  MODE SUMMARY
-#     condor            : per‑run jobs (and later the user triggers finalize)
-#     haddAndFinalize   : *only* the final merge + combined QA pass
-#     VERBOSE=<n>       : 0 = silent, 1 = info, 2 = debug/trace
+#  FLAGS / OPTIONS ──────────────────────────────────────────────────────────
+#    haddAndFinalize          remote merge + combined QA (Condor)
+#    local                    when placed **after haddAndFinalize**, do that step locally
+#    wipePrevPlots            global wipe of $OUTPUT_DIR before submission
+#    VERBOSE=1|2              extra shell diagnostics   (or add ‑v for level 1)
 #
-#  ENVIRONMENT
-#     RUN_LOCATION is set automatically:
-#         local    → \$HOME/Desktop/…
-#         sphenix  → /sphenix/u/<user>/scratch/emcalSEPDcorrelations
+#  CLEAN‑UP MATRIX ──────────────────────────────────────────────────────────
+#                        | tmp submit dir | log/out/err | outputPlots PNG tree
+#    --------------------+---------------+-------------+----------------------
+#    condor / condorTest | wiped always  | run‑IDs only| untouched
+#    +wipePrevPlots      | ″             | ″           | **fully wiped**
+#    haddAndFinalize     | ″             | generic     | untouched
+#    haddAndFinalize local| N/A          | N/A         | untouched
 #
-#  LOG / STDOUT / STDERR (Condor)
-#     \$PROJECT_BASE/{log | stdout | error}
+#  PATHS  (auto‑detected) ───────────────────────────────────────────────────
+#    RUN_LOCATION=local     → $HOME/Desktop/auauAnalysis/…
+#    RUN_LOCATION=sphenix   → /sphenix/u/$USER/scratch/emcalSEPDcorrelations
+#
+#  HTCondor artefacts live in   $PROJECT_BASE/{log | stdout | error}
 ##############################################################################
+
 set -euo pipefail
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -36,7 +49,8 @@ macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
 verbose="false"
 clean_output="true"
 finalOnly="false"
-localFinalize="false"          # ← new: run merge + QA locally
+localFinalize="false"          # ← run merge + QA locally
+wipePlots="false"              # ← wipe outputPlots only if user adds ‘wipePrevPlots’
 
 # ---------- numeric verbosity (environment or first positional) ----------
 if [[ ${1:-} == VERBOSE=* ]]; then
@@ -66,13 +80,36 @@ case "${mode}" in
   "") ;;                                           # desktop – full suite
   fromLocalNode)      export RUN_LOCATION=local  ; shift ;;
   fromSPHENIXnode)
-          export RUN_LOCATION=sphenix          # running on a sPHENIX node
-          shift                                # drop the keyword itself
-          mode="${1:-condor}"                  # take next token ⇢ condor / condorTest
-          [[ $# -gt 0 ]] && shift              # consume it when present
-          if [[ ${1:-} == "haddAndFinalize" ]]; then
-              finalOnly="true"                 # special one‑job mode
-              shift
+          export RUN_LOCATION=sphenix            # use scratch tree
+          shift                                  # drop the keyword itself
+
+          # ――― default submission mode ────────────────────────────────
+          mode="condor"
+
+          # ――― process all following keywords in any order ―───────────
+          while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    condor|condorTest)
+                        mode="$1"
+                        ;;
+                    haddAndFinalize)
+                        finalOnly="true"           # Condor final‑pass
+                        ;;
+                    local)
+                        localFinalize="true"       # *local* final‑pass
+                        ;;
+                    wipePrevPlots)
+                        wipePlots="true"
+                        ;;
+                    --)  shift; break ;;           # end‑of‑options marker
+                    *)   break ;;                  # first non‑option → stop parsing
+                esac
+                shift
+          done
+
+          # if the user asked for the local variant, force a dedicated mode
+          if [[ "${localFinalize}" == "true" ]]; then
+                mode="localFinalize"
           fi
           ;;
   testRun)            test_arg="true"            ; shift ;;
@@ -106,6 +143,7 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
     #                      performs the combined QA pass
     # ------------------------------------------------------------------
    if [[ "${finalOnly}" == "true" ]]; then
+        export HADD_AND_FINALIZE=1
         note "haddAndFinalize mode – submitting single finalize job"
 
         PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
@@ -183,15 +221,21 @@ EOS
     fi
 
     note "Cleaning previous submission artefacts"
-    rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true   # always safe to clear temp submit files
 
-    # ── remove only run‑specific artefacts for this campaign ──────────────
+    # always clear temporary submit files
+    rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true
+
+    # wipe the entire PNG tree only when the user asked for it
+    if [[ "${wipePlots}" == "true" && "${finalOnly}" != "true" ]]; then
+        rm -rf "${OUTPUT_DIR:?}/"* 2>/dev/null || true
+    fi
+
+    # ── remove log/stdout/stderr files from any earlier attempt ────────────
     for rf in "${roots[@]}"; do
-        run="$(basename "${rf}" .root)"; run="${run#output_}"         # 00012345, …
-        rm -rf "${OUTPUT_DIR}/${run}"           2>/dev/null || true   # PNG directory
-        rm -f  "${LOG_DIR}/${run}.log"          2>/dev/null || true
-        rm -f  "${STDOUT_DIR}/${run}.out"       2>/dev/null || true
-        rm -f  "${STDERR_DIR}/${run}.err"       2>/dev/null || true
+        run="$(basename "${rf}" .root)"; run="${run#output_}"
+        rm -f  "${LOG_DIR}/${run}.log"    2>/dev/null || true
+        rm -f  "${STDOUT_DIR}/${run}.out" 2>/dev/null || true
+        rm -f  "${STDERR_DIR}/${run}.err" 2>/dev/null || true
     done
 
     mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
@@ -237,6 +281,7 @@ if [[ "${localFinalize}" == "true" ]]; then
     PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
     EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"
     [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
+    export HADD_AND_FINALIZE=1
     "${EXEC_WRAPPER}" --final
     note "Local finalize completed."
     exit 0
