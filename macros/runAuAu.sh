@@ -36,6 +36,7 @@ macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
 verbose="false"
 clean_output="true"
 finalOnly="false"
+localFinalize="false"          # ← new: run merge + QA locally
 
 # ---------- numeric verbosity (environment or first positional) ----------
 if [[ ${1:-} == VERBOSE=* ]]; then
@@ -82,6 +83,8 @@ case "${mode}" in
                       export COMBINED_ONLY=1; clean_output="false"; shift ;;
   condorTest)         export RUN_LOCATION=sphenix; mode="condorTest"; shift ;;
   condor)             export RUN_LOCATION=sphenix; mode="condor"    ; shift ;;
+  haddAndFinalizeLocal)
+                      export RUN_LOCATION=sphenix; localFinalize="true"; shift ;;
   *) ;;
 esac
 
@@ -114,8 +117,14 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
         STDERR_DIR="${PROJECT_BASE}/error"
 
         [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
-        rm -rf "${SUBMIT_DIR:?}/"* "${LOG_DIR:?}/"* "${STDOUT_DIR:?}/"* "${STDERR_DIR:?}/"* 2>/dev/null || true
+        rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true
+        for f in "${LOG_DIR}"/haddAndFinalize.* \
+                 "${STDOUT_DIR}"/haddAndFinalize.* \
+                 "${STDERR_DIR}"/haddAndFinalize.*; do
+            [[ -e "$f" ]] && rm -f "$f"
+        done
         mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}"
+
         # ⚠  deliberate: we do NOT touch \$OUTPUT_DIR here → existing plots stay intact
 
 cat > "${SUBMIT_DIR}/haddAndFinalize.sub" <<EOS
@@ -147,7 +156,7 @@ EOS
     STDERR_DIR="${PROJECT_BASE}/error"
 
     INPUT_DIR="${PROJECT_BASE}/output"
-    OUTPUT_DIR="${PROJECT_BASE}/outputPlots"
+    OUTPUT_DIR="/sphenix/tg/tg01/bulk/jbennett/GLOBAL_QA/outputPlots"
 
     [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
 
@@ -174,11 +183,18 @@ EOS
     fi
 
     note "Cleaning previous submission artefacts"
-    rm -rf "${SUBMIT_DIR:?}/"* \
-           "${OUTPUT_DIR:?}" \
-           "${LOG_DIR:?}/"* "${STDOUT_DIR:?}/"* "${STDERR_DIR:?}/"* 2>/dev/null || true              2>/dev/null || true
-    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
+    rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true   # always safe to clear temp submit files
 
+    # ── remove only run‑specific artefacts for this campaign ──────────────
+    for rf in "${roots[@]}"; do
+        run="$(basename "${rf}" .root)"; run="${run#output_}"         # 00012345, …
+        rm -rf "${OUTPUT_DIR}/${run}"           2>/dev/null || true   # PNG directory
+        rm -f  "${LOG_DIR}/${run}.log"          2>/dev/null || true
+        rm -f  "${STDOUT_DIR}/${run}.out"       2>/dev/null || true
+        rm -f  "${STDERR_DIR}/${run}.err"       2>/dev/null || true
+    done
+
+    mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
     # ──────────────────────────────────────────────────────────────────
     #  submit one job per run; wait; verify output; run hadd+QA
     # ──────────────────────────────────────────────────────────────────
@@ -210,6 +226,19 @@ EOS
         runLogs+=( "${LOG_DIR}/${run}.log" )
     done
     note "All ${expRuns} run-jobs submitted – exiting."
+    exit 0
+fi
+
+# ──────────────────────────────────────────────────────────────────
+# 3‑B.  haddAndFinalizeLocal  –  run merge + combined QA *locally*
+# ──────────────────────────────────────────────────────────────────
+if [[ "${localFinalize}" == "true" ]]; then
+    note "haddAndFinalizeLocal – running merge + combined QA locally"
+    PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
+    EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"
+    [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
+    "${EXEC_WRAPPER}" --final
+    note "Local finalize completed."
     exit 0
 fi
 

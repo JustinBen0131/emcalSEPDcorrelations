@@ -23,6 +23,7 @@
 #include <TFileMerger.h>
 #include <TPaletteAxis.h>
 #include <filesystem>
+#include "TImage.h"
 #include <TH2.h>
 #include <TH3.h>
 #include <chrono>
@@ -81,8 +82,8 @@ namespace {
             : baseDir / "input" / "output"; // → Desktop/…/input/output/*.root
 
     const fs::path kOutputDir = kOnSphenix
-        ? baseDir / "outputPlots"       /* per‑run PNGs on sPHENIX node   */
-        : baseDir / "outputPlots";           /* local Desktop output           */
+        ? fs::path("/sphenix/tg/tg01/bulk/jbennett/GLOBAL_QA/outputPlots")
+        : baseDir / "outputPlots";
 
 }   // anonymous namespace
 
@@ -242,6 +243,101 @@ static inline int hcal_sector_from_idx(unsigned, unsigned iphi){ return (iphi<64
 static inline int hcal_plate_from_idx(unsigned ieta, unsigned){ return (ieta<24)?ieta/4:-1; }
 inline bool isBadHcalPlate(int,int){ return false; }
 
+
+/* ===================================================================== *
+ *  buildSummaryPages()
+ *  ---------------------------------------------------------------------
+ *  Assemble 8×8 overview canvases from the per‑run PNGs that live under
+ *      …/outputPlots/<runID>/[…same sub‑folder hierarchy…]/<pngName>
+ *
+ *  Arguments
+ *    combinedRoot   –  “…/outputPlots/Combined”  (the ‘root’ data member)
+ *    targetDir      –  path where the *Combined* PNG has just been written
+ *    pngName        –  file name, e.g.  "h_SEPD_vs_MBD.png"
+ *    title          –  header shown on every page  ("SEPD vs MBD correlations")
+ *
+ *  Result
+ *    One or more   page1.png, page2.png, …   under
+ *        <targetDir>/summaryPlots/
+ * ===================================================================== */
+static void buildSummaryPages(const fs::path& combinedRoot,
+                              const fs::path& targetDir,
+                              const std::string& pngName,
+                              const std::string& title)
+{
+    /* run only once, during the Combined pass */
+    if (combinedRoot.filename() != "Combined") return;
+
+    const fs::path outputPlotsDir = combinedRoot.parent_path();   // …/outputPlots
+    const fs::path relDir        = fs::relative(targetDir, combinedRoot);
+
+    /* ------------------------------------------------------------------ *
+     * 1. collect every run that contains the same PNG in the same folder *
+     * ------------------------------------------------------------------ */
+    std::vector<fs::path> src;  src.reserve(512);
+
+    for (const auto& e : fs::directory_iterator(outputPlotsDir)) {
+        if (!e.is_directory())                     continue;
+        const std::string runID = e.path().filename();
+        if (runID == "Combined")                   continue;       // skip self
+        fs::path cand = e.path() / relDir / pngName;
+        if (fs::exists(cand))                      src.emplace_back(cand);
+    }
+    if (src.empty()) return;
+
+    /* natural sort by run‑number (directory name) */
+    std::sort(src.begin(), src.end(),
+              [](const fs::path& a, const fs::path& b)
+              { return a.parent_path().filename().string() <
+                       b.parent_path().filename().string(); });
+
+    /* ------------------------------------------------------------------ *
+     * 2. paginate:  64 plots per page → 8 × 8 grid                        *
+     * ------------------------------------------------------------------ */
+    const int perPage = 64;
+    const int nPages  = static_cast<int>((src.size() + perPage - 1) / perPage);
+    const int nCols   = 8;
+    const int nRows   = 8;
+    const int canW    = nCols * 350;      // 350 px per pad looks good
+    const int canH    = nRows * 350;
+
+    fs::path sumDir = targetDir / "summaryPlots";
+    ensure_dir(sumDir);
+
+    for (int p = 0; p < nPages; ++p)
+    {
+        const int first = p * perPage;
+        const int last  = std::min<int>(src.size(), first + perPage);
+
+        TCanvas c(Form("c_page_%d", p + 1), "", canW, canH);
+        c.Divide(nCols, nRows, 0.001, 0.001);
+
+        /* centred page‑header once per canvas */
+        {
+            c.cd();
+            TLatex hd;  hd.SetNDC();
+            hd.SetTextAlign(22);  hd.SetTextFont(42);  hd.SetTextSize(0.035);
+            hd.DrawLatex(0.5, 0.97, Form("%s  (Page %d)", title.c_str(), p + 1));
+        }
+
+        /* draw every image into its pad */
+        for (int idx = first; idx < last; ++idx) {
+            int padNo = idx - first + 1;      // 1‑based for TPad
+            c.cd(padNo);
+            gPad->SetBorderMode(0);
+            gPad->SetMargin(0, 0, 0, 0);
+
+            if (auto *img = TImage::Open(src[idx].string().c_str())) {
+                img->Draw();
+                delete img;
+            }
+        }
+
+        fs::path outPng = sumDir /
+            (std::string("page") + std::to_string(p + 1) + ".png");
+        c.SaveAs(outPng.string().c_str());
+    }
+}
 
 
 // ╔══════════════════════════════════════════════╗
