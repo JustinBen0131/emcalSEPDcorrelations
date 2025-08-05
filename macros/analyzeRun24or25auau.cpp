@@ -4474,9 +4474,9 @@ public:
                       << ", maxEvt="  << maxEvtForRun
                       << ", combinedPass=" << isCombinedPass << ")\n";
 
-            /* ---------- store or update counters ------------------ */
             if (!isCombinedPass && takeThis)
             {
+                /* ─── A. remember the fit in memory (unchanged part) ────────── */
                 VzPoint& p = s_points[runID];
                 p.mu        = mu;        p.muErr    = muErr;
                 p.sigma     = sigma;     p.sigmaErr = sigErr;
@@ -4485,10 +4485,25 @@ public:
                 p.hist.reset(static_cast<TH1*>(h->Clone()));
                 p.hist->SetDirectory(nullptr);
                 p.hist->Scale(1.0 / p.hist->GetEntries());   // normalise overlay
+                maxEvtForRun = nEvt;
 
-                maxEvtForRun = nEvt;      // update AFTER successful storage
+                /* ─── B. append the result to a trigger‑specific CSV ─────────── */
+                const fs::path csvDir  = root.parent_path()        /* …/output/<RUN>/<trg> */
+                                             .parent_path()         /* …/output/<RUN>      */
+                                             .parent_path();        /* …/output            */
+                const std::string trg  = root.filename().string();  /* trigger folder      */
+                const fs::path csvPath = csvDir / ("zvertexSummary_" + trg + ".csv");
+
+                const bool newFile = !fs::exists(csvPath);
+                std::ofstream csv(csvPath, std::ios::app);
+                if (newFile)
+                    csv << "run,mu,muErr,sigma,sigmaErr\n";
+
+                csv << runID << ',' << mu  << ',' << muErr
+                    << ','   << sigma << ',' << sigErr << '\n';
+
                 std::cout << "[EventQA‑DBG] stored as current BEST for run "
-                          << runID << '\n';
+                          << runID << "  and appended to " << csvPath << '\n';
             }
             else if (!isCombinedPass && nEvt > maxEvtForRun)
             {
@@ -4531,9 +4546,44 @@ public:
     // ────────────────────────────────────────────────────────────────
     ~EventQA() override
     {
-        /* we are inside “…/output/Combined/<trigger>”                */
         const bool combinedHere = (root.parent_path().filename() == "Combined");
         if (!combinedHere || s_summaryWritten) return;
+
+        /* ─── If we arrive here with an empty cache, re‑load it from CSV ── */
+        if (s_points.empty())
+        {
+            const fs::path csvDir  = root.parent_path()        /* …/output/Combined/<trg> */
+                                       .parent_path()          /* …/output/Combined      */
+                                       .parent_path();         /* …/output               */
+            const std::string trg  = root.filename().string(); /* trigger folder         */
+            const fs::path csvPath = csvDir / ("zvertexSummary_" + trg + ".csv");
+
+            if (fs::exists(csvPath))
+            {
+                std::ifstream csv(csvPath);
+                std::string line;                      // skip header
+                std::getline(csv, line);
+
+                while (std::getline(csv, line))
+                {
+                    std::stringstream ss(line);
+                    std::string run, sMu, sMuE, sSi, sSiE;
+                    std::getline(ss, run, ',');
+                    std::getline(ss, sMu , ',');  std::getline(ss, sMuE, ',');
+                    std::getline(ss, sSi , ',');  std::getline(ss, sSiE, ',');
+
+                    VzPoint& p = s_points[run];
+                    p.mu        = std::stod(sMu);
+                    p.muErr     = std::stod(sMuE);
+                    p.sigma     = std::stod(sSi);
+                    p.sigmaErr  = std::stod(sSiE);
+                    /* nEvt, hist left unset – not needed for summary plots  */
+                }
+                std::cout << "[EventQA‑DBG] loaded " << s_points.size()
+                          << " rows from " << csvPath << '\n';
+            }
+        }
+
         s_summaryWritten = true;
 
         std::cout << "\n╔══════════════════════════════════════════════════════════════╗\n"
