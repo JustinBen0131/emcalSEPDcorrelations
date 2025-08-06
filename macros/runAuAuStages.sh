@@ -185,42 +185,25 @@ CPP
 }
 
 
-# ────────────────────────────  stage‑2 helpers  ────────────────────────────
+# ───────────────────────  stage-2  –  group hadd (Condor)  ────────────────
 ##
 ##  submit_group_hadd idx outfile infiles…
-##  • builds a tiny wrapper shell script  (one per group)
-##  • writes a HTCondor submit file that calls that wrapper
-##  • submits the job and reports the cluster / proc id
+##  • writes a HTCondor submit file that directly calls `/usr/bin/hadd`
+##  • submits that job and prints the cluster ID
 ##
 submit_group_hadd() {
-    local idx="$1"; shift                 # numeric group id 00,01,…
-    local outFile="$1"; shift             # destination ROOT file
-    local -a inFiles=( "$@" )             # all input ROOTs for this group
+    local idx="$1"; shift
+    local outFile="$1"; shift
+    local -a inFiles=( "$@" )
 
-    printf "      ↳ crafting group %02d  (%d file%s)\n" \
+    printf "      ↳ crafting group %02d  (%d file%s)\n" \
            "${idx}" "${#inFiles[@]}" "$([[ ${#inFiles[@]} -eq 1 ]] && echo "" || echo "s")"
 
-    # ------------------------------------------------------------------ #
-    # 1.  Build the *wrapper* that Condor will actually execute
-    # ------------------------------------------------------------------ #
-    local wrapper="${TMP_BASE}/hadd_grp_${idx}.sh"
-    cat > "${wrapper}" <<'EOS'
-#!/bin/bash
-set -euo pipefail
-outFile="$1"; shift
-echo "[hadd-grp$$] merging -> ${outFile}"
-hadd -f "${outFile}" "$@"
-EOS
-    chmod +x "${wrapper}"
-
-    # ------------------------------------------------------------------ #
-    # 2.  Build the .sub file for Condor
-    # ------------------------------------------------------------------ #
     local submit="${TMP_BASE}/group_${idx}.sub"
     cat > "${submit}" <<EOF
 universe        = vanilla
-executable      = ${wrapper}
-arguments       = ${outFile} ${inFiles[*]}
+executable      = $(command -v hadd)
+arguments       = -f ${outFile} ${inFiles[*]}
 log             = ${TMP_BASE}/group_${idx}.log
 output          = ${TMP_BASE}/group_${idx}.out
 error           = ${TMP_BASE}/group_${idx}.err
@@ -230,25 +213,23 @@ request_memory  = 2GB
 queue
 EOF
 
-    # ------------------------------------------------------------------ #
-    # 3.  Submit and report result
-    # ------------------------------------------------------------------ #
-    echo "      ↳ submitting group‑${idx} …"
-    local submit_out
-    if ! submit_out=$(condor_submit "${submit}" 2>&1); then
-        die "condor_submit failed for group ${idx}\n${submit_out}"
+    echo "      ↳ submitting group-${idx} …"
+    local out
+    if ! out=$(condor_submit "${submit}" 2>&1); then
+        die "condor_submit failed for group ${idx}\n${out}"
     fi
-    echo "         $(echo "${submit_out}" | grep -Eo '[0-9]+ job\(s\) submitted to cluster [0-9]+')"
+    # extract "N job(s) submitted to cluster K"
+    local jobs
+    jobs="$(printf '%s\n' "${out}" | grep -Eo '[0-9]+ job(s)? submitted to cluster [0-9]+' || true)"
+    echo "         ${jobs:-[no-confirmation-string]}"
 }
 
-# ───────────────────────────  stage‑2 main  ────────────────────────────────
 stage2() {
-    step "Stage‑2  –  split good runs into ≤10‑file batches and submit hadd jobs"
+    step "Stage-2  –  split good runs into ≤10-file batches and submit hadd jobs"
 
-    # ── 0.  sanity checks ──────────────────────────────────────────────
-    [[ -f "${RUNLIST}"     ]] || die "Run‑list ${RUNLIST} missing – run stage1 first"
+    [[ -f "${RUNLIST}" ]] || die "Run-list ${RUNLIST} missing – run stage1 first"
     mapfile -t runs < "${RUNLIST}"
-    (( ${#runs[@]} ))          || die "Run‑list is empty"
+    (( ${#runs[@]} )) || die "Run-list is empty"
     mkdir -p "${GROUP_DIR}"
 
     echo "    total good runs            : ${#runs[@]}"
@@ -256,9 +237,9 @@ stage2() {
     echo "    target directory for groups : ${GROUP_DIR}"
     echo
 
-    # ── 1.  walk the run list, chunk into groups of 10 ─────────────────
     local grpIdx=0
-    local -a current=()
+    local -a chunk=()
+
     for run in "${runs[@]}"; do
         local f="${INPUT_DIR}/output_${run}.root"
         if [[ ! -f "${f}" ]]; then
@@ -266,34 +247,32 @@ stage2() {
             continue
         fi
 
-        current+=( "${f}" )
+        chunk+=( "$f" )
         printf "      • queued %-14s (grp %02d, slot %d/10)\n" \
-               "$(basename "${f}")" "${grpIdx}" "${#current[@]}"
+               "$(basename "$f")" "${grpIdx}" "${#chunk[@]}"
 
-        if (( ${#current[@]} == 10 )); then
-            echo "      → group complete – submit grp‑${grpIdx}"
+        if (( ${#chunk[@]} == 10 )); then
+            echo "      → group complete – submit grp-${grpIdx}"
             submit_group_hadd "${grpIdx}" \
                                "${GROUP_DIR}/group_${grpIdx}.root" \
-                               "${current[@]}"
-            current=()
-            ((grpIdx++))
+                               "${chunk[@]}"
+            chunk=()
+            (( ++grpIdx ))
         fi
     done
 
-    # ── 2.  final partial group (if any) ───────────────────────────────
-    if (( ${#current[@]} )); then
-        echo "      → final partial group (${#current[@]} file(s)) – submit grp‑${grpIdx}"
+    # final partial
+    if (( ${#chunk[@]} )); then
+        echo "      → final partial group (${#chunk[@]} file(s)) – submit grp-${grpIdx}"
         submit_group_hadd "${grpIdx}" \
                            "${GROUP_DIR}/group_${grpIdx}.root" \
-                           "${current[@]}"
+                           "${chunk[@]}"
     fi
 
-    # ── 3.  cleanup & summary ──────────────────────────────────────────
     rm -f "${RUNLIST}"
     echo
-    note "Stage‑2 finished – all group‑hadd jobs are now in the Condor queue."
+    note "Stage-2 finished – all group-hadd jobs are now in the Condor queue."
 }
-
 
 # ───────────────────────  stage‑3  –  final hadd + QA  ─────────────────────
 submit_final_hadd(){   # outfile  infile...
