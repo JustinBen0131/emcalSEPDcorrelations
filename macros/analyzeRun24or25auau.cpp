@@ -4042,9 +4042,9 @@ class NSDetectorQA : public QA
                   //--------------------------------------------------------------------
                   // ❶  Geometry constants & diagnostics
                   //--------------------------------------------------------------------
-                  const double rInner = h->GetYaxis()->GetXmin();           // 0.15 cm
-                  const double rOuter = h->GetYaxis()->GetXmax();           // 3.51 cm
-                  const double edge   = rOuter;                             // detector radius
+                  const double rInner = h->GetYaxis()->GetXmin();
+                  const double rOuter = h->GetYaxis()->GetXmax();
+                  const double edge   = rOuter;
 
                   const int    nPhi   = h->GetNbinsX();
                   const int    nRing  = h->GetNbinsY();
@@ -4149,60 +4149,6 @@ class NSDetectorQA : public QA
                       e.SetLineStyle(1);
                       e.SetLineWidth(1);
                       e.Draw();
-                  }
-
-                  //--------------------------------------------------------------------
-                  // ❻  Geometry & count tables  (printed to stdout)
-                  //--------------------------------------------------------------------
-                  std::cout << "\n┌───────────────────── Radial Rings ─────────────────────┐\n"
-                            << "│   j   │ r_in [cm] │ r_out [cm] │   Σ Counts  │\n"
-                            << "├───────┼───────────┼────────────┼──────────────┤\n";
-
-                  for (int j = 1; j <= nRing; ++j)
-                  {
-                      const double rLo = rInner + (j-1)*dR;
-                      const double rHi = rInner +  j   *dR;
-                      double sum = 0.0;
-                      for (int i = 1; i <= nPhi; ++i) sum += h->GetBinContent(i, j);
-                      std::cout << std::setw(5) << j
-                                << "   │ " << std::setw(9) << std::fixed << std::setprecision(3) << rLo
-                                << " │ "  << std::setw(10) << rHi
-                                << " │ "  << std::setw(11) << std::fixed << std::setprecision(0) << sum
-                                << " │\n";
-                  }
-                  std::cout << "└─────────────────────────────────────────────────────────┘\n";
-
-                  std::cout << "\n┌────────────────── φ Sectors (Δφ = "
-                            << std::setw(6) << std::fixed << std::setprecision(2)
-                            << TMath::RadToDeg() * dPhi << "°) ──────────────────┐\n"
-                            << "│   i   │  φ_low [°] │  φ_high [°] │   Σ Counts │\n"
-                            << "├───────┼────────────┼─────────────┼────────────┤\n";
-
-                  for (int i = 1; i <= nPhi; ++i)
-                  {
-                      const double φLo = (i-1)*dPhi * TMath::RadToDeg();
-                      const double φHi =  i   *dPhi * TMath::RadToDeg();
-                      double sum = 0.0;
-                      for (int j = 1; j <= nRing; ++j) sum += h->GetBinContent(i, j);
-                      std::cout << std::setw(5) << i
-                                << "   │ " << std::setw(10) << std::fixed << std::setprecision(2) << φLo
-                                << " │ "  << std::setw(11) << φHi
-                                << " │ "  << std::setw(10) << std::fixed << std::setprecision(0) << sum
-                                << " │\n";
-                  }
-                  std::cout << "└─────────────────────────────────────────────────────────┘\n";
-
-                  //--------------------------------------------------------------------
-                  // ❼  Canvas / pad metrics (useful when debugging aspect issues)
-                  //--------------------------------------------------------------------
-                  if (auto* c = gPad->GetCanvas())
-                  {
-                      ulog::trace("         canvas  WxH = "
-                                 + std::to_string(c->GetWw()) + " × "
-                                 + std::to_string(c->GetWh()) + " px");
-                      ulog::trace("         pad      WxH = "
-                                 + std::to_string(gPad->GetWw()) + " × "
-                                 + std::to_string(gPad->GetWh()) + " px");
                   }
               }
 
@@ -7476,11 +7422,13 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
                 if (!miss) continue;                      // run had no per‑run file
 
                 std::string tok;
-                if (!(miss >> tok)) continue;             // first token = run label
-                while (miss >> tok) {                     // remaining tokens = “SEB##”
+                if (!(miss >> tok)) continue;             // discard first token (“run” or run‑ID)
+                while (miss >> tok) {
+                    if (tok.rfind("SEB",0) != 0) continue;   // ignore non‑SEB tokens
                     badRunMap[run].push_back(tok);
                     ++sebCount[tok];
                 }
+
             }
 
             if (sebCount.empty()) {
@@ -7538,17 +7486,20 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
               << "   └─ multiple SEBs      : " << nBadMul << "\n"
               << term::CLR_RST << std::endl;
 
-    if (!sebCount.empty()) {
-        std::size_t w = 0;
-        for (const auto& [seb,_] : sebCount) w = std::max(w, seb.size());
-        w = std::max<std::size_t>(w, 5);
+    {
+        constexpr int kTotSEB = 16;           // SEB00 … SEB15
+        const std::size_t w = 5;              // width for “SEB15”
 
         std::cout << std::left << std::setw(w) << "SEB"
                   << " │ " << "Runs\n"
                   << std::string(w + 7, '-') << "\n";
-        for (const auto& [seb,c] : sebCount)
-            std::cout << std::left << std::setw(w) << seb
-                      << " │ " << c << "\n";
+
+        for (int i = 0; i < kTotSEB; ++i) {
+            const std::string key = "SEB" + std::to_string(i);
+            const int cnt = sebCount.count(key) ? sebCount.at(key) : 0;
+            std::cout << std::left << std::setw(w) << key
+                      << " │ " << cnt << "\n";
+        }
         std::cout << std::string(w + 7, '=') << std::endl;
     }
 
@@ -7576,14 +7527,37 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
 
     const auto t0Hadd = std::chrono::steady_clock::now();
 
+    /* ------------------------------------------------------------------
+     *  High‑verbosity hadd
+     *     • gDebug = 3      → ROOT prints every object as it is merged
+     *     • extra ulog::info after each AddFile() so the terminal never
+     *       “freezes” for long periods.
+     * ------------------------------------------------------------------ */
     TFileMerger merger(/*dryRun=*/false, /*verbose=*/true);
     merger.OutputFile(combined.c_str(), "RECREATE");
-    for (const auto& f : mergeFiles) merger.AddFile(f.c_str());
 
-    if (!merger.Merge()) {
+    /* show progress while the input list is constructed -------------- */
+    int fileIdx = 0;
+    for (const auto& f : mergeFiles) {
+        merger.AddFile(f.c_str());
+        ulog::info("   [" + std::to_string(++fileIdx) + "/"
+                  + std::to_string(mergeFiles.size()) + "] queued "
+                  + f.filename().string());
+    }
+
+    /* ROOT‑internal debug level – higher → more chatter (1‑3 is typical) */
+    const int prevDbg = gDebug;
+    gDebug = 0;
+    ulog::info("Starting ROOT hadd with gDebug = 3 (very verbose)");
+
+    bool ok = merger.Merge();                 // performs the actual copy/merge
+
+    gDebug = prevDbg;                         // restore previous setting
+    if (!ok) {
         ulog::err("TFileMerger failed – combined QA skipped");
         return;
     }
+    ulog::ok("ROOT hadd completed successfully");
 
     const auto dHadd   = std::chrono::duration<double>(
                            std::chrono::steady_clock::now() - t0Hadd).count();
