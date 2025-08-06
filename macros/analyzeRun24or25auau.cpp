@@ -7398,6 +7398,19 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
                                   bool                         testRun)
 {
     using fs::path;
+    if (std::getenv("EXTERNAL_HADD"))
+    {
+        ulog::banner("External hadd detected – skipping SEB scan & internal merge");
+
+        fs::path combined = kInputDir / "output_ALL_COMBINED.root";
+        if (!fs::exists(combined)) {
+            ulog::err("Combined file " + combined.string() + " not found – aborting");
+            return;
+        }
+
+        runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
+        return;   // nothing else to do inside mergeRunsAndReprocess()
+    }
     if (testRun || runFiles.size() <= 1) return;
 
     // ───────────────────────────────────────────────────────────────
@@ -7666,10 +7679,13 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
          * ---------------------------------------------------------- */
         if (externalHadd)
         {
-            /* ── 1. print Missing‑SEB statistics (Steps 1‑3 only) ───────── */
-            std::vector<fs::path> runFiles = discoverInputRuns();
-            if (!runFiles.empty())
-                mergeRunsAndReprocess(runFiles, /*testRun=*/false);   // will auto‑skip merge
+            /* ── 1. optional Missing‑SEB statistics (skip when shell already did it) ── */
+            if (!std::getenv("SKIP_SEB_SCAN"))
+            {
+                std::vector<fs::path> runFiles = discoverInputRuns();
+                if (!runFiles.empty())
+                    mergeRunsAndReprocess(runFiles, /*testRun=*/false);   // auto‑skips merge
+            }
 
             /* ── 2. run the combined QA pass on the already‑hadded file ─── */
             fs::path combined = kInputDir / "output_ALL_COMBINED.root";

@@ -48,6 +48,7 @@ macro="analyzeRun24or25auau.cpp"   # C++ macro to build/run
 verbose="false"
 clean_output="true"
 finalOnly="false"
+stageArg=""
 localFinalize="false"          # ← run merge + QA locally
 wipePlots="false"              # ← wipe outputPlots only if user adds ‘wipePrevPlots’
 
@@ -102,7 +103,11 @@ case "${mode}" in
                         mode="$1"
                         ;;
                     haddAndFinalize)
-                        finalOnly="true"           # Condor final‑pass
+                        finalOnly="true"           # activate multi‑stage mode
+                        if [[ ${2:-} =~ ^stage[123]$ ]]; then
+                            stageArg="$2"          # remember stage1 / stage2 / stage3
+                            shift                  # consume the token
+                        fi
                         ;;
                     local)
                         localFinalize="true"       # *local* final‑pass
@@ -143,6 +148,127 @@ warn() { printf "${clr_red}[WARN]${clr_end}  %s\n" "$*"; }
 die () { printf "${clr_red}[FATAL]${clr_end} %s\n" "$*" >&2; exit 2; }
 
 
+
+##############################################################################
+#  stage1_prepare  – full Missing‑SEB diagnostics *and* good‑run list
+#  Arguments :  $1 = INPUT_DIR   $2 = PLOTS_DIR   $3 = RUNLIST_OUT
+#  Output    :
+#      • ASCII summary table (stdout)
+#      • PNG  bar chart   →  $PLOTS_DIR/Combined/MissingSEB_distribution.png
+#      • Good‑run list   →  $RUNLIST_OUT      (one run‑ID per line)
+##############################################################################
+stage1_prepare() {
+    local input_dir="$1"
+    local plots_dir="$2"
+    local runlist="$3"
+    rm -f "${runlist}"; touch "${runlist}"
+
+    declare -A sebCnt          # SEB## → counter
+    declare -A badRuns         # runID → 1
+    local goodCnt=0
+
+    # ── scan per‑run MissingSEB.txt files ────────────────────────────────
+    for f in "${input_dir}"/output_*.root; do
+        [[ "$(basename "$f")" == "output_ALL_COMBINED.root" ]] && continue
+        local run="${f##*/}"; run="${run#output_}"; run="${run%.root}"
+        local miss="${plots_dir}/${run}/MissingSEB.txt"
+
+        if [[ -s "${miss}" ]]; then
+            badRuns["$run"]=1
+            while read -r tok; do
+                [[ "${tok}" == SEB* ]] || continue
+                (( sebCnt["${tok}"]++ ))
+            done < <(tail -n +2 "${miss}")      # skip header
+        else
+            echo "$run" >> "${runlist}"
+            ((goodCnt++))
+        fi
+    done
+
+    # ── textual summary (identical layout to C++ macro) ──────────────────
+    step_banner "Missing SEB summary (Stage‑1)"
+    local nBad=${#badRuns[@]}  nBad1=0  nBadMul=0
+    for run in "${!badRuns[@]}"; do
+        local nTok=$(grep -o 'SEB[0-9]\+' "${plots_dir}/${run}/MissingSEB.txt" | wc -l)
+        (( nTok == 1 ? nBad1++ : nBadMul++ ))
+    done
+    printf "${clr_blu}Runs with ≥1 missing SEB : %s${clr_end}\n" "${nBad}"
+    printf "   ├─ exactly one SEB    : %s\n" "${nBad1}"
+    printf "   └─ multiple SEBs      : %s\n" "${nBadMul}"
+    printf "SEB │ Runs\n"; printf -- '----+-----\n'
+    for i in {0..15}; do
+        key=$(printf "SEB%02d" "$i")
+        val=${sebCnt[$key]:-0}
+        printf '%-3s │ %d\n' "$key" "$val"
+    done
+    printf -- '===========\n'
+    note "Good‑run list built – ${goodCnt} runs → ${runlist}"
+
+    # ── bar chart via an inline ROOT macro ───────────────────────────────
+    local png="${plots_dir}/Combined/MissingSEB_distribution.png"
+    mkdir -p "$(dirname "${png}")"
+    local setBins=""
+    for i in {0..15}; do
+        key=$(printf "SEB%02d" "$i")
+        cnt=${sebCnt[$key]:-0}
+        setBins+="h.SetBinContent($((i+1)),$cnt);"
+    done
+
+    root -l -b -q <<EOF >/dev/null 2>&1
+{
+   gROOT->SetBatch();
+   TH1I h("h","Runs with missing SEB;SEB index;Number of runs",16,-0.5,15.5);
+   ${setBins}
+   for(int i=0;i<16;++i) h.GetXaxis()->SetBinLabel(i+1,Form("SEB%02d",i));
+   h.SetFillColor(kAzure+1); h.SetBarWidth(0.8); h.SetBarOffset(0.1);
+   TCanvas c("c","",800,500); c.SetGridy(); h.Draw("bar2");
+   gSystem->mkdir("$(dirname "${png}")",true);
+   c.SaveAs("${png}");
+}
+EOF
+    note "Bar chart written → ${png}"
+}
+
+
+submit_group_hadd() {        # idx  outfile  infile...
+    local idx="$1"; shift
+    local ofile="$1"; shift
+    local sub="${TMP_BASE}/group_${idx}.sub"
+    cat > "$sub" <<EOF
+universe        = vanilla
+executable      = /bin/bash
+arguments       = -c "hadd -f ${ofile} $*"
+output          = ${TMP_BASE}/group_${idx}.out
+error           = ${TMP_BASE}/group_${idx}.err
+log             = ${TMP_BASE}/group_${idx}.log
+getenv          = True
+request_memory  = 2GB
++JobFlavour     = "tomorrow"
+queue
+EOF
+    condor_submit "$sub" || die "condor_submit failed for group $idx"
+}
+
+submit_final_hadd() {        # outfile  infile...
+    local ofile="$1"; shift
+    local sub="${TMP_BASE}/final_hadd.sub"
+    cat > "$sub" <<EOF
+universe        = vanilla
+executable      = /bin/bash
+arguments       = -c "hadd -f ${ofile} $* && \
+                      export COMBINED_ONLY=1 EXTERNAL_HADD=1 && \
+                      root -l -b -q -e 'gSystem->SetBuildDir(\"${TMPDIR:-/tmp}\",kTRUE)' ${macro}+Ok(false,-1)"
+output          = ${TMP_BASE}/final_hadd.out
+error           = ${TMP_BASE}/final_hadd.err
+log             = ${TMP_BASE}/final_hadd.log
+getenv          = True
+request_memory  = 4GB
++JobFlavour     = "tomorrow"
+queue
+EOF
+    condor_submit "$sub" || die "condor_submit failed for final hadd"
+}
+
 ##############################################################################
 # perform_hadd  – build output_ALL_COMBINED.root with the classic ROOT hadd
 # Skips runs that have MissingSEB.txt (i.e. “bad” runs).
@@ -153,16 +279,56 @@ perform_hadd () {
     local combined="${input_dir}/output_ALL_COMBINED.root"
 
     note "hadd – collecting per‑run ROOT files"
-    good_files=()
+
+    good_files=()                 # runs that will enter the merge
+    declare -A sebCnt             # SEB##  → counter
+    declare -A badRuns            # runID  → 1  (at least one missing SEB)
+
+    # ── scan every per‑run ROOT file ──────────────────────────────────────
     for f in "${input_dir}"/output_*.root ; do
         [[ "$(basename "$f")" == "output_ALL_COMBINED.root" ]] && continue   # skip target file
         run="${f##*/}"; run="${run#output_}"; run="${run%.root}"
-        [[ -s "${plots_dir}/${run}/MissingSEB.txt" ]] && { \
-              warn "  ↳ run ${run} excluded (MissingSEB.txt not empty)"; continue; }
+
+        missFile="${plots_dir}/${run}/MissingSEB.txt"
+        if [[ -s "${missFile}" ]]; then
+            badRuns["$run"]=1
+            while read -r tok ; do
+                [[ "${tok}" == SEB* ]] || continue
+                (( sebCnt["${tok}"]++ ))
+            done < <(tail -n +2 "${missFile}")      # skip header line
+            warn "  ↳ run ${run} excluded (MissingSEB.txt not empty)"
+            continue
+        fi
+
         good_files+=( "${f}" )
     done
+
+    # ── textual summary identical to the C++ macro ────────────────────────
+    step_banner "Missing SEB summary"
+
+    local nBad=${#badRuns[@]}
+    local nBad1=0 nBadMul=0
+    for run in "${!badRuns[@]}"; do
+        nTok=$(grep -o 'SEB[0-9]\+' "${plots_dir}/${run}/MissingSEB.txt" | wc -l)
+        (( nTok == 1 ? nBad1++ : nBadMul++ ))
+    done
+
+    printf "${clr_blu}Runs with ≥1 missing SEB : %s${clr_end}\n" "${nBad}"
+    printf "   ├─ exactly one SEB    : %s\n" "${nBad1}"
+    printf "   └─ multiple SEBs      : %s\n" "${nBadMul}"
+    printf "SEB │ Runs\n"
+    printf -- '----+-----\n'
+    for i in {0..15}; do
+        key=$(printf "SEB%02d" "$i")
+        val=${sebCnt[$key]:-0}        # default to 0 when unset
+        printf -- '%-3s │ %d\n' "$key" "$val"
+    done
+    printf -- '===========\n'
+
+    # ── abort if we ended up with <2 good runs ────────────────────────────
     (( ${#good_files[@]} >= 2 )) || { warn "Need ≥2 good runs – aborting hadd"; return 1; }
 
+    # ── size bookkeeping + merge ──────────────────────────────────────────
     total_mb=0
     for g in "${good_files[@]}"; do
         sz=$( { stat -c%s "$g" 2>/dev/null || stat -f%z "$g"; } ) || sz=0
@@ -185,26 +351,86 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
     #  haddAndFinalize  →  exactly one job that merges all runs and
     #                      performs the combined QA pass
     # ------------------------------------------------------------------
-   if [[ "${finalOnly}" == "true" ]]; then
-        export HADD_AND_FINALIZE=1
-        note "haddAndFinalize mode – submitting single finalize job"
+    if [[ "${finalOnly}" == "true" ]]; then
+        # ------------------------------------------------------------------
+        # Multi‑stage haddAndFinalize
+        #    • stage1 : build run list          (SEB check only, no hadd)
+        #    • stage2 : 10‑run group hadd jobs  (Condor)
+        #    • stage3 : final hadd + QA pass    (local | condor)
+        # ------------------------------------------------------------------
+        stage="${stageArg:-stage1}"            # default when user omits token
 
         PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
-        EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"   # reuse wrapper
+        INPUT_DIR="${PROJECT_BASE}/output"
+        OUTPUT_DIR="/sphenix/tg/tg01/bulk/jbennett/GLOBAL_QA/outputPlots"
+        TMP_BASE="${PROJECT_BASE}/tmp_hadd_multistage"
+        RUNLIST="${TMP_BASE}/runlist_stage2.txt"
+        GROUP_DIR="${TMP_BASE}/groups"
+        mkdir -p "${TMP_BASE}" "${GROUP_DIR}"
 
-        SUBMIT_DIR="${PROJECT_BASE}/tmp_condor_submit"
-        LOG_DIR="${PROJECT_BASE}/log"
-        STDOUT_DIR="${PROJECT_BASE}/stdout"
-        STDERR_DIR="${PROJECT_BASE}/error"
+        case "${stage}" in
+            stage1)
+                step_banner "Stage‑1  –  SEB scan + good‑run list"
+                stage1_prepare  "${INPUT_DIR}"  "${OUTPUT_DIR}"  "${RUNLIST}"
+                note "Stage‑1 finished – launch Stage‑2 once the group jobs can run."
+                ;;
 
-        [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
-        rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true
-        for f in "${LOG_DIR}"/haddAndFinalize.* \
-                 "${STDOUT_DIR}"/haddAndFinalize.* \
-                 "${STDERR_DIR}"/haddAndFinalize.*; do
-            [[ -e "$f" ]] && rm -f "$f"
-        done
-        mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}"
+            stage2)
+                step_banner "Stage‑2  –  submit group hadd jobs"
+                [[ -f "${RUNLIST}" ]] || die "Stage‑2: run list ${RUNLIST} missing"
+                mapfile -t allRuns < "${RUNLIST}"
+                (( ${#allRuns[@]} )) || die "Stage‑2: run list empty"
+
+                grpIdx=0; grpRuns=()
+                for r in "${allRuns[@]}"; do
+                    grpRuns+=( "${INPUT_DIR}/output_${r}.root" )
+                    if (( ${#grpRuns[@]} == 10 )); then
+                        submit_group_hadd "${grpIdx}" "${GROUP_DIR}/group_${grpIdx}.root" "${grpRuns[@]}"
+                        grpRuns=(); ((grpIdx++))
+                    fi
+                done
+                if (( ${#grpRuns[@]} )); then
+                    submit_group_hadd "${grpIdx}" "${GROUP_DIR}/group_${grpIdx}.root" "${grpRuns[@]}"
+                fi
+                rm -f "${RUNLIST}"
+                note "Stage‑2 submitted – temporary run list removed."
+                ;;
+
+            stage3)
+                step_banner "Stage‑3  –  final hadd and QA pass"
+                shift || true                         # consume 'stage3'
+                runLocal="no"
+                [[ ${1:-} == local ]]  && { runLocal="yes"; shift; }
+                [[ ${1:-} == condor ]] && { runLocal="no" ; shift; }
+
+                mapfile -t grpFiles < <(ls "${GROUP_DIR}"/group_*.root 2>/dev/null | sort)
+                (( ${#grpFiles[@]} )) || die "Stage‑3: no group files – finish Stage‑2 first"
+
+                COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
+
+                if [[ "${runLocal}" == "yes" ]]; then
+                    note "Local final hadd – merging ${#grpFiles[@]} group files"
+                    rm -f "${COMBINED}"
+                    hadd -f "${COMBINED}" "${grpFiles[@]}" || die "hadd failed"
+                    export COMBINED_ONLY=1 EXTERNAL_HADD=1
+                    root -l -b -q \
+                         -e "gSystem->SetBuildDir(\"${TMPDIR:-/tmp}\",kTRUE)" \
+                         "${macro}+Ok(false,-1)"
+                else
+                    note "Submitting final hadd as one Condor job"
+                    submit_final_hadd "${COMBINED}" "${grpFiles[@]}"
+                fi
+
+                # clean‑up when combined file exists (local path) or when job finishes (condor)
+                [[ -f "${COMBINED}" ]] && { rm -f "${GROUP_DIR}"/group_*.root; rmdir "${GROUP_DIR}" 2>/dev/null || true; }
+                ;;
+
+            *)
+                die "Unknown haddAndFinalize stage '${stage}' (use stage1|stage2|stage3)"
+                ;;
+        esac
+        exit 0
+    fi
 
 cat > "${SUBMIT_DIR}/haddAndFinalize.sub" <<EOS
         universe        = vanilla

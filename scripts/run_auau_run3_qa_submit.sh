@@ -33,6 +33,8 @@
 #                   round <N>      – with *condor*: use segment file # N
 #                   <runID>        – with *local*: which run to test
 #
+#./run_auau_run3_qa_submit.sh         run25auau caloFitting         splitRunList run3goldenRuns.txt
+#./run_auau_run3_qa_submit.sh run25auau caloFitting condor round 1
 #  Examples
 #  ────────
 #  • Run-24 quick local test (first DST only)
@@ -157,7 +159,7 @@ esac
 # 1. USER CONSTANTS
 ##############################################################################
 CHUNK_SIZE=2
-MAX_JOBS=10000
+MAX_JOBS=1000
 ##############################################################################
 
 ##############################################################################
@@ -272,16 +274,16 @@ vecho() {                               # helper: prints only when VERBOSE=1
 }
 
 # ──────────────────────────────────────────────────────────────────────────
-#  Clean previous output before a new Condor campaign / test run
+#  Clean previous output **only** for:
+#     • any condorTest launch          (always starts clean)
+#     • “condor round 1”               (first round of a segmented campaign)
+#  Every other mode or round keeps existing output intact.
 # --------------------------------------------------------------------------
-if [[ "$mode" == "condorTest" || "$mode" == "condor" ]]; then
+if [[ "$mode" == "condorTest" || ( "$mode" == "condor" && "$limitSwitch" == "round" && "${3:-}" == "1" ) ]]; then
   say  "$mode – removing previous output"
-  # – wipe every run-subfolder in the bulk tree
   rm -rf "${CONDOR_OUT_BASE:?}/"* || warn "Nothing to clean in ${CONDOR_OUT_BASE}"
-  # – truncate per-job stdout / log / error directories
   rm -f  "${OUTDIR:?}/"* "${LOGDIR:?}/"* "${ERRDIR:?}/"* 2>/dev/null || true
 fi
-
 # (re‑)create the job IO directories unconditionally -----------------------
 mkdir -p "$LOGDIR" "$OUTDIR" "$ERRDIR"
 # ──────────────────────────────────────────────────────────────────────────
@@ -422,7 +424,7 @@ arguments     = $runPad  $listFile  ${tag}  $(outdir_for_run $runPad)
 log           = ${LOGDIR}/${tag}.log
 output        = ${OUTDIR}/${tag}.out
 error         = ${ERRDIR}/${tag}.err
-request_memory= 10240MB
+request_memory= 8500MB
 +JobFlavour   = "tomorrow"
 queue
 EOS
@@ -440,4 +442,12 @@ done
 
 good "Grand‑total Condor jobs submitted: $submitted"
 [[ $jobCap -gt 0 ]] && say  "Launch cap in effect          : $jobCap"
+
+# ------------------------------------------------------------------
+#  After a successful “condor round N” submission, delete the file
+#  we just processed so the next round is clearly the next segment.
+# ------------------------------------------------------------------
+if [[ "$mode" == "condor" && "$limitSwitch" == "round" && -n "$runListFile" ]]; then
+  rm -f "$runListFile" && good "Segment file $(basename "$runListFile") deleted"
+fi
 ##############################################################################
