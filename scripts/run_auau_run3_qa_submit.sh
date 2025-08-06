@@ -156,7 +156,7 @@ esac
 ##############################################################################
 # 1. USER CONSTANTS
 ##############################################################################
-CHUNK_SIZE=3
+CHUNK_SIZE=2
 MAX_JOBS=10000
 ##############################################################################
 
@@ -202,11 +202,25 @@ esac
 ##############################################################################
 split_run_list() {
   local master="$1"
-  [[ -f "$master" ]] || { warn "Run-list not found → $master"; return 1; }
+  if [[ ! -f "$master" ]]; then
+    alt=$(find "$(dirname "$master")" -maxdepth 1 -iname "$(basename "$master")" | head -n1)
+    if [[ -n "$alt" && -f "$alt" ]]; then
+      master="$alt"                      # use the case‑insensitive match
+    else
+      warn "Run-list not found → $master"
+      return 1
+    fi
+  fi
 
   say  "Splitting $(basename "$master") → $RUN_SPLIT_DIR"
 
-  local seg=1 jobs=0              # <- define first
+  # ------------------------------------------------------------------
+  # Wipe any stale segment files from earlier runs so numbering starts
+  # cleanly at 1, 2, 3 … and no orphaned 99 or similar files remain.
+  # ------------------------------------------------------------------
+  rm -f "${SEGMENT_PREFIX}"*.txt 2>/dev/null || true
+
+  local seg=1 jobs=0
   local current="${SEGMENT_PREFIX}${seg}.txt"
   : > "$current"
 

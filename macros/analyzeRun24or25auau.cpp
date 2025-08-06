@@ -7400,223 +7400,373 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     using fs::path;
     if (testRun || runFiles.size() <= 1) return;
 
-    /* ---------- dump HCal missing‑bin report -------------------- */
-    HcalQA::writeMissingBinReport( kOutputDir / "MissingHCalBins.txt" );
+    // ───────────────────────────────────────────────────────────────
+    // 1.  HCal missing‑bin report
+    // ───────────────────────────────────────────────────────────────
+    ulog::banner("Step 1/5  –  HCal missing‑bin scan");
+    HcalQA::writeMissingBinReport(kOutputDir / "MissingHCalBins.txt");
 
-    std::unordered_map<std::string, std::vector<std::string>> badRunMap;
-    std::unordered_map<std::string, int>                      sebCount;
+    std::unordered_map<std::string,std::vector<std::string>> badRunMap;
+    std::unordered_map<std::string,int>                      sebCount;
 
-    {   /* 4 a. collect per‑run MissingSEB.txt files + bar‑chart output */
-            const fs::path sebPng  = kOutputDir / "Combined" / "MissingSEB_distribution.png";
+    // ───────────────────────────────────────────────────────────────
+    // 2.  Missing‑SEB analysis   (build badRunMap + bar chart)
+    // ───────────────────────────────────────────────────────────────
+    ulog::banner("Step 2/5  –  Missing‑SEB scan");
 
-            /* loop over all runs that will participate in the merge */
-            for (const auto& f : runFiles) {
-                std::smatch m;
-                const std::string fname = f.filename().string();
-                if (!std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)")))
-                    continue;
-                const std::string run = m[1].str();
-
-                fs::path txt = kOutputDir / run / "MissingSEB.txt";
-                std::ifstream miss(txt.string());
-                if (!miss) continue;                      // run had no per‑run file
-
-                std::string tok;
-                if (!(miss >> tok)) continue;             // discard first token (“run” or run‑ID)
-                while (miss >> tok) {
-                    if (tok.rfind("SEB",0) != 0) continue;   // ignore non‑SEB tokens
-                    badRunMap[run].push_back(tok);
-                    ++sebCount[tok];
-                }
-
-            }
-
-            if (sebCount.empty()) {
-                ulog::warn("No missing‑SEB information found – merging all runs");
-            }
-
-            /* ---------- create bar‑chart (SEB00 … SEB15) ------------------ */
-            TH1I hSEB("hMissingSEB",
-                      "Runs with missing SEB;SEB index;Number of runs",
-                      16, -0.5, 15.5);                   // 16 integer bins 0…15
-
-            for (const auto& [seb,cnt] : sebCount) {
-                int idx = -1;
-                try { idx = std::stoi( seb.substr(3) ); }  // "SEB7" → 7
-                catch (...) { continue; }
-                if (idx >= 0 && idx < 16) hSEB.SetBinContent(idx + 1, cnt);
-            }
-            hSEB.SetFillColor(kAzure + 1);
-            hSEB.SetBarWidth(0.8);
-            hSEB.SetBarOffset(0.1);
-            hSEB.GetXaxis()->SetTickLength(0);
-            hSEB.LabelsOption("h");                       // horizontal x‑labels
-            for (int i = 1; i <= 16; ++i)
-                hSEB.GetXaxis()->SetBinLabel(i, Form("SEB%02d", i - 1));
-
-            TCanvas cSEB("cMissingSEB","",800,500);
-            gPad->SetGridy();
-            hSEB.Draw("bar2");
-
-            ensure_dir( sebPng.parent_path() );
-            cSEB.SaveAs( sebPng.string().c_str() );
-
-            ulog::ok("Missing SEB distribution plot saved → " + sebPng.string());
-    }
-
-    /* 4 b. filter list */
-    std::vector<fs::path> mergeFiles;
+    const fs::path sebPng = kOutputDir / "Combined" / "MissingSEB_distribution.png";
     for (const auto& f : runFiles) {
-        std::smatch m;
-        const std::string fname = f.filename().string();
-        if (std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)"))) {
-            const std::string run = m[1].str();
-            if (badRunMap.count(run) == 0) mergeFiles.push_back(f);
+        std::smatch      m;
+        std::string      fname = f.filename().string();
+        if (!std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)")))
+            continue;
+        std::string run = m[1].str();
+
+        fs::path txt = kOutputDir / run / "MissingSEB.txt";
+        std::ifstream miss(txt);
+        if (!miss) continue;
+
+        std::string tok;           // first token = header → discard
+        if (!(miss >> tok)) continue;
+        while (miss >> tok) {
+            if (tok.rfind("SEB", 0) != 0) continue;
+            badRunMap[run].push_back(tok);
+            ++sebCount[tok];
         }
     }
 
-    /* 4 c. terminal summary */
-    ulog::banner("Missing SEB summary");
-    std::size_t nBad = badRunMap.size(), nBad1 = 0, nBadMul = 0;
-    for (const auto& [_,v] : badRunMap) (v.size()==1 ? ++nBad1 : ++nBadMul);
+    if (sebCount.empty())
+        ulog::warn("No missing‑SEB information found – merging *all* runs");
 
+    TH1I hSEB("hMissingSEB",
+              "Runs with missing SEB;SEB index;Number of runs",
+              16, -0.5, 15.5);
+    for (const auto& [seb, cnt] : sebCount) {
+        try {
+            int idx = std::stoi(seb.substr(3));
+            if (idx >= 0 && idx < 16) hSEB.SetBinContent(idx + 1, cnt);
+        } catch (...) { /* ignore malformed labels */ }
+    }
+    hSEB.SetFillColor(kAzure + 1);
+    hSEB.SetBarWidth(0.8);
+    hSEB.SetBarOffset(0.1);
+    hSEB.GetXaxis()->SetTickLength(0);
+    hSEB.LabelsOption("h");
+    for (int i = 1; i <= 16; ++i)
+        hSEB.GetXaxis()->SetBinLabel(i, Form("SEB%02d", i - 1));
+
+    TCanvas cSEB("cMissingSEB","",800,500);
+    gPad->SetGridy();  hSEB.Draw("bar2");
+    ensure_dir(sebPng.parent_path());
+    cSEB.SaveAs(sebPng.string().c_str());
+    ulog::ok("Missing‑SEB distribution → " + sebPng.string());
+
+    // ───────────────────────────────────────────────────────────────
+    // 3.  Decide which runs actually enter the merge
+    // ───────────────────────────────────────────────────────────────
+    ulog::banner("Step 3/5  –  Good / bad run selection");
+
+    std::vector<fs::path> mergeFiles;
+    for (const auto& f : runFiles) {
+        std::smatch m;
+        const std::string fileNameStr = f.filename().string();
+        if (!std::regex_search(fileNameStr, m,
+                               std::regex(R"(output_([0-9]{8})\.root)")))
+            continue;
+        std::string run = m[1].str();
+        if (badRunMap.count(run) == 0) mergeFiles.push_back(f);
+    }
+
+    const std::size_t nBad      = badRunMap.size();
+    std::size_t       nBad1     = 0, nBadMul = 0;
+    for (const auto& [_, v] : badRunMap) (v.size()==1 ? ++nBad1 : ++nBadMul);
+
+    /* ── concise headline ─────────────────────────────────────────── */
+    ulog::banner("Missing SEB summary");
     std::cout << term::CLR_BOLD
-              << "Runs with ≥1 missing SEB : " << nBad << "\n"
+              << "Runs with ≥1 missing SEB : " << nBad  << "\n"
               << "   ├─ exactly one SEB    : " << nBad1 << "\n"
               << "   └─ multiple SEBs      : " << nBadMul << "\n"
               << term::CLR_RST << std::endl;
 
+    /* ── full SEB‑by‑SEB incidence table (SEB00…SEB15) ───────────── */
     {
-        constexpr int kTotSEB = 16;           // SEB00 … SEB15
-        const std::size_t w = 5;              // width for “SEB15”
+        constexpr int kTotSEB = 16;            // SEB00 … SEB15
+        constexpr int colW    = 5;             // width for label column
 
-        std::cout << std::left << std::setw(w) << "SEB"
+        std::cout << std::left << std::setw(colW) << "SEB"
                   << " │ " << "Runs\n"
-                  << std::string(w + 7, '-') << "\n";
+                  << std::string(colW + 7,'-') << "\n";
 
         for (int i = 0; i < kTotSEB; ++i) {
             const std::string key = "SEB" + std::to_string(i);
             const int cnt = sebCount.count(key) ? sebCount.at(key) : 0;
-            std::cout << std::left << std::setw(w) << key
+            std::cout << std::left << std::setw(colW) << key
                       << " │ " << cnt << "\n";
         }
-        std::cout << std::string(w + 7, '=') << std::endl;
+        std::cout << std::string(colW + 7,'=') << std::endl;
+        if (std::getenv("EXTERNAL_HADD")) {
+            ulog::banner("External hadd – merge and re‑process steps skipped");
+            return;
+        }
     }
-
-    /* 4 d. hadd */
+    
     if (mergeFiles.size() < 2) {
-        ulog::warn("Skipping hadd – need ≥2 good runs, have "
-                  + std::to_string(mergeFiles.size()));
+        ulog::warn("Skipping hadd – need ≥ 2 good runs, have "
+                   + std::to_string(mergeFiles.size()));
         return;
     }
 
+    // ───────────────────────────────────────────────────────────────
+    // 4.  Build the file list for hadd  (nice progress output)
+    // ───────────────────────────────────────────────────────────────
+    ulog::banner("Step 4/5  –  Preparing hadd");
+
     const path combined = kInputDir / "output_ALL_COMBINED.root";
-    ulog::banner("Hadd – building " + combined.string());
-
-    ulog::info("Files to be merged (" + std::to_string(mergeFiles.size()) + " total):");
     std::uintmax_t totBytes = 0;
-    for (const auto& f : mergeFiles) {
-        const auto sz = fs::file_size(f);
-        totBytes += sz;
-        ulog::info("   + " + f.filename().string() +
-                  "  (" + std::to_string(sz / 1'024'000) + " MB)");
-    }
-    ulog::info("   ------------------------------------------------");
-    ulog::info("Accumulated input size : " +
-              std::to_string(totBytes / 1'024'000) + " MB");
+    const std::size_t nTot  = mergeFiles.size();
 
-    const auto t0Hadd = std::chrono::steady_clock::now();
+    ulog::info("Good runs to be merged : " + std::to_string(nTot));
+    ulog::info("--------------------------------------------------");
 
-    /* ------------------------------------------------------------------
-     *  High‑verbosity hadd
-     *     • gDebug = 3      → ROOT prints every object as it is merged
-     *     • extra ulog::info after each AddFile() so the terminal never
-     *       “freezes” for long periods.
-     * ------------------------------------------------------------------ */
     TFileMerger merger(/*dryRun=*/false, /*verbose=*/true);
     merger.OutputFile(combined.c_str(), "RECREATE");
 
-    /* show progress while the input list is constructed -------------- */
-    int fileIdx = 0;
-    for (const auto& f : mergeFiles) {
+    for (std::size_t i = 0; i < nTot; ++i) {
+        const auto& f  = mergeFiles[i];
+        const auto  sz = fs::file_size(f);
+        totBytes      += sz;
+        float pct      = 100.f * float(i + 1) / float(nTot);
+
         merger.AddFile(f.c_str());
-        ulog::info("   [" + std::to_string(++fileIdx) + "/"
-                  + std::to_string(mergeFiles.size()) + "] queued "
-                  + f.filename().string());
+        ulog::info(Form("  [%4zu/%4zu | %6.2f %%]  queued  %-18s  (%5llu MB)",
+                        i + 1, nTot, pct,
+                        f.filename().c_str(),
+                        static_cast<unsigned long long>(sz / 1'024'000ULL)));
+    }
+    ulog::info("--------------------------------------------------");
+    ulog::info("Accumulated size : "
+               + std::to_string(totBytes / 1'024'000ULL) + " MB");
+
+    // ───────────────────────────────────────────────────────────────
+    // 5.  Run hadd  (ROOT verbosity re‑enabled)
+    // ───────────────────────────────────────────────────────────────
+    ulog::banner("Step 5/5  –  hadd execution");
+    
+    const int prevDbg          = gDebug;
+    const int prevIgnoreLevel  = gErrorIgnoreLevel;
+
+    /*---------------------------------------------------------------*
+     * Keep ROOT quiet unless the user explicitly requests deep
+     * internal chatter (set VERBOSE=3 or higher on the command line).
+     * Your own ulog::banner/info/ok messages and the percent
+     * progress from TFileMergerProgress remain fully visible.
+     *---------------------------------------------------------------*/
+    if (const char* v = std::getenv("VERBOSE"); v && std::atoi(v) >= 3) {
+        gDebug            = 2;        // detailed object‑level prints
+        gErrorIgnoreLevel = kPrint;   // show ROOT "Info" messages
+    } else {
+        gDebug            = 0;        // suppress ROOT debug output
+        gErrorIgnoreLevel = kWarning; // show only warnings & errors
     }
 
-    /* ROOT‑internal debug level – higher → more chatter (1‑3 is typical) */
-    const int prevDbg = gDebug;
-    gDebug = 0;
-    ulog::info("Starting ROOT hadd with gDebug = 3 (very verbose)");
+    const auto t0Hadd = std::chrono::steady_clock::now();
 
-    bool ok = merger.Merge();                 // performs the actual copy/merge
+#if defined(__has_include) && __has_include(<ROOT/TFileMergerProgress.hxx>)
+#include <ROOT/TFileMergerProgress.hxx>
+    ROOT::Experimental::TFileMergerProgress prog(&merger);
+    std::thread progressThr([&prog](){
+        while (!prog.Finished()) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            ulog::trace(Form("      hadd progress: %5.1f %%",
+                             prog.GetPercent()));
+        }
+    });
+#endif
+    bool ok = merger.Merge();        // ← the actual merge
 
-    gDebug = prevDbg;                         // restore previous setting
+#if defined(__has_include) && __has_include(<ROOT/TFileMergerProgress.hxx>)
+    if (progressThr.joinable()) progressThr.join();
+#endif
+
+    gDebug            = prevDbg;            // restore
+    gErrorIgnoreLevel = prevIgnoreLevel;
+
     if (!ok) {
         ulog::err("TFileMerger failed – combined QA skipped");
         return;
     }
-    ulog::ok("ROOT hadd completed successfully");
 
-    const auto dHadd   = std::chrono::duration<double>(
+    const auto dHadd = std::chrono::duration<double>(
                            std::chrono::steady_clock::now() - t0Hadd).count();
-    const auto outSize = fs::file_size(combined);
+    const auto outSz = fs::file_size(combined);
 
-    ulog::ok("Combined ROOT file created in " +
-            std::to_string(dHadd).substr(0,5) + " s,  size " +
-            std::to_string(outSize / 1'024'000) + " MB");
+    ulog::ok("ROOT hadd finished in "
+             + std::to_string(dHadd).substr(0,5) + " s  →  "
+             + std::to_string(outSz / 1'024'000ULL) + " MB");
 
-    runOneQaPass(combined.string(),
-                 (kOutputDir / "Combined").string());
+    // ───────────────────────────────────────────────────────────────
+    // 6.  Final combined QA pass
+    // ───────────────────────────────────────────────────────────────
+    runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
 }
 
 
+
+// ────────────────────────────────────────────────────────────────────
+//  Helper: run a lambda & time it  (prints nice start/done lines)
+// ────────────────────────────────────────────────────────────────────
+template <typename F>
+static void timedBlock(const std::string& title, F&& func)
+{
+    ulog::banner(title);
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+        func();
+        const auto dt = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - t0).count();
+        ulog::ok("✓  " + title + " – done in " +
+                 std::to_string(dt).substr(0,5) + " s");
+    }
+    catch (const std::exception& ex) {
+        ulog::err("✗  " + title + " – failed: " + ex.what());
+        throw;      // let the caller decide what to do
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────────────
+//  VERBOSE entry point
+// ────────────────────────────────────────────────────────────────────
 void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
 {
-    /* ── special mode: “final‑only” – build fresh hadd, then run QA ── */
+    /* ------------------------------------------------------------ *
+     *  General configuration banner
+     * ------------------------------------------------------------ */
+    ulog::banner("► analyzeRun24or25auau – entry");
+    ulog::info(std::string("testRun          = ") + (testRun ? "true" : "false"));
+    ulog::info("nSample          = " + std::to_string(nSample));
+    ulog::info(std::string("COMBINED_ONLY    = ") +
+               (std::getenv("COMBINED_ONLY")    ? "set" : "unset"));
+    ulog::info(std::string("HADD_AND_FINALIZE = ") +
+               (std::getenv("HADD_AND_FINALIZE") ? "set" : "unset"));
+
     const bool combinedOnly = (std::getenv("COMBINED_ONLY") != nullptr);
+
+    /* ------------------------------------------------------------ *
+     *  COMBINED‑ONLY MODE
+     * ------------------------------------------------------------ */
     if (combinedOnly)
     {
-        /* gather every per‑run file currently under kInputDir */
-        std::vector<fs::path> runFiles = discoverInputRuns();
+        const bool externalHadd = (std::getenv("EXTERNAL_HADD") != nullptr);
 
-        /* if we have ≥2 inputs, redo the hadd + combined QA pass        *
-         * (mergeRunsAndReprocess will also call runOneQaPass() on the  *
-         * freshly‑created output_ALL_COMBINED.root)                     */
-        if (runFiles.size() >= 2)
+        /* ------------------------------------------------------------
+         * When EXTERNAL_HADD is set, assume output_ALL_COMBINED.root
+         * already exists (built by the shell script) and skip merging.
+         * ---------------------------------------------------------- */
+        if (externalHadd)
         {
-            ulog::banner("Combined‑only mode → rebuilding combined file via hadd");
-            mergeRunsAndReprocess(runFiles, /*testRun=*/false);
-        }
-        else
-        {
-            /* fallback: use the already‑existing combined file */
+            /* ── 1. print Missing‑SEB statistics (Steps 1‑3 only) ───────── */
+            std::vector<fs::path> runFiles = discoverInputRuns();
+            if (!runFiles.empty())
+                mergeRunsAndReprocess(runFiles, /*testRun=*/false);   // will auto‑skip merge
+
+            /* ── 2. run the combined QA pass on the already‑hadded file ─── */
             fs::path combined = kInputDir / "output_ALL_COMBINED.root";
             if (!fs::exists(combined)) {
-                ulog::err("COMBINED_ONLY set but neither per‑run ROOT files "
-                           "nor " + combined.string() + " found");
+                ulog::err("EXTERNAL_HADD set but " + combined.string() +
+                          " not found – abort");
                 return;
             }
-            ulog::banner("Combined‑only mode → using existing " + combined.string());
+            ulog::banner("Combined‑only | external hadd detected – using " +
+                         combined.string());
             runOneQaPass(combined.string(), (kOutputDir / "Combined").string());
+
+            ulog::banner("◄ analyzeRun24or25auau – exit (combined‑only mode)");
+            return;
         }
-        return;   // nothing else to do in combined‑only mode
+
+        /* legacy path – fall back to internal merge if necessary */
+        timedBlock("Combined‑only | discover per‑run files", [&]{
+            std::vector<fs::path> runFiles = discoverInputRuns();
+
+            if (runFiles.size() >= 2) {
+                ulog::info("Found " + std::to_string(runFiles.size()) +
+                           " per‑run files – rebuilding combined file");
+                mergeRunsAndReprocess(runFiles, /*testRun=*/false);
+            }
+            else {
+                fs::path combined = kInputDir / "output_ALL_COMBINED.root";
+                if (!fs::exists(combined)) {
+                    ulog::err("Neither ≥2 per‑run files nor existing "
+                              + combined.string() + " found – abort");
+                    return;
+                }
+                ulog::info("Using existing combined file "
+                           + combined.string());
+                runOneQaPass(combined.string(),
+                             (kOutputDir / "Combined").string());
+            }
+        });
+        ulog::banner("◄ analyzeRun24or25auau – exit (combined‑only mode)");
+        return;
     }
-    /* 0. discover input ROOT files --------------------------------- */
-    std::vector<fs::path> runFiles = discoverInputRuns();
+
+    /* ------------------------------------------------------------ *
+     *  STEP 0  –  discover *.root input files
+     * ------------------------------------------------------------ */
+    std::vector<fs::path> runFiles;
+    timedBlock("Step 0/3  –  discoverInputRuns()", [&]{
+        runFiles = discoverInputRuns();
+        if (runFiles.empty()) {
+            ulog::warn("No input files – nothing to do");
+            return;
+        }
+        ulog::info("Discovered " + std::to_string(runFiles.size()) +
+                   " per‑run ROOT files");
+        const std::size_t preview = std::min<std::size_t>(5, runFiles.size());
+        for (std::size_t i = 0; i < preview; ++i)
+            ulog::trace("   • " + runFiles[i].filename().string());
+        if (runFiles.size() > preview)
+            ulog::trace("   … (" +
+                        std::to_string(runFiles.size() - preview) +
+                        " more)");
+    });
     if (runFiles.empty()) return;
 
-    /* 1. optional Top‑N sampling ----------------------------------- */
-    selectTopNRuns(nSample, runFiles);
-    if (runFiles.empty()) return;          // sampling aborted due to no stats
+    /* ------------------------------------------------------------ *
+     *  STEP 1  –  optional Top‑N sampling
+     * ------------------------------------------------------------ */
+    timedBlock("Step 1/3  –  selectTopNRuns()", [&]{
+        selectTopNRuns(nSample, runFiles);
+        if (runFiles.empty())
+            ulog::warn("Sampling removed all runs – nothing left");
+        else
+            ulog::info("Proceeding with " +
+                       std::to_string(runFiles.size()) + " runs");
+    });
+    if (runFiles.empty()) return;
 
-    /* 2. process every run sequentially */
-    processRunsSequentially(runFiles, testRun);
+    /* ------------------------------------------------------------ *
+     *  STEP 2  –  per‑run processing
+     * ------------------------------------------------------------ */
+    timedBlock("Step 2/3  –  per‑run QA", [&]{
+        processRunsSequentially(runFiles, testRun);
+    });
 
-    /* 3. optional merge + re‑run on combined file ------------------
-       Perform this step **only** when the wrapper sets
-       HADD_AND_FINALIZE=1  (i.e. in “haddAndFinalize” modes).        */
+    /* ------------------------------------------------------------ *
+     *  STEP 3  –  optional merge + final combined pass
+     * ------------------------------------------------------------ */
     if (std::getenv("HADD_AND_FINALIZE"))
-        mergeRunsAndReprocess(runFiles, testRun);
+    {
+        timedBlock("Step 3/3  –  mergeRunsAndReprocess()", [&]{
+            mergeRunsAndReprocess(runFiles, testRun);
+        });
+    }
+    else {
+        ulog::banner("Step 3/3  –  merge skipped "
+                     "(HADD_AND_FINALIZE not set)");
+    }
+
+    ulog::banner("◄ analyzeRun24or25auau – normal exit");
 }

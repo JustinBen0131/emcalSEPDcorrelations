@@ -39,7 +39,6 @@
 #
 #  HTCondor artefacts live in   $PROJECT_BASE/{log | stdout | error}
 ##############################################################################
-
 set -euo pipefail
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -69,6 +68,11 @@ if [[ ${1:-} == "--verbose" || ${1:-} == "-v" ]]; then
     verbose="true"; export VERBOSE=1; shift
 fi
 
+# → enable bash trace when VERBOSE ≥2  (shows every shell command)
+if (( VERBOSE >= 2 )); then
+    set -x
+fi
+
 # ────────────────────────────────────────────────────────────────────────────
 # 1.  MODE PARSER
 # ────────────────────────────────────────────────────────────────────────────
@@ -76,6 +80,11 @@ mode="${1:-}"
 test_arg="false"        # C++ parameter #1
 sample_arg="-1"         # C++ parameter #2
 
+# helper banner
+clr_cyan=$'\033[1;36m'; clr_end=$'\033[0m'
+step_banner() { printf "${clr_cyan}==========  %s  ==========${clr_end}\n" "$*"; }
+
+step_banner "Argument parsing"
 case "${mode}" in
   "") ;;                                           # desktop – full suite
   fromLocalNode)      export RUN_LOCATION=local  ; shift ;;
@@ -133,10 +142,44 @@ note() { printf "${clr_blu}[INFO]${clr_end}  %s\n" "$*"; }
 warn() { printf "${clr_red}[WARN]${clr_end}  %s\n" "$*"; }
 die () { printf "${clr_red}[FATAL]${clr_end} %s\n" "$*" >&2; exit 2; }
 
+
+##############################################################################
+# perform_hadd  – build output_ALL_COMBINED.root with the classic ROOT hadd
+# Skips runs that have MissingSEB.txt (i.e. “bad” runs).
+##############################################################################
+perform_hadd () {
+    local input_dir="$1"        # e.g.  /sphenix/u/$USER/…/output
+    local plots_dir="$2"        # e.g.  /sphenix/tg/tg01/…/outputPlots
+    local combined="${input_dir}/output_ALL_COMBINED.root"
+
+    note "hadd – collecting per‑run ROOT files"
+    good_files=()
+    for f in "${input_dir}"/output_*.root ; do
+        [[ "$(basename "$f")" == "output_ALL_COMBINED.root" ]] && continue   # skip target file
+        run="${f##*/}"; run="${run#output_}"; run="${run%.root}"
+        [[ -s "${plots_dir}/${run}/MissingSEB.txt" ]] && { \
+              warn "  ↳ run ${run} excluded (MissingSEB.txt not empty)"; continue; }
+        good_files+=( "${f}" )
+    done
+    (( ${#good_files[@]} >= 2 )) || { warn "Need ≥2 good runs – aborting hadd"; return 1; }
+
+    total_mb=0
+    for g in "${good_files[@]}"; do
+        sz=$( { stat -c%s "$g" 2>/dev/null || stat -f%z "$g"; } ) || sz=0
+        (( total_mb += sz/1024/1024 ))
+    done
+    note "Merging ${#good_files[@]} runs  (≈${total_mb} MB total)"
+    rm -f "${combined}"
+    hadd -f "${combined}" "${good_files[@]}" || die "hadd failed"
+    note "Combined file created → ${combined}"
+}
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 3.  Condor submission pathway
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
+    step_banner "Condor submission configuration"
 
     # ------------------------------------------------------------------
     #  haddAndFinalize  →  exactly one job that merges all runs and
@@ -147,7 +190,7 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
         note "haddAndFinalize mode – submitting single finalize job"
 
         PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
-        EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"   # ← reuse one wrapper
+        EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"   # reuse wrapper
 
         SUBMIT_DIR="${PROJECT_BASE}/tmp_condor_submit"
         LOG_DIR="${PROJECT_BASE}/log"
@@ -163,8 +206,6 @@ if [[ "${mode}" == "condor" || "${mode}" == "condorTest" ]]; then
         done
         mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}"
 
-        # ⚠  deliberate: we do NOT touch \$OUTPUT_DIR here → existing plots stay intact
-
 cat > "${SUBMIT_DIR}/haddAndFinalize.sub" <<EOS
         universe        = vanilla
         executable      = ${EXEC_WRAPPER}
@@ -177,9 +218,10 @@ cat > "${SUBMIT_DIR}/haddAndFinalize.sub" <<EOS
         +JobFlavour     = "tomorrow"
         queue
 EOS
+        note "Submitting finalize HTCondor job"
         condor_submit "${SUBMIT_DIR}/haddAndFinalize.sub" \
             || die "condor_submit failed for finalize job"
-        note "Finalize job submitted – exiting."
+        note "Finalize job submitted – exiting wrapper."
         exit 0
     fi
 
@@ -200,6 +242,7 @@ EOS
 
     mapfile -t roots < <(ls "${INPUT_DIR}"/output_*.root 2>/dev/null | sort)
     [[ ${#roots[@]} -gt 0 ]] || die "No ROOT files in ${INPUT_DIR}"
+    note "Found ${#roots[@]} ROOT input files"
 
     # pick the ROOT file that has the *most* events (proxy = size)
     if [[ "${mode}" == "condorTest" ]]; then
@@ -208,7 +251,6 @@ EOS
         largest=""
         maxSize=0
         for f in "${roots[@]}"; do
-            # GNU/Linux uses “stat -c%s”, macOS/BSD uses “stat -f%z”
             sz=$( { stat -c%s "$f" 2>/dev/null || stat -f%z "$f"; } ) || sz=0
             (( sz > maxSize )) && { maxSize=$sz; largest="$f"; }
         done
@@ -222,15 +264,13 @@ EOS
 
     note "Cleaning previous submission artefacts"
 
-    # always clear temporary submit files
     rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true
 
-    # wipe the entire PNG tree only when the user asked for it
     if [[ "${wipePlots}" == "true" && "${finalOnly}" != "true" ]]; then
+        warn "wipePrevPlots requested – deleting existing ${OUTPUT_DIR}"
         rm -rf "${OUTPUT_DIR:?}/"* 2>/dev/null || true
     fi
 
-    # ── remove log/stdout/stderr files from any earlier attempt ────────────
     for rf in "${roots[@]}"; do
         run="$(basename "${rf}" .root)"; run="${run#output_}"
         rm -f  "${LOG_DIR}/${run}.log"    2>/dev/null || true
@@ -239,17 +279,16 @@ EOS
     done
 
     mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
-    # ──────────────────────────────────────────────────────────────────
-    #  submit one job per run; wait; verify output; run hadd+QA
-    # ──────────────────────────────────────────────────────────────────
-    runLogs=()                          # HTCondor .log files for condor_wait
-    expRuns=${#roots[@]}                # how many runs we expect to finish
+
+    step_banner "Submitting per‑run jobs"
+    runLogs=()
+    expRuns=${#roots[@]}
 
     for rf in "${roots[@]}"; do
         run="$(basename "${rf}" .root)"; run="${run#output_}"
         sub="${SUBMIT_DIR}/${run}.sub"
 
-        note "Submitting run ${run}"
+        note "→ Submitting run ${run}"
         note "   input    : ${rf}"
         note "   out‑dir  : ${OUTPUT_DIR}/${run}"
 
@@ -260,16 +299,16 @@ cat > "${sub}" <<EOS
         output          = ${STDOUT_DIR}/${run}.out
         error           = ${STDERR_DIR}/${run}.err
         log             = ${LOG_DIR}/${run}.log
-        getenv          = True             # ← pass entire env, incl. VERBOSE
+        getenv          = True
         request_memory  = 4GB
         +JobFlavour     = "tomorrow"
         queue
 EOS
         
-        condor_submit "${sub}"              || die "condor_submit failed for ${run}"
+        condor_submit "${sub}" || die "condor_submit failed for ${run}"
         runLogs+=( "${LOG_DIR}/${run}.log" )
     done
-    note "All ${expRuns} run-jobs submitted – exiting."
+    note "All ${expRuns} run‑jobs submitted – exiting submission block."
     exit 0
 fi
 
@@ -277,12 +316,21 @@ fi
 # 3‑B.  haddAndFinalizeLocal  –  run merge + combined QA *locally*
 # ──────────────────────────────────────────────────────────────────
 if [[ "${localFinalize}" == "true" ]]; then
-    note "haddAndFinalizeLocal – running merge + combined QA locally"
+    step_banner "Local hadd + finalize"
+
     PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
-    EXEC_WRAPPER="${PROJECT_BASE}/macros/runAuAuExecutable.sh"
-    [[ -x "${EXEC_WRAPPER}" ]] || die "Wrapper ${EXEC_WRAPPER} missing or not executable"
-    export HADD_AND_FINALIZE=1
-    "${EXEC_WRAPPER}" --final
+    INPUT_DIR="${PROJECT_BASE}/output"
+    OUTPUT_DIR="/sphenix/tg/tg01/bulk/jbennett/GLOBAL_QA/outputPlots"
+
+    perform_hadd "${INPUT_DIR}" "${OUTPUT_DIR}" || exit 2
+
+    # run the combined QA pass on the freshly‑hadded file
+    export COMBINED_ONLY=1          # skip per‑run loops
+    export EXTERNAL_HADD=1          # tells the C++ macro not to rebuild
+    root -l -b -q \
+         -e "gSystem->SetBuildDir(\"${TMPDIR:-/tmp}\",kTRUE)" \
+         "${macro}+Ok(false,-1)"
+
     note "Local finalize completed."
     exit 0
 fi
@@ -292,11 +340,13 @@ fi
 # --------------------------------------------------------------------------
 if [[ $# -ge 1 ]]; then
     export QA_ONLY="$1"; shift
+    note "QA_ONLY filter applied → ${QA_ONLY}"
 fi
 
 # --------------------------------------------------------------------------
-# 5.  Desktop / interactive execution (unchanged, just more noise if -v)
+# 5.  Desktop / interactive execution
 # --------------------------------------------------------------------------
+step_banner "Interactive / desktop execution"
 export LDFLAGS="${LDFLAGS:-} -Wl,-no_warn_duplicate_libraries"
 root_flags=(-l -b -q)
 
@@ -314,19 +364,19 @@ output_root="${HOME}/Desktop/auauAnalysis/emcalSEPDcorrelations/output"
 [[ "${RUN_LOCATION:-local}" == "local" ]] || clean_output="false"
 
 if [[ "${clean_output}" == "true" && -d "${output_root}" ]]; then
-    note "Cleaning old local output under ${output_root}"
+    warn "Cleaning old local output under ${output_root}"
     rm -rf "${output_root:?}/"*
 fi
 
 macro_dir="$(cd "$(dirname "${macro}")" && pwd)"
 macro_base="$(basename "${macro%.*}")_cpp"
 
-# ── wipe the previous ACLiC build area and recreate it ────────────────
 rm -rf "${macro_dir}/.aclic_build"
 mkdir -p "${macro_dir}/.aclic_build"
 
-# ── remove any stray libraries from earlier compilations ──────────────
 find "${macro_dir}" -maxdepth 1 -type f -name "${macro_base}_ACLiC_*" -delete
 rm -f "${macro_dir}/${macro_base}".{so,d}
 
+note "Launching ROOT compilation / execution"
 "${root_cmd[@]}" 2>&1 | grep -vE '^ld: warning: duplicate -rpath .+ ignored$'
+note "ROOT macro completed"
