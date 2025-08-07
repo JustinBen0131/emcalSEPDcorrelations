@@ -118,7 +118,7 @@ log           = ${LOG_DIR}/${run}.log
 output        = ${STDOUT_DIR}/${run}.out
 error         = ${STDERR_DIR}/${run}.err
 getenv        = True
-request_memory= 4GB
+request_memory= 1.5GB
 +JobFlavour   = "tomorrow"
 queue
 EOF
