@@ -98,8 +98,75 @@ step(){ printf "\n${clrB}==========  %s  ==========${clr0}\n" "$*"; }
 
 [[ -x "${EXEC_WRAPPER}" ]] || die "wrapper ${EXEC_WRAPPER} not found"
 
-# ──────────────────────────  stage‑0  –  per‑run Condor grid  ──────────────
-stage0(){
+stage0(){   # optional arg: rescueBusy
+  local action="${1:-}"
+
+  # ───────────────────────────────────────────────────────────────────
+  # rescueBusy: kill Stage‑0 Condor jobs (runAuAuExecutable.sh) and
+  #             process those runs locally, sequentially
+  # ───────────────────────────────────────────────────────────────────
+  if [[ "$action" == rescueBusy ]]; then
+    step "Stage‑0  –  rescueBusy (remove Condor per‑run jobs and run locally)"
+
+    # 1) discover busy Stage‑0 runs from Condor
+    declare -a busyRuns=()
+    while read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" ]] && continue
+      # Args look like: "<INPUT_DIR>/output_XXXXXXXX.root  <OUTPUT_DIR>/XXXXXXXX"
+      # Prefer extracting from the first token (input ROOT path)
+      rf="${line%% *}"
+      if [[ "$rf" =~ output_([0-9]{5,8})\.root ]]; then
+        busyRuns+=( "${BASH_REMATCH[1]}" )
+      elif [[ "$line" =~ /([0-9]{5,8})([[:space:]]|$) ]]; then
+        busyRuns+=( "${BASH_REMATCH[1]}" )
+      fi
+    done < <(
+      condor_q "$USER" \
+        -constraint 'regexp("runAuAuExecutable.sh",Cmd) && (JobStatus == 1 || JobStatus == 2)' \
+        -af Args 2>/dev/null
+    ) || true
+
+    if (( ${#busyRuns[@]} == 0 )); then
+      note "No active Stage‑0 jobs to rescue."
+      return
+    fi
+
+    # dedupe + show
+    mapfile -t busyRuns < <(printf '%s\n' "${busyRuns[@]}" | sort -u)
+    note "Active Stage‑0 run(s): $(printf '%s ' "${busyRuns[@]}")"
+
+    # 2) remove those Condor jobs (do not touch any files)
+    local busyExpr='regexp("runAuAuExecutable.sh",Cmd) && (JobStatus == 1 || JobStatus == 2)'
+    local nKill
+    nKill=$(condor_q "$USER" -constraint "$busyExpr" -af ClusterId ProcId 2>/dev/null | wc -l)
+    if (( nKill > 0 )); then
+      note "Removing $nKill Condor job(s) for Stage‑0"
+      condor_rm "$USER" -constraint "$busyExpr" || warn "condor_rm returned non‑zero – continuing anyway"
+    else
+      note "No matching Condor jobs to remove"
+    fi
+
+    # 3) run the same work locally, one run after another
+    mkdir -p "${OUTPUT_DIR}"
+    for run in "${busyRuns[@]}"; do
+      local rf="${INPUT_DIR}/output_${run}.root"
+      local outdir="${OUTPUT_DIR}/${run}"
+      if [[ ! -f "$rf" ]]; then
+        warn "Input ROOT not found for run ${run} → ${rf}  (skipped)"
+        continue
+      fi
+      mkdir -p "$outdir"
+      note "Local Stage‑0 processing for run ${run}"
+      "${EXEC_WRAPPER}" "$rf" "$outdir" || warn "Local Stage‑0 processing failed for run ${run}"
+    done
+
+    note "Stage‑0 rescueBusy finished."
+    return
+  fi
+
+  # ───────────────────────────────────────────────────────────────────
+  # Normal Stage‑0 submission path
+  # ───────────────────────────────────────────────────────────────────
   step "Stage‑0  –  submit run‑by‑run Condor jobs"
   rm -rf "${SUBMIT_DIR:?}/"* 2>/dev/null || true
   mkdir -p "${SUBMIT_DIR}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" "${OUTPUT_DIR}"
@@ -126,6 +193,7 @@ EOF
   done
   note "All ${#roots[@]} run‑jobs submitted."
 }
+
 
 # ───────────────────────  stage-1  –  SEB / HCal diagnostics  ──────────────
 stage1(){
