@@ -160,16 +160,24 @@ case "$MODE" in
             usage
         fi
         ;;
+
+  rescueBusy)          # NEW ─ kill active jobs and finish those runs locally
+        [[ -z "$SUBMODE" ]] || usage
+        ;;
+
   addRuns)
-      [[ -z "$SUBMODE" || "$SUBMODE" == condor ]] || usage
-      ;;
+        [[ -z "$SUBMODE" || "$SUBMODE" == condor ]] || usage
+        ;;
+
   local)
-      [[ -n "$SUBMODE" && "$SUBMODE" =~ ^[0-9]{5,8}$ ]] || usage
-      ;;
+        [[ -n "$SUBMODE" && "$SUBMODE" =~ ^[0-9]{5,8}$ ]] || usage
+        ;;
+
   *)
-      usage
-      ;;
+        usage
+        ;;
 esac
+
 
 # Flag: should we keep busy runs and merely skip the still‑running chunk files?
 SKIP_RUNNING=0
@@ -551,10 +559,29 @@ declare -Ag busySet=()                 # busySet[run]=1   (global)
 
 refresh_busy_runs() {
   busySet=()
-  while read -r token; do busySet["$token"]=1; done < <(
-      condor_q "$USER" -constraint "$QA_CMD_FILTER" -af Cmd Args 2>/dev/null |
-      grep -Eo '[0-9]{5,8}' | sort -u
+
+  # ---- A.  still‑running *chunk* jobs (run_auau_run3_qa.sh) ----------
+  while read -r run; do
+      [[ $run =~ ^[0-9]{5,8}$ ]] && busySet["$run"]=1
+  done < <(
+      condor_q "$USER" \
+          -constraint 'regexp("run_auau_run3_qa.sh",Cmd) && (JobStatus == 1 || JobStatus == 2)' \
+          -af Args 2>/dev/null |
+      awk '{print $1}'
   )
+
+  # ---- B.  still‑running *per‑run‑hadd* jobs (hadd_run_condor.sh) ----
+  # Each Args line looks like:
+  #   /path/to/in_00066749.txt  /path/to/output_00066749.root
+  # We need just the 00066749 part; also prevent set ‑e from aborting
+  # when the final read returns 1 (EOF).
+  while read -r line || [[ -n $line ]]; do
+      [[ $line =~ in_([0-9]{5,8})\.txt ]] && busySet["${BASH_REMATCH[1]}"]=1
+  done < <(
+      condor_q "$USER" \
+          -constraint 'regexp("hadd_run_condor.sh",Cmd) && (JobStatus == 1 || JobStatus == 2)' \
+          -af Args 2>/dev/null
+  ) || true
 }
 
 # ---- 6b. heavy‑duty purge ---------------------------------------------------
@@ -690,8 +717,46 @@ EOT
   exit 0
 fi
 
+
 ###############################################################################
-# ---- 9.  SINGLE‑RUN LOCAL MERGE --------------------------------------------
+# ---- 9a.  RESCUE‑BUSY RUNS LOCALLY  (MODE = rescueBusy)  ---------------------
+###############################################################################
+if [[ $MODE == rescueBusy ]]; then
+  refresh_busy_runs
+  (( ${#busySet[@]} )) || { good "No active Condor jobs – nothing to rescue"; exit 0; }
+
+  say "Rescuing ${#busySet[@]} run(s) still in Condor:  ${!busySet[@]}"
+  # kill both chunk‑analysis and per‑run‑hadd jobs in one go
+  busyExpr='regexp("run_auau_run3_qa.sh|hadd_run_condor.sh",Cmd) && (JobStatus == 1 || JobStatus == 2)'
+  nKill=$(condor_q "$USER" -constraint "$busyExpr" -af ClusterId ProcId 2>/dev/null | wc -l)
+  if (( nKill > 0 )); then
+      say "  • removing $nKill active Condor job(s)"
+      condor_rm "$USER" -constraint "$busyExpr" \
+          || warn "condor_rm returned non‑zero – continuing anyway"
+  else
+      say "  • no active Condor jobs to remove"
+  fi
+
+  for run in "${!busySet[@]}"; do
+      say "Local HADD for run ${run}"
+      inDir=$CONDOR_OUT_BASE/$run
+      list=$TMP_LIST_DIR/in_${run}.txt
+      outFile=$OUTPUT_DIR/${RUN_MERGED_PREFIX}_${run}.root
+
+      safe_find "$inDir" "$list" || { warn "    no finished chunks yet – skipped"; continue; }
+      [[ -f $outFile ]] && { say "    removing stale $outFile"; rm -f "$outFile"; }
+
+      "$HADD_WRAPPER" "$list" "$outFile"
+      good "Run ${run} merged locally  →  $(du -h "$outFile" | cut -f1)"
+  done
+
+  good "Rescue phase finished"
+  exit 0
+fi
+
+
+###############################################################################
+# ---- 9b.  SINGLE‑RUN LOCAL MERGE --------------------------------------------
 ###############################################################################
 if [[ $MODE == local || ( $MODE == condorStillRunning && $SUBMODE == local ) ]]; then
   if [[ $MODE == local ]]; then

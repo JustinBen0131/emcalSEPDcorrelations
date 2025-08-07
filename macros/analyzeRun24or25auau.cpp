@@ -537,9 +537,26 @@ class Pi0QA : public QA
             csvSB.open(p);
             if (!csvSB.is_open())
                 throw std::runtime_error("unable to open " + p.string());
-
             csvSB << "trigger,cent,pTlo,pThi,slice,windowSigma,sb,err\n";
             log(Lvl::DBG,"opened S/B CSV at " + p.string());
+
+            /* ───────────────────────────────────────────────────────────────
+             * Combined pass: write its own fit‑parameter CSV so the summary
+             * macro can treat it exactly like any regular run.
+             * ─────────────────────────────────────────────────────────────── */
+            if (runID == "Combined") {
+                if (csvFit.is_open()) csvFit.close();                    // detach old file
+                fs::path f = root / "InvariantMassSummary.csv";          // …/Combined/…
+                ensure_dir(f.parent_path());
+                csvFit.open(f);                                          // create / truncate
+                if (!csvFit.is_open())
+                    throw std::runtime_error("unable to open " + f.string());
+                csvFit << "trigger,Ecut,Chicut,Asymcut,"
+                       << "pTlo,pThi,cent,"
+                       << "mu,muErr,sigma,sigmaErr,"
+                       << "etaMu,etaMuErr,etaSigma,etaSigmaErr\n";
+                log(Lvl::DBG,"opened fit CSV at " + f.string());
+            }
         }
         catch (const std::exception& ex) {
             log(Lvl::ERR,std::string("ctor error: ")+ex.what());
@@ -1028,8 +1045,8 @@ class Pi0QA : public QA
                 _storedFit[slice].poly .reset(new TF1(poly ));
             }
 
-            if (fitOK)
-            {
+            /* NEW IMPLEMENTATION – skip synthetic passes such as "Combined" */
+            if (fitOK && std::all_of(runID.begin(), runID.end(), ::isdigit)) {
                 auto &m = s_runPoints[slice];
                 if (m.count(runID)==0)
                     m[runID] = {piMu,piMuErr,piSig,piSigErr};
@@ -2200,12 +2217,20 @@ inline void setupPad(TVirtualPad* p)
     p->SetTopMargin  (0.08);
 }
 
-static std::string stripLeadingZeros(const std::string& runDir)
+static std::string stripLeadingZeros(const std::string& s)
 {
-    std::smatch m;
-    if (std::regex_search(runDir, m, std::regex(R"((\d+)$)")))
-        return std::to_string(std::stoul(m[1].str()));   // 44777
-    return runDir;                                       // fallback
+    const bool isNumeric = !s.empty() &&
+                           std::all_of(s.begin(), s.end(),
+                                       [](unsigned char c){ return std::isdigit(c); });
+
+    if (!isNumeric)                 // e.g. "Combined", "TestRun", …
+        return s;                   // leave it untouched
+
+    std::size_t firstNonZero = s.find_first_not_of('0');
+    if (firstNonZero == std::string::npos)
+        return "0";                 // the string was "000…0"
+
+    return s.substr(firstNonZero);  // safe – no conversion needed
 }
 
 static void tightenAxes(TH1* h)
@@ -2808,19 +2833,24 @@ class CorrQA : public QA
         const std::string aggKey = totGroup + "|" + canonName + "|" +
                                    slice + "|" + runID;
 
+        /* accept *only* genuine 2‑D histograms – 1‑D Δη/Δφ spectra must skip */
+        if (!o->InheritsFrom(TH2::Class())) return;
+
         struct Agg { std::shared_ptr<TH2> h; int parts = 0; };
         static std::unordered_map<std::string, Agg> agg;
 
         Agg& a = agg[aggKey];
+        TH2* h2 = static_cast<TH2*>(o);          // safe – we just checked
+
         if (!a.h) {
-            a.h.reset(static_cast<TH2*>(o->Clone()));
+            a.h.reset(static_cast<TH2*>(h2->Clone()));
             a.h->SetDirectory(nullptr);
             a.h->SetName(canonName.c_str());
         } else {
-            a.h->Add(static_cast<TH2*>(o));
+            a.h->Add(h2);                        // add the matching IHCal / OHCal map
         }
-        if (++a.parts != 2) return;                  // wait for the other HCal
-
+        if (++a.parts != 2) return;              // wait until both halves are present
+        
         tidyAxes(a.h.get()); styleAxes(a.h.get(), false);
 
         fs::path dir = root / "correlations" / totGroup;
@@ -4443,10 +4473,11 @@ public:
                 const bool newFile = !fs::exists(csvPath);
                 std::ofstream csv(csvPath, std::ios::app);
                 if (newFile)
-                    csv << "run,mu,muErr,sigma,sigmaErr\n";
+                    csv << "run,mu,muErr,sigma,sigmaErr,nEvt\n";
 
                 csv << runID << ',' << mu  << ',' << muErr
-                    << ','   << sigma << ',' << sigErr << '\n';
+                    << ','   << sigma << ',' << sigErr
+                    << ','   << nEvt  << '\n';
 
                 std::cout << "[EventQA‑DBG] stored as current BEST for run "
                           << runID << "  and appended to " << csvPath << '\n';
@@ -4513,17 +4544,29 @@ public:
                 while (std::getline(csv, line))
                 {
                     std::stringstream ss(line);
-                    std::string run, sMu, sMuE, sSi, sSiE;
-                    std::getline(ss, run, ',');
-                    std::getline(ss, sMu , ',');  std::getline(ss, sMuE, ',');
-                    std::getline(ss, sSi , ',');  std::getline(ss, sSiE, ',');
+                    std::string run, sMu, sMuE, sSi, sSiE, sNEvt;
+                    std::getline(ss, run , ',');
+                    std::getline(ss, sMu  , ',');  std::getline(ss, sMuE , ',');
+                    std::getline(ss, sSi  , ',');  std::getline(ss, sSiE , ',');
+                    std::getline(ss, sNEvt, ',');
 
                     VzPoint& p = s_points[run];
                     p.mu        = std::stod(sMu);
                     p.muErr     = std::stod(sMuE);
                     p.sigma     = std::stod(sSi);
                     p.sigmaErr  = std::stod(sSiE);
-                    /* nEvt, hist left unset – not needed for summary plots  */
+
+                    /* convert nEvt defensively: treat empty or malformed as zero */
+                    long long nEvtVal = 0;
+                    if (!sNEvt.empty())
+                    {
+                        try {
+                            nEvtVal = std::stoll(sNEvt);
+                        } catch (...) {
+                            nEvtVal = 0;
+                        }
+                    }
+                    p.nEvt = nEvtVal;
                 }
                 std::cout << "[EventQA‑DBG] loaded " << s_points.size()
                           << " rows from " << csvPath << '\n';
@@ -4574,8 +4617,12 @@ public:
             bool first = true;
             for (auto& [run,p] : s_points)
             {
+                if (!p.hist)                         // skip runs restored only from CSV
+                    continue;
+
                 Color_t col = nextColour();
-                p.hist->SetLineColor(col); p.hist->SetLineWidth(2);
+                p.hist->SetLineColor(col);
+                p.hist->SetLineWidth(2);
                 p.hist->Draw(first ? "HIST" : "HIST SAME");
                 leg.AddEntry(p.hist.get(), run.c_str(), "l");
                 first = false;

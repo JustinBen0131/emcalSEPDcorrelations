@@ -1,13 +1,76 @@
 #!/usr/bin/env bash
 ##############################################################################
-#  runAuAuStages.sh  –  4‑stage Au+Au Run‑24/25 QA pipeline
+#  runAuAuStages.sh  –  Au+Au Run‑24/25 **end‑to‑end QA driver**
 #
-#    stage0  : submit run‑by‑run Condor grid  (per‑run QA)
-#    stage1  : SEB diagnostics → good‑run list  + bar‑chart
-#    stage2  : Condor group‑hadd jobs      (10 runs / job)
-#    stage3  : final hadd  + combined QA   (local | condor)
+#  Quick command map
+#  ─────────────────
+#  • stage0              : launch one Condor job **per run** (per‑run QA)
+#  • stage1              : scan SEB/HCal, write *good‑run list* + bar chart
+#  • stage2              : Condor “hadd” groups of ≤10 good runs each
+#  • stage3 [mode] [...] : final merge **+ combined QA**
+#        mode            : local  – merge/QA on login node
+#                          condor – submit merge/QA to Condor (default)
+#        skipStage2      : build combined file directly from good‑run list
+#  • processOnly [mode] [qaList]
+#        mode            : local  | condor   (default = local)
+#        qaList          : comma‑separated subset of QA modules (see table)
+#                          leave empty to run the **full** QA suite
+#
+#  Example cheat‑sheet
+#  ───────────────────
+#    ./runAuAuStages.sh stage0                    # full per‑run grid
+#    ./runAuAuStages.sh stage1                    # build good‑run list
+#    ./runAuAuStages.sh stage2                    # group hadd on Condor
+#    ./runAuAuStages.sh stage3                    # final combined QA (Condor)
+#    ./runAuAuStages.sh stage3 local skipStage2   # local merge, skip stage‑2
+#    ./runAuAuStages.sh processOnly               # re‑run all QA on combined
+#    ./runAuAuStages.sh processOnly correlations  # correlations QA only
+#    ./runAuAuStages.sh processOnly condor pi0,jetqa
+#
+#  QA module keywords accepted by `processOnly`
+#  ─────────────────────────────────────────────
+#  | Keyword        | Module executed                    |
+#  | -------------- | ---------------------------------- |
+#  | correlations   | CALO × sEPD × MBD correlations     |
+#  | hcal           | HCal (IHCal / OHCal / total)       |
+#  | mbd            | MBD QA                             |
+#  | sepd           | sEPD event‑plane / tile QA         |
+#  | sepdother      | sEPD miscellaneous QA              |
+#  | jetqa          | Jet QA (general & summary)         |
+#  | eventqa        | Global event QA                    |
+#  | triggerqa      | Trigger counters / rates           |
+#  | pi0            | π⁰ invariant‑mass QA               |
+#  | emcal          | EMCal occupancy / spectra          |
+#  | vn             | vₙ analysis QA                      |
+#
+#  Pass multiple keywords comma‑separated, e.g.
+#       QA_ONLY="correlations,pi0,jetqa"
+#  (the wrapper sets this automatically for you when you use
+#   `./runAuAuStages.sh processOnly [...] <list>`).
 ##############################################################################
 set -euo pipefail
+
+# ─────────  Verbosity control (same semantics as runAuAu.sh)  ─────────
+# VERBOSE=0   → silent (default)
+# VERBOSE=1   → extra informational messages
+# VERBOSE=2   → shell trace (set -x) + all VERBOSE=1 output
+# The first positional token ‘-v’ or ‘--verbose’ also forces VERBOSE=1.
+# ----------------------------------------------------------------------
+if [[ ${1:-} == VERBOSE=* ]]; then
+    export VERBOSE="${1#VERBOSE=}"      # take numeric value after '='
+    shift                               # drop this pseudo‑argument
+fi
+: "${VERBOSE:=0}"                       # default when nothing supplied
+
+if [[ ${1:-} == "-v" || ${1:-} == "--verbose" ]]; then
+    export VERBOSE=1
+    shift
+fi
+
+# enable full shell trace for the most chatty level
+if (( VERBOSE >= 2 )); then
+    set -x
+fi
 
 # ───────────────  global paths (adapt only these when relocating) ───────────
 PROJECT_BASE="/sphenix/u/${USER}/scratch/emcalSEPDcorrelations"
@@ -208,7 +271,7 @@ log             = ${TMP_BASE}/group_${idx}.log
 output          = ${TMP_BASE}/group_${idx}.out
 error           = ${TMP_BASE}/group_${idx}.err
 getenv          = True
-request_memory  = 2GB
+request_memory  = 1GB
 +JobFlavour     = "tomorrow"
 queue
 EOF
@@ -295,31 +358,157 @@ EOF
   condor_submit "${sub}" || die "condor_submit failed (final hadd)"
 }
 
-stage3(){         # optional arg: local | condor (default condor)
-  mode="${1:-condor}"
-  step "Stage‑3  –  final hadd & QA (${mode})"
-  mapfile -t groups < <(ls "${GROUP_DIR}"/group_*.root 2>/dev/null | sort)
-  (( ${#groups[@]} )) || die "no group files – finish stage2 first"
+# ---------- helper: build list of input ROOT files --------------------------
+# When skipStage2 is requested, we need to convert the good‑run list produced
+# in Stage‑1 into full file paths under $INPUT_DIR.
+collect_run_files() {          # arg 1 = run‑list file
+    local list="$1"
+    mapfile -t runs < "$list" || return 1
+    (( ${#runs[@]} )) || return 1
+
+    local f; local -a files=()
+    for r in "${runs[@]}"; do
+        f="${INPUT_DIR}/output_${r}.root"
+        [[ -f "$f" ]] && files+=( "$f" ) || \
+            warn "‼︎ run ${r} listed as good but file missing – skipped"
+    done
+    (( ${#files[@]} )) || return 1
+    printf '%s\n' "${files[@]}"
+}
+
+# ---------- Stage‑3 – final merge + combined QA -----------------------------
+# Usage:
+#   ./runAuAuStages.sh stage3                  → normal path (needs Stage‑2)
+#   ./runAuAuStages.sh stage3 skipStage2       → Condor merge, skip Stage‑2
+#   ./runAuAuStages.sh stage3 local skipStage2 → local  merge, skip Stage‑2
+stage3(){   # [local|condor]  [skipStage2]
+  local mode="condor"
+  local use_runlist="false"
+
+  # first optional token
+  case "$1" in
+      local|condor)  mode="$1"; shift ;;
+  esac
+  # second optional token
+  [[ ${1:-} == skipStage2 ]] && { use_runlist="true"; shift; }
+
+  step "Stage‑3  –  final hadd & QA (${mode}${use_runlist:+, skipping Stage‑2})"
+
+  # --------------------------------------------------------------------------
+  # 1. Build input‑file array  →  inputs[@]
+  # --------------------------------------------------------------------------
+  declare -a inputs
+  if [[ "$use_runlist" == "true" ]]; then
+      [[ -f "$RUNLIST" ]] || die "Run‑list $RUNLIST missing – run stage1 first"
+      mapfile -t inputs < <(collect_run_files "$RUNLIST") \
+          || die "No valid ROOT files obtained from run list"
+  else
+      mapfile -t inputs < <(ls "$GROUP_DIR"/group_*.root 2>/dev/null | sort)
+      (( ${#inputs[@]} )) || die "No group files – finish stage2 first or add skipStage2"
+  fi
 
   COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
-  if [[ "${mode}" == "local" ]]; then
+
+  # --------------------------------------------------------------------------
+  # 2. Local merge + QA
+  # --------------------------------------------------------------------------
+  if [[ "$mode" == "local" ]]; then
       note "Running final hadd locally"
-      rm -f "${COMBINED}"
-      hadd -f "${COMBINED}" "${groups[@]}" || die "hadd failed"
+      rm -f "$COMBINED"
+      hadd -f "$COMBINED" "${inputs[@]}" || die "hadd failed"
       export COMBINED_ONLY=1 EXTERNAL_HADD=1
-      "${EXEC_WRAPPER}" --final
-      rm -f "${GROUP_DIR}"/group_*.root && rmdir "${GROUP_DIR}" 2>/dev/null || true
-  else
-      note "Submitting final hadd as Condor job"
-      submit_final_hadd "${COMBINED}" "${groups[@]}"
+      "$EXEC_WRAPPER" --final
+      [[ "$use_runlist" == "true" ]] || {
+          rm -f "$GROUP_DIR"/group_*.root
+          rmdir "$GROUP_DIR" 2>/dev/null || true
+      }
+      return
   fi
+
+  # --------------------------------------------------------------------------
+  # 3. Condor merge + QA
+  # --------------------------------------------------------------------------
+  local listfile="$TMP_BASE/hadd_input.lst"
+  printf '%s\n' "${inputs[@]}" > "$listfile"
+
+  local sub="$TMP_BASE/final_hadd.sub"
+  cat > "$sub" <<EOF
+universe      = vanilla
+executable    = /bin/bash
+transfer_input_files = $listfile
+arguments     = -c "xargs -a $(basename "$listfile") hadd -f $COMBINED && \
+                    export COMBINED_ONLY=1 EXTERNAL_HADD=1 && \
+                    $EXEC_WRAPPER --final"
+log           = $TMP_BASE/final_hadd.log
+output        = $TMP_BASE/final_hadd.out
+error         = $TMP_BASE/final_hadd.err
+getenv        = True
+request_memory= 4GB
++JobFlavour   = "tomorrow"
+queue
+EOF
+  condor_submit "$sub" || die "condor_submit failed (final hadd)"
 }
 
 # ─────────────────────────────  main dispatch  ─────────────────────────────
 case "${1:-}" in
-  stage0) shift; stage0 "$@" ;;
-  stage1) shift; stage1 "$@" ;;
-  stage2) shift; stage2 "$@" ;;
-  stage3) shift; stage3 "$@" ;;
-  *)  echo "Usage: $0  stage0 | stage1 | stage2 | stage3 [local|condor]"; exit 1 ;;
+  stage0)       shift; stage0 "$@" ;;
+  stage1)       shift; stage1 "$@" ;;
+  stage2)       shift; stage2 "$@" ;;
+  stage3)       shift; stage3 "$@" ;;
+  processOnly)
+        # ────────────────────────────────────────────────────────────────
+        # Usage examples
+        #   ./runAuAuStages.sh processOnly                       → run all QA modules
+        #   ./runAuAuStages.sh processOnly correlations          → correlations only
+        #   ./runAuAuStages.sh processOnly correlations,pi0      → correlations + pi0
+        #   ./runAuAuStages.sh processOnly local correlations    → same, executed locally
+        #   ./runAuAuStages.sh processOnly condor correlations   → filtered QA, via Condor
+        # ----------------------------------------------------------------
+        shift                                # remove keyword ‘processOnly’
+        execMode="local"                     # default = run here
+
+        # optional first token  →  local | condor
+        if [[ ${1:-} == local || ${1:-} == condor ]]; then
+            execMode="$1"
+            shift
+        fi
+
+        # optional second token  →  comma‑separated QA list
+        # e.g.  correlations,pi0,jetqa
+        if [[ $# -ge 1 && "$1" =~ ^[A-Za-z0-9_,]+$ ]]; then
+            export QA_ONLY="${1,,}"          # lower‑case, pass to C++
+            note "QA_ONLY filter applied → ${QA_ONLY}"
+            shift
+        fi
+
+        COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
+        [[ -f "${COMBINED}" ]] || die "Combined file ${COMBINED} not found – run stage3 first"
+
+        # Tell the C++ macro it should process only the combined file
+        export COMBINED_ONLY=1
+        export EXTERNAL_HADD=1
+
+        if [[ "${execMode}" == "local" ]]; then
+            "${EXEC_WRAPPER}" --final
+        else
+            sub="${TMP_BASE}/processOnly.sub"
+            cat > "${sub}" <<EOF
+universe      = vanilla
+executable    = ${EXEC_WRAPPER}
+arguments     = --final
+output        = ${TMP_BASE}/processOnly.out
+error         = ${TMP_BASE}/processOnly.err
+log           = ${TMP_BASE}/processOnly.log
+getenv        = True
+request_memory= 4GB
++JobFlavour   = "tomorrow"
+queue
+EOF
+            condor_submit "${sub}" || die "condor_submit failed (processOnly)"
+        fi
+        ;;
+  *)
+        echo "Usage: $0  stage0 | stage1 | stage2 | stage3 [local|condor] | processOnly"
+        exit 1 ;;
 esac
