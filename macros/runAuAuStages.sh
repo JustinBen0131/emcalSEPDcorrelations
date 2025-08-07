@@ -221,6 +221,9 @@ stage1(){
 #include <regex>
 #include <TH1.h>
 #include <TCanvas.h>
+#include <TStyle.h>
+#include <sstream>
+#include <climits>
 namespace fs = std::filesystem;
 
 void stage1_seb(const char* inDir,
@@ -272,19 +275,51 @@ void stage1_seb(const char* inDir,
    good.close();
    std::cout << "\n>>> Good-run list written to " << runList << "\n";
 
-   /* ── Draw bar chart ────────────────────────────────────────────────── */
-   TH1I h("h","Runs with missing SEB;SEB index;Number of runs",16,-0.5,15.5);
-   for (int i=0;i<16;++i){
-       char lab[8]; sprintf(lab,"SEB%02d",i);
-       h.GetXaxis()->SetBinLabel(i+1,lab);
-       h.SetBinContent(i+1, sebCnt[lab]);
+   /* ── Draw bar chart (fixed: key alignment, no stats box, dynamic title) ─── */
+   const std::size_t nMissing = badRunMap.size();                      // runs with ≥1 missing SEB
+   int runLow = INT_MAX, runHigh = -1;
+   for (const auto &kv : badRunMap) {
+        int r = std::stoi(kv.first);                                    // drop leading zeros
+        if (r < runLow)  runLow  = r;
+        if (r > runHigh) runHigh = r;
    }
-   h.SetFillColor(kAzure+1); h.SetBarWidth(0.8); h.SetBarOffset(0.1);
-   TCanvas c("c","",800,500); c.SetGridy(); h.Draw("bar2");
+
+   TH1I h("h","",16,-0.5,15.5);                                        // set title after filling
+   for (int i=0;i<16;++i){
+        char lab[8]; std::sprintf(lab,"SEB%02d",i);                     // pretty bin labels
+        h.GetXaxis()->SetBinLabel(i+1, lab);
+
+        // IMPORTANT: use non‑padded key to match how sebCnt[] is filled (e.g. "SEB0", ... "SEB15")
+        std::string key = std::string("SEB") + std::to_string(i);
+        int cnt = sebCnt.count(key) ? sebCnt.at(key) : 0;
+        h.SetBinContent(i+1, cnt);
+   }
+
+   /* dynamic title: "Runs with Missing SEB (low → high, X runs with ≥ 1 missing)" */
+   std::ostringstream ttl;
+   if (nMissing > 0 && runLow != INT_MAX) {
+        ttl << "Runs with Missing SEB (" << runLow
+            << " #rightarrow " << runHigh
+            << ", " << nMissing << " runs with #geq 1 missing)";
+   } else {
+        ttl << "Runs with Missing SEB (no runs with missing SEB)";
+   }
+   h.SetTitle( (ttl.str() + ";SEB index;Number of runs").c_str() );    // keep axis titles
+
+   gStyle->SetOptStat(0);                                              // remove stats box
+   h.SetFillColor(kAzure+1);
+   h.SetBarWidth(0.8);
+   h.SetBarOffset(0.1);
+
+   TCanvas c("c","",800,500);
+   c.SetGridy();
+   h.Draw("bar2");
+
    fs::create_directories(fs::path(plotDir)/"Combined");
    fs::path png = fs::path(plotDir)/"Combined"/"MissingSEB_distribution.png";
    c.SaveAs(png.c_str());
    std::cout << ">>> Bar chart saved to      " << png << "\n";
+
 
    /* ── Summary table (verbatim format of production macro) ───────────── */
    const std::size_t nBad = badRunMap.size();

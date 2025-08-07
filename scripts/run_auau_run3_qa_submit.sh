@@ -424,7 +424,7 @@ arguments     = $runPad  $listFile  ${tag}  $(outdir_for_run $runPad)
 log           = ${LOGDIR}/${tag}.log
 output        = ${OUTDIR}/${tag}.out
 error         = ${ERRDIR}/${tag}.err
-request_memory= 5GB
+request_memory= 8500MB
 +JobFlavour   = "tomorrow"
 queue
 EOS
