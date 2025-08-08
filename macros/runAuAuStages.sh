@@ -634,7 +634,7 @@ EOF
             IFS=',' read -r -a modules <<< "${req,,}"
         fi
 
-        mkdir -p "${TMP_BASE}"
+        mkdir -p "${TMP_BASE}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}"
 
         # Submit one Condor job per module
         for m in "${modules[@]}"; do
@@ -649,10 +649,12 @@ EOF
 universe      = vanilla
 executable    = ${EXEC_WRAPPER}
 arguments     = --final
-environment   = "QA_ONLY=${m} COMBINED_ONLY=1 EXTERNAL_HADD=1"
-output        = ${TMP_BASE}/processOnly_${m}.out
-error         = ${TMP_BASE}/processOnly_${m}.err
-log           = ${TMP_BASE}/processOnly_${m}.log
+environment   = "QA_ONLY=${m} COMBINED_ONLY=1 EXTERNAL_HADD=1 VERBOSE=${VERBOSE}"
+output        = ${STDOUT_DIR}/processOnly_${m}.out
+error         = ${STDERR_DIR}/processOnly_${m}.err
+log           = ${LOG_DIR}/processOnly_${m}.log
+stream_output = True
+stream_error  = True
 getenv        = True
 request_memory= 1.5GB
 +JobFlavour   = "tomorrow"
