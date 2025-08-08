@@ -265,11 +265,16 @@ static void buildSummaryPages(const fs::path& combinedRoot,
                               const std::string& pngName,
                               const std::string& title)
 {
-    /* run only once, during the Combined pass */
-    if (combinedRoot.filename() != "Combined") return;
+    /* run only once, during the Combined pass (accept both Combined and Combined/<trigger>) */
+    fs::path combinedDir = combinedRoot;
+    if (combinedDir.filename() != "Combined")
+        combinedDir = combinedDir.parent_path();
+    if (combinedDir.filename() != "Combined")
+        return;
 
-    const fs::path outputPlotsDir = combinedRoot.parent_path();   // …/outputPlots
-    const fs::path relDir        = fs::relative(targetDir, combinedRoot);
+    /* we need the directory that holds all per‑run folders, i.e. …/outputPlots */
+    const fs::path outputPlotsDir = combinedDir.parent_path();   // …/outputPlots
+    const fs::path relDir         = fs::relative(targetDir, combinedDir);
 
     /* ------------------------------------------------------------------ *
      * 1. collect every run that contains the same PNG in the same folder *
@@ -285,11 +290,23 @@ static void buildSummaryPages(const fs::path& combinedRoot,
     }
     if (src.empty()) return;
 
-    /* natural sort by run‑number (directory name) */
+    /* natural sort by run‑number (directory name under …/outputPlots) */
     std::sort(src.begin(), src.end(),
               [](const fs::path& a, const fs::path& b)
-              { return a.parent_path().filename().string() <
-                       b.parent_path().filename().string(); });
+              {
+                  auto runOf = [](const fs::path& p) -> std::string {
+                      for (fs::path cur = p.parent_path(); !cur.empty(); cur = cur.parent_path()) {
+                          if (cur.parent_path().filename() == "outputPlots")
+                              return cur.filename().string(); // e.g. "00066484"
+                      }
+                      return std::string();
+                  };
+                  const std::string ra = runOf(a), rb = runOf(b);
+                  const bool na = !ra.empty() && std::all_of(ra.begin(), ra.end(), ::isdigit);
+                  const bool nb = !rb.empty() && std::all_of(rb.begin(), rb.end(), ::isdigit);
+                  if (na && nb) return std::stoi(ra) < std::stoi(rb);
+                  return ra < rb;
+              });
 
     /* ------------------------------------------------------------------ *
      * 2. paginate:  64 plots per page → 8 × 8 grid                        *
@@ -1622,16 +1639,28 @@ class Pi0QA : public QA
                 "   • searching run directories under " + runsRoot.string());
             unsigned int csvFound = 0;
             for (const auto& de : fs::directory_iterator(runsRoot)) {
-                if (!de.is_directory())                           continue;
-                if (de.path().filename() == "Combined")           continue;
+                if (!de.is_directory()) continue;
+                if (de.path().filename() == "Combined") continue;
 
-                const fs::path csvPath = de.path() /
-                                          "InvariantMassSummary.csv";
-                if (fs::exists(csvPath)) ++csvFound;
-                loadCsv(csvPath);
+                // Look for the per-run CSV inside the trigger subfolder
+                fs::path csvPath = de.path() / trig / "InvariantMassSummary.csv";
+
+                // Fallback to legacy location if someone wrote it at the run root
+                if (!fs::exists(csvPath)) {
+                    fs::path legacy = de.path() / "InvariantMassSummary.csv";
+                    if (fs::exists(legacy)) csvPath = legacy;
+                }
+
+                if (fs::exists(csvPath)) {
+                    ++csvFound;
+                    loadCsv(csvPath);
+                } else {
+                    log(Lvl::DBG, "   · no CSV found for run " + de.path().filename().string());
+                }
             }
             log(Lvl::INFO,
                 Form("   • CSV scan finished  |  files found = %u", csvFound));
+
 
             if (s_runPoints.empty()) {
                 log(Lvl::WARN,
@@ -1978,27 +2007,27 @@ class Pi0QA : public QA
                     gMuList[i]->Draw(i == 0 ? "AP" : "P SAME");
             }
 
-            /* expand the x–range so that the first marker sits at the first tick,
-               not on the frame’s left border                                                */
             if (nPts > 0)
             {
                 const double xMin = -0.5;               // centre of the first tick
                 const double xMax =  nPts - 0.5;        // centre of the last tick
 
-                gMuList.front()->GetHistogram()->GetXaxis()->SetLimits(xMin, xMax);
-                gSiList.front()->GetHistogram()->GetXaxis()->SetLimits(xMin, xMax);
+                TGraphErrors* gMuFrame = gMuList[idxInc >= 0 ? idxInc : 0];   // the graph that set the frame
+                if (auto* hMu = gMuFrame->GetHistogram())
+                    hMu->GetXaxis()->SetLimits(xMin, xMax);
+
                 gPad->Modified();                       // force the pad to redraw axes
             }
 
             leg.Draw();
             
             {
-                TH1* fr = gMuList.front()->GetHistogram();
+                TGraphErrors* gMuFrame = gMuList[idxInc >= 0 ? idxInc : 0];
+                TH1* fr = gMuFrame->GetHistogram();
                 if (fr) {
                     fr->GetXaxis()->SetLabelOffset(999);   // hide labels
                     fr->GetXaxis()->SetTickLength(0);      // suppress default ticks
                 }
-
                 gPad->Update();                            // now pad extents are known
                 const double y0 = gPad->GetUymin();        // bottom edge in user coords
 
@@ -2062,10 +2091,17 @@ class Pi0QA : public QA
                     /* -------------------------------------------------------------
                      * (1)  suppress the default numeric x–axis on the σ‑pad frame
                      * ----------------------------------------------------------- */
-                    auto *fr = gSiList.front()->GetHistogram();
-                    fr->GetXaxis()->SetLabelOffset(999);
-                    fr->GetXaxis()->SetTickLength(0);
+                    const int nPts = runLabels.size();
 
+                    TGraphErrors* gSiFrame = gSiList[idxIncSi >= 0 ? idxIncSi : 0];  // the graph that set the σ frame
+                    if (auto* hSi = gSiFrame->GetHistogram())
+                        hSi->GetXaxis()->SetLimits(-0.5, nPts - 0.5);
+
+                    auto* fr = gSiFrame->GetHistogram();
+                    if (fr) {
+                        fr->GetXaxis()->SetLabelOffset(999);
+                        fr->GetXaxis()->SetTickLength(0);
+                    }
                     /* -------------------------------------------------------------
                      * (2)  tick marks only – no labels – with an invisible TGaxis
                      * ----------------------------------------------------------- */
@@ -4028,15 +4064,19 @@ class NSDetectorQA : public QA
       }
 
       /* ------------------------------------------------------------------ *
-       *  extract the 8‑digit run number from kInputFile                    *
+       *  determine run label: 8‑digit runID or "Combined Run"              *
        * ------------------------------------------------------------------ */
-      int runNumber = 0;                           // fall‑back when no match
+      std::string runLabel;
       {
-          std::smatch m;
-          std::regex_search(kInputFile, m, std::regex(R"((\d{8}))"));
-          if (!m.empty()) runNumber = std::stoi(m[1].str());
+          const std::string passDir = root.parent_path().filename().string();
+          if (passDir == "Combined") {
+              runLabel = "Combined Run";
+          } else {
+              std::smatch m;
+              std::regex_search(kInputFile, m, std::regex(R"((\d{8}))"));
+              runLabel = !m.empty() ? ("run " + m[1].str()) : "run ?";
+          }
       }
-
       /* ------------------------------------------------------------------ *
        *  all drawing inside its own try/catch                              *
        * ------------------------------------------------------------------ */
@@ -4189,10 +4229,10 @@ class NSDetectorQA : public QA
 
               char buf[160];
               snprintf(buf, sizeof(buf),
-                       "%s for %s (run %d, nEvents = %llu)",
+                       "%s for %s (%s, nEvents = %llu)",
                        ttl,
                        trigLabel.c_str(),
-                       runNumber,
+                       runLabel.c_str(),
                        nEvt);
 
               TLatex lbl;
@@ -4918,19 +4958,39 @@ class JetQA : public QA
             log(Lvl::WRN,"process(): helper reported failure for \""+n+"\"");
 
           /* ────────────────────────────────────────────────────────────────
-           * NEW: keep one clone per centrality bin so we can build a 2×3
-           *      overview grid at the very end of the run.
+           * Keep one clone per centrality bin so we can build a 2×3 grid
+           * at the very end of the run. Accept both "0_10" and "Cent_0_10".
+           * If sliceKey() didn't carry centrality, recover lo_hi from name.
            * ──────────────────────────────────────────────────────────────── */
-          if (slice.rfind("Cent_",0) == 0)                 /* skip “Inclusive” */
           {
-              /* strip the “_lo_hi_” part so all six slices map to one key     */
-              std::string base =
-                  std::regex_replace(n, std::regex(R"(_\d{1,3}_\d{1,3}_)"), "_");
+              std::string slNorm = slice;                 // "Inclusive" or "0_10" or "Cent_0_10"
 
-              auto cl = std::shared_ptr<TH1>(static_cast<TH1*>(o->Clone()));
-              cl->SetDirectory(nullptr);
-              _centCache[base].emplace_back(slice, std::move(cl));
+              if (slNorm != "Inclusive") {
+                  if (slNorm.rfind("Cent_", 0) == 0) slNorm = slNorm.substr(5);   // drop "Cent_"
+
+                  // If still not lo_hi, recover from histogram name:  ..._rXX_lo_hi_<trig>...
+                  if (!std::regex_match(slNorm, std::regex(R"(\d{1,3}_\d{1,3})"))) {
+                      std::smatch msl;
+                      if (std::regex_search(n, msl,
+                                            std::regex(R"(_(r[0-9]+|R[0-9]+)_([0-9]{1,3})_([0-9]{1,3})_)"))) {
+                          slNorm = msl[2].str() + "_" + msl[3].str();
+                      } else {
+                          slNorm.clear();   // give up – cannot identify centrality
+                      }
+                  }
+
+                  if (!slNorm.empty()) {
+                      // Strip the "_lo_hi_" hop so all slices map to the same base key
+                      std::string base =
+                          std::regex_replace(n, std::regex(R"(_[0-9]{1,3}_[0-9]{1,3}_)"), "_");
+
+                      auto cl = std::shared_ptr<TH1>(static_cast<TH1*>(o->Clone()));
+                      cl->SetDirectory(nullptr);
+                      _centCache[base].emplace_back("Cent_" + slNorm, std::move(cl));
+                  }
+              }
           }
+
 
           log(Lvl::DBG,"process(): finished \""+n+"\"  (status=" +
                        std::string(ok ? "OK" : "FAIL") + ')');
@@ -5399,7 +5459,7 @@ class JetQA : public QA
               TLatex ttl; ttl.SetNDC();
               ttl.SetTextFont(42);
               ttl.SetTextAlign(23);
-              ttl.SetTextSize(0.045);
+              ttl.SetTextSize(0.03);
               ttl.DrawLatex(0.50, 0.94, makeTitle(h->GetName()).c_str());
         }
 
@@ -5531,10 +5591,17 @@ class JetQA : public QA
     {
         if (_centCache.empty()) return;
 
-        /* desired ordering of the six bins */
-        const std::array<std::string,6> order = {
-            "Cent_0_10","Cent_10_20","Cent_20_40",
-            "Cent_40_60","Cent_60_80","Cent_80_100"};
+        /* Use the exact order discovered for this run; prefix with "Cent_" when needed */
+        std::vector<std::string> order;
+        order.reserve(slices.size());
+        for (const auto& sl : slices) {
+            if (sl == "Inclusive") continue;
+            if (sl.rfind("Cent_", 0) == 0) order.push_back(sl);
+            else                           order.push_back("Cent_" + sl);
+        }
+
+        /* If there are more than 6 bins, keep the first 6 to fit 2×3; if fewer, blanks will show "N/A" */
+        if (order.size() > 6) order.resize(6);
 
         for (auto& [base, vec] : _centCache)
         {
@@ -7447,7 +7514,7 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     using fs::path;
     if (std::getenv("EXTERNAL_HADD"))
     {
-        ulog::banner("External hadd detected – skipping SEB scan & internal merge");
+        ulog::banner("External hadd detected – skipping internal merge");
 
         fs::path combined = kInputDir / "output_ALL_COMBINED.root";
         if (!fs::exists(combined)) {
@@ -7466,116 +7533,11 @@ static void mergeRunsAndReprocess(const std::vector<fs::path>& runFiles,
     ulog::banner("Step 1/5  –  HCal missing‑bin scan");
     HcalQA::writeMissingBinReport(kOutputDir / "MissingHCalBins.txt");
 
-    std::unordered_map<std::string,std::vector<std::string>> badRunMap;
-    std::unordered_map<std::string,int>                      sebCount;
+    // Select runs to merge (submission pipeline already filtered runs if needed)
+    ulog::banner("Step 2/3  –  Selecting runs to merge");
+    std::vector<fs::path> mergeFiles = runFiles;
+    ulog::info("Merging " + std::to_string(mergeFiles.size()) + " run file(s).");
 
-    // ───────────────────────────────────────────────────────────────
-    // 2.  Missing‑SEB analysis   (build badRunMap + bar chart)
-    // ───────────────────────────────────────────────────────────────
-    ulog::banner("Step 2/5  –  Missing‑SEB scan");
-
-    const fs::path sebPng = kOutputDir / "Combined" / "MissingSEB_distribution.png";
-    for (const auto& f : runFiles) {
-        std::smatch      m;
-        std::string      fname = f.filename().string();
-        if (!std::regex_search(fname, m, std::regex(R"(output_([0-9]{8})\.root)")))
-            continue;
-        std::string run = m[1].str();
-
-        fs::path txt = kOutputDir / run / "MissingSEB.txt";
-        std::ifstream miss(txt);
-        if (!miss) continue;
-
-        std::string tok;           // first token = header → discard
-        if (!(miss >> tok)) continue;
-        while (miss >> tok) {
-            if (tok.rfind("SEB", 0) != 0) continue;
-            badRunMap[run].push_back(tok);
-            ++sebCount[tok];
-        }
-    }
-
-    if (sebCount.empty())
-        ulog::warn("No missing‑SEB information found – merging *all* runs");
-
-    TH1I hSEB("hMissingSEB",
-              "Runs with missing SEB;SEB index;Number of runs",
-              16, -0.5, 15.5);
-    for (const auto& [seb, cnt] : sebCount) {
-        try {
-            int idx = std::stoi(seb.substr(3));
-            if (idx >= 0 && idx < 16) hSEB.SetBinContent(idx + 1, cnt);
-        } catch (...) { /* ignore malformed labels */ }
-    }
-    hSEB.SetFillColor(kAzure + 1);
-    hSEB.SetBarWidth(0.8);
-    hSEB.SetBarOffset(0.1);
-    hSEB.GetXaxis()->SetTickLength(0);
-    hSEB.LabelsOption("h");
-    for (int i = 1; i <= 16; ++i)
-        hSEB.GetXaxis()->SetBinLabel(i, Form("SEB%02d", i - 1));
-
-    TCanvas cSEB("cMissingSEB","",800,500);
-    gPad->SetGridy();  hSEB.Draw("bar2");
-    ensure_dir(sebPng.parent_path());
-    cSEB.SaveAs(sebPng.string().c_str());
-    ulog::ok("Missing‑SEB distribution → " + sebPng.string());
-
-    // ───────────────────────────────────────────────────────────────
-    // 3.  Decide which runs actually enter the merge
-    // ───────────────────────────────────────────────────────────────
-    ulog::banner("Step 3/5  –  Good / bad run selection");
-
-    std::vector<fs::path> mergeFiles;
-    for (const auto& f : runFiles) {
-        std::smatch m;
-        const std::string fileNameStr = f.filename().string();
-        if (!std::regex_search(fileNameStr, m,
-                               std::regex(R"(output_([0-9]{8})\.root)")))
-            continue;
-        std::string run = m[1].str();
-        if (badRunMap.count(run) == 0) mergeFiles.push_back(f);
-    }
-
-    const std::size_t nBad      = badRunMap.size();
-    std::size_t       nBad1     = 0, nBadMul = 0;
-    for (const auto& [_, v] : badRunMap) (v.size()==1 ? ++nBad1 : ++nBadMul);
-
-    /* ── concise headline ─────────────────────────────────────────── */
-    ulog::banner("Missing SEB summary");
-    std::cout << term::CLR_BOLD
-              << "Runs with ≥1 missing SEB : " << nBad  << "\n"
-              << "   ├─ exactly one SEB    : " << nBad1 << "\n"
-              << "   └─ multiple SEBs      : " << nBadMul << "\n"
-              << term::CLR_RST << std::endl;
-
-    /* ── full SEB‑by‑SEB incidence table (SEB00…SEB15) ───────────── */
-    {
-        constexpr int kTotSEB = 16;            // SEB00 … SEB15
-        constexpr int colW    = 5;             // width for label column
-
-        std::cout << std::left << std::setw(colW) << "SEB"
-                  << " │ " << "Runs\n"
-                  << std::string(colW + 7,'-') << "\n";
-
-        for (int i = 0; i < kTotSEB; ++i) {
-            const std::string key = "SEB" + std::to_string(i);
-            const int cnt = sebCount.count(key) ? sebCount.at(key) : 0;
-            std::cout << std::left << std::setw(colW) << key
-                      << " │ " << cnt << "\n";
-        }
-        std::cout << std::string(colW + 7,'=') << std::endl;
-        if (std::getenv("EXTERNAL_HADD")) {
-            ulog::banner("External hadd – merge and re‑process steps skipped");
-            return;
-        }
-    }
-    
-    if (mergeFiles.size() < 2) {
-        ulog::warn("Skipping hadd – need ≥ 2 good runs, have "
-                   + std::to_string(mergeFiles.size()));
-        return;
-    }
 
     // ───────────────────────────────────────────────────────────────
     // 4.  Build the file list for hadd  (nice progress output)
@@ -7726,15 +7688,6 @@ void analyzeRun24or25auau(bool testRun = false, int nSample = -1)
          * ---------------------------------------------------------- */
         if (externalHadd)
         {
-            /* ── 1. optional Missing‑SEB statistics (skip when shell already did it) ── */
-            if (!std::getenv("SKIP_SEB_SCAN"))
-            {
-                std::vector<fs::path> runFiles = discoverInputRuns();
-                if (!runFiles.empty())
-                    mergeRunsAndReprocess(runFiles, /*testRun=*/false);   // auto‑skips merge
-            }
-
-            /* ── 2. run the combined QA pass on the already‑hadded file ─── */
             fs::path combined = kInputDir / "output_ALL_COMBINED.root";
             if (!fs::exists(combined)) {
                 ulog::err("EXTERNAL_HADD set but " + combined.string() +

@@ -611,7 +611,58 @@ EOF
             condor_submit "${sub}" || die "condor_submit failed (processOnly)"
         fi
         ;;
+  processOnlyParrallel)
+        # ────────────────────────────────────────────────────────────────
+        # Parallel per‑module reprocessing on the already‑combined file.
+        # Examples:
+        #   ./runAuAuStages.sh processOnlyParrallel correlations,jetqa,pi0
+        #   ./runAuAuStages.sh processOnlyParrallel ALL
+        # ----------------------------------------------------------------
+        shift  # remove keyword ‘processOnlyParrallel’
+
+        COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
+        [[ -f "${COMBINED}" ]] || die "Combined file ${COMBINED} not found – run stage3 first"
+
+        # Full module list; 'ALL' expands to all of these
+        all_modules=(correlations hcal mbd sepd sepdother jetqa eventqa triggerqa pi0 emcal vn)
+
+        # Parse requested modules
+        req="${1:-ALL}"
+        if [[ "${req^^}" == "ALL" ]]; then
+            modules=( "${all_modules[@]}" )
+        else
+            IFS=',' read -r -a modules <<< "${req,,}"
+        fi
+
+        mkdir -p "${TMP_BASE}"
+
+        # Submit one Condor job per module
+        for m in "${modules[@]}"; do
+            # validate module name
+            if [[ ! " ${all_modules[*]} " =~ " ${m} " ]]; then
+                warn "Unknown QA module '${m}' – skipped"
+                continue
+            fi
+            note "Submitting parallel processOnly job for module: ${m}"
+            sub="${TMP_BASE}/processOnly_${m}.sub"
+            cat > "${sub}" <<EOF
+universe      = vanilla
+executable    = ${EXEC_WRAPPER}
+arguments     = --final
+environment   = "QA_ONLY=${m} COMBINED_ONLY=1 EXTERNAL_HADD=1"
+output        = ${TMP_BASE}/processOnly_${m}.out
+error         = ${TMP_BASE}/processOnly_${m}.err
+log           = ${TMP_BASE}/processOnly_${m}.log
+getenv        = True
+request_memory= 1.5GB
++JobFlavour   = "tomorrow"
+queue
+EOF
+            condor_submit "${sub}" || warn "condor_submit failed for module ${m}"
+
+        done
+        ;;
   *)
-        echo "Usage: $0  stage0 | stage1 | stage2 | stage3 [local|condor] | processOnly"
+        echo "Usage: $0  stage0 | stage1 | stage2 | stage3 [local|condor] | processOnly | processOnlyParrallel"
         exit 1 ;;
 esac
