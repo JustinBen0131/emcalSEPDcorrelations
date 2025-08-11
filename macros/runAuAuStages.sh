@@ -595,14 +595,27 @@ case "${1:-}" in
         if [[ "${execMode}" == "local" ]]; then
             "${EXEC_WRAPPER}" --final
         else
+            launcher="${TMP_BASE}/processOnly_launcher.sh"
+            cat > "${launcher}" <<EOF
+            #!/usr/bin/env bash
+            set -euo pipefail
+            export QA_ONLY="${QA_ONLY:-}"
+            export COMBINED_ONLY=1
+            export EXTERNAL_HADD=1
+            export VERBOSE="${VERBOSE:-0}"
+            exec "${EXEC_WRAPPER}" --final
+            EOF
+            chmod +x "${launcher}"
+
             sub="${TMP_BASE}/processOnly.sub"
             cat > "${sub}" <<EOF
 universe      = vanilla
-executable    = ${EXEC_WRAPPER}
-arguments     = --final
+executable    = ${launcher}
 output        = ${TMP_BASE}/processOnly.out
 error         = ${TMP_BASE}/processOnly.err
 log           = ${TMP_BASE}/processOnly.log
+stream_output = True
+stream_error  = True
 getenv        = True
 request_memory= 4GB
 +JobFlavour   = "tomorrow"
@@ -643,13 +656,25 @@ EOF
                 warn "Unknown QA module '${m}' – skipped"
                 continue
             fi
+
             note "Submitting parallel processOnly job for module: ${m}"
+
+            launcher="${TMP_BASE}/processOnly_${m}.sh"
+            cat > "${launcher}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export QA_ONLY="${m}"
+export COMBINED_ONLY=1
+export EXTERNAL_HADD=1
+export VERBOSE="${VERBOSE:-0}"
+exec "${EXEC_WRAPPER}" --final
+EOF
+            chmod +x "${launcher}"
+
             sub="${TMP_BASE}/processOnly_${m}.sub"
             cat > "${sub}" <<EOF
 universe      = vanilla
-executable    = ${EXEC_WRAPPER}
-arguments     = --final
-environment   = "QA_ONLY=${m} COMBINED_ONLY=1 EXTERNAL_HADD=1 VERBOSE=${VERBOSE}"
+executable    = ${launcher}
 output        = ${STDOUT_DIR}/processOnly_${m}.out
 error         = ${STDERR_DIR}/processOnly_${m}.err
 log           = ${LOG_DIR}/processOnly_${m}.log
@@ -661,7 +686,6 @@ request_memory= 1.5GB
 queue
 EOF
             condor_submit "${sub}" || warn "condor_submit failed for module ${m}"
-
         done
         ;;
   *)

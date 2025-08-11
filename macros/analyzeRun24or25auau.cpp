@@ -258,104 +258,216 @@ inline bool isBadHcalPlate(int,int){ return false; }
  *
  *  Result
  *    One or more   page1.png, page2.png, …   under
- *        <targetDir>/summaryPlots/
+ *        <targetDir>/summaryPlots_<stem>/
  * ===================================================================== */
 static void buildSummaryPages(const fs::path& combinedRoot,
                               const fs::path& targetDir,
                               const std::string& pngName,
                               const std::string& title)
 {
-    /* run only once, during the Combined pass (accept both Combined and Combined/<trigger>) */
+    // ---------------------------------------------------------------------
+    // Master skip switch: set to true to disable all work in this function.
+    // ---------------------------------------------------------------------
+    constexpr bool kSkipBuildSummaryPages = true;  // <-- set to true to skip
+    if (kSkipBuildSummaryPages) {
+        static bool once = false;
+        if (!once) {
+            std::cout << "[summary] buildSummaryPages(): disabled by internal toggle; skipping.\n";
+            once = true;
+        }
+        return;
+    }
+
+    // ---------------------------------------------------------------------
+    // 0) Sanity & context
+    //    Only run once during the Combined pass; accept Combined or Combined/<trigger>
+    // ---------------------------------------------------------------------
+    std::cout << "[summary] buildSummaryPages()\n"
+              << "          combinedRoot = " << combinedRoot << "\n"
+              << "          targetDir    = " << targetDir    << "\n"
+              << "          pngName      = " << pngName      << "\n"
+              << "          title        = " << title        << "\n";
+
     fs::path combinedDir = combinedRoot;
     if (combinedDir.filename() != "Combined")
         combinedDir = combinedDir.parent_path();
-    if (combinedDir.filename() != "Combined")
+    if (combinedDir.filename() != "Combined") {
+        std::cout << "[summary] not under …/outputPlots/Combined – skip.\n";
         return;
-
-    /* we need the directory that holds all per‑run folders, i.e. …/outputPlots */
-    const fs::path outputPlotsDir = combinedDir.parent_path();   // …/outputPlots
-    const fs::path relDir         = fs::relative(targetDir, combinedDir);
-
-    /* ------------------------------------------------------------------ *
-     * 1. collect every run that contains the same PNG in the same folder *
-     * ------------------------------------------------------------------ */
-    std::vector<fs::path> src;  src.reserve(512);
-
-    for (const auto& e : fs::directory_iterator(outputPlotsDir)) {
-        if (!e.is_directory())                     continue;
-        const std::string runID = e.path().filename();
-        if (runID == "Combined")                   continue;       // skip self
-        fs::path cand = e.path() / relDir / pngName;
-        if (fs::exists(cand))                      src.emplace_back(cand);
     }
-    if (src.empty()) return;
 
-    /* natural sort by run‑number (directory name under …/outputPlots) */
+    // …/outputPlots (parent of Combined)
+    const fs::path outputPlotsDir = combinedDir.parent_path();
+
+    // targetDir is “…/outputPlots/Combined/<…>”; compute relative sub‑tree
+    fs::path relDir;
+    try {
+        relDir = fs::relative(targetDir, combinedDir);
+    } catch (const fs::filesystem_error& ex) {
+        std::cerr << "[summary][WARN] fs::relative failed: " << ex.what()
+                  << "\n[summary] falling back to empty relDir (root under Combined)\n";
+        relDir.clear();
+    }
+
+    // ---------------------------------------------------------------------
+    // 1) Collect every run that has the same PNG at the same sub‑path
+    // ---------------------------------------------------------------------
+    std::vector<fs::path> src;
+    src.reserve(1024);
+
+    std::cout << "[summary] scanning per‑run folders under: " << outputPlotsDir << "\n";
+    for (const auto& e : fs::directory_iterator(outputPlotsDir)) {
+        if (!e.is_directory()) continue;
+        const std::string runID = e.path().filename().string();
+        if (runID == "Combined") continue; // skip self
+        const fs::path cand = e.path() / relDir / pngName;
+        if (fs::exists(cand)) {
+            src.emplace_back(cand);
+        }
+    }
+
+    if (src.empty()) {
+        std::cout << "[summary] no matching per‑run PNGs found – nothing to do.\n";
+        return;
+    }
+
+    std::cout << "[summary] found " << src.size() << " matching PNG(s).\n";
+
+    // Natural sort by run number (directory directly under …/outputPlots)
+    auto runOf = [](const fs::path& p) -> std::string {
+        // Walk upward to find “…/outputPlots/<RUN>/…”
+        for (fs::path cur = p.parent_path(); !cur.empty(); cur = cur.parent_path()) {
+            if (cur.parent_path().filename() == "outputPlots") {
+                return cur.filename().string(); // e.g. "00066484"
+            }
+        }
+        return std::string();
+    };
+
     std::sort(src.begin(), src.end(),
-              [](const fs::path& a, const fs::path& b)
-              {
-                  auto runOf = [](const fs::path& p) -> std::string {
-                      for (fs::path cur = p.parent_path(); !cur.empty(); cur = cur.parent_path()) {
-                          if (cur.parent_path().filename() == "outputPlots")
-                              return cur.filename().string(); // e.g. "00066484"
-                      }
-                      return std::string();
-                  };
+              [&](const fs::path& a, const fs::path& b) {
                   const std::string ra = runOf(a), rb = runOf(b);
-                  const bool na = !ra.empty() && std::all_of(ra.begin(), ra.end(), ::isdigit);
-                  const bool nb = !rb.empty() && std::all_of(rb.begin(), rb.end(), ::isdigit);
+                  const auto digitsOnly = [](const std::string& s) {
+                      return !s.empty() && std::all_of(s.begin(), s.end(),
+                                                       [](unsigned char c){ return std::isdigit(c); });
+                  };
+                  const bool na = digitsOnly(ra), nb = digitsOnly(rb);
                   if (na && nb) return std::stoi(ra) < std::stoi(rb);
                   return ra < rb;
               });
 
-    /* ------------------------------------------------------------------ *
-     * 2. paginate:  64 plots per page → 8 × 8 grid                        *
-     * ------------------------------------------------------------------ */
+    // ---------------------------------------------------------------------
+    // 2) Paginate: 64 plots per page → 8×8 grid
+    // ---------------------------------------------------------------------
     const int perPage = 64;
-    const int nPages  = static_cast<int>((src.size() + perPage - 1) / perPage);
     const int nCols   = 8;
     const int nRows   = 8;
-    const int canW    = nCols * 350;      // 350 px per pad looks good
+    const int nPages  = static_cast<int>((src.size() + perPage - 1) / perPage);
+    const int canW    = nCols * 350;  // ~350 px per pad looks good
     const int canH    = nRows * 350;
 
-    const std::string stem = fs::path(pngName).stem().string();   // e.g.  "h_maxJetEt_r02"
-    fs::path          sumDir = targetDir / ("summaryPlots_" + stem);
+    const std::string stem = fs::path(pngName).stem().string(); // e.g. "h_maxJetEt_r02"
+    fs::path sumDir = targetDir / ("summaryPlots_" + stem);
     ensure_dir(sumDir);
+    std::cout << "[summary] writing summary pages to: " << sumDir
+              << "  (pages: " << nPages << ", grid: " << nCols << "×" << nRows << ")\n";
 
-    for (int p = 0; p < nPages; ++p)
-    {
+    // ---------------------------------------------------------------------
+    // 3) PRELOAD all images and their run numbers
+    // ---------------------------------------------------------------------
+    std::vector<std::unique_ptr<TImage>> allImgs;
+    std::vector<std::string>             runNumbers;
+    allImgs.reserve(src.size());
+    runNumbers.reserve(src.size());
+
+    auto runIDFromPath = [](const fs::path& p) -> std::string {
+        for (auto it = p.begin(); it != p.end(); ++it) {
+            if (it->filename() == "outputPlots") {
+                auto next = it; ++next;
+                if (next != p.end()) return next->string();
+                break;
+            }
+        }
+        return std::string("unknown_run");
+    };
+
+    std::size_t nLoaded = 0, nFailed = 0;
+    for (const auto& p : src) {
+        std::unique_ptr<TImage> img;
+        if (auto *raw = TImage::Open(p.string().c_str())) {
+            img.reset(raw);
+            ++nLoaded;
+        } else {
+            ++nFailed;
+            std::cerr << "[summary][WARN] failed to open image: " << p << "\n";
+        }
+        allImgs.emplace_back(std::move(img));
+        runNumbers.emplace_back(runIDFromPath(p));
+    }
+    std::cout << "[summary] preload done: loaded=" << nLoaded << ", failed=" << nFailed << "\n";
+
+    // Run‑label style
+    TLatex label;
+    label.SetNDC();
+    label.SetTextSize(0.040);
+    label.SetTextFont(42);
+    label.SetTextAlign(13); // left‑top corner
+
+    // ---------------------------------------------------------------------
+    // 4) DRAW per page
+    // ---------------------------------------------------------------------
+    for (int p = 0; p < nPages; ++p) {
         const int first = p * perPage;
-        const int last  = std::min<int>(src.size(), first + perPage);
+        const int last  = std::min<int>(static_cast<int>(src.size()), first + perPage);
+
+        std::cout << "[summary] page " << (p + 1) << " of " << nPages
+                  << "  (items " << first << "–" << (last - 1) << ")\n";
 
         TCanvas c(Form("c_page_%d", p + 1), "", canW, canH);
         c.Divide(nCols, nRows, 0.001, 0.001);
 
-        /* centred page‑header once per canvas */
+        // Page header (centered)
         {
             c.cd();
-            TLatex hd;  hd.SetNDC();
-            hd.SetTextAlign(22);  hd.SetTextFont(42);  hd.SetTextSize(0.035);
+            TLatex hd;
+            hd.SetNDC();
+            hd.SetTextAlign(22);
+            hd.SetTextFont(42);
+            hd.SetTextSize(0.035);
             hd.DrawLatex(0.5, 0.97, Form("%s  (Page %d)", title.c_str(), p + 1));
         }
 
-        /* draw every image into its pad */
+        // Pads
         for (int idx = first; idx < last; ++idx) {
-            int padNo = idx - first + 1;      // 1‑based for TPad
+            const int padNo = idx - first + 1; // 1‑based
             c.cd(padNo);
             gPad->SetBorderMode(0);
             gPad->SetMargin(0, 0, 0, 0);
 
-            if (auto *img = TImage::Open(src[idx].string().c_str())) {
-                img->Draw();
-                delete img;
+            if (allImgs[idx]) {
+                allImgs[idx]->Draw();
+            } else {
+                TLatex miss;
+                miss.SetNDC();
+                miss.SetTextAlign(22);
+                miss.SetTextSize(0.050);
+                miss.SetTextFont(42);
+                miss.DrawLatex(0.5, 0.5, "Image missing");
             }
+
+            const std::string& rn = runNumbers[idx];
+            label.DrawLatex(0.02, 0.97, rn.c_str());
         }
 
-        fs::path outPng = sumDir /
-            (std::string("page") + std::to_string(p + 1) + ".png");
+        // Save page
+        fs::path outPng = sumDir / (std::string("page") + std::to_string(p + 1) + ".png");
         c.SaveAs(outPng.string().c_str());
+        std::cout << "[summary] wrote: " << outPng << "\n";
     }
+
+    std::cout << "[summary] all pages complete.\n";
 }
+
 
 
 // ╔══════════════════════════════════════════════╗
@@ -6879,38 +6991,219 @@ namespace  /* helpers stay local to this TU */ {
 struct Cnt { int tot = 0, used = 0; };
 
 /* ------------------------------------------------------------------ *
- *  QA‑module filter – controlled via environment variable QA_ONLY.
- *  Example:   export QA_ONLY="correlations,hcal,jetqa"
+ *  QA‑module filter — flexible, deterministic, with validation
+ *    QA_ONLY
+ *    PROCESS_ONLY, RUN_STAGES, AUAU_STAGES, STAGES
+ *    QA_EXCEPT (exclusion list)
+ *    QA_FILTER_FILE (optional file; one token per line or space/comma separated)
+ *    /proc/self/cmdline (Linux only; catches "processOnly local correlations")
+ *  Tokens: comma or space separated; case-insensitive.
+ *  Set QA_DEBUG_FILTER=1 to print accept/deny table.
  * ------------------------------------------------------------------ */
 static std::unordered_set<std::string> gQaFilter;
+static std::unordered_set<std::string> gQaExclude;
+static bool gQaInit = false;
+
+static inline std::string canonTag(std::string t)
+{
+    std::transform(t.begin(), t.end(), t.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+
+    std::string s;
+    s.reserve(t.size());
+    for (unsigned char c : t) {
+        if (std::isalnum(c) || c=='_') s.push_back(static_cast<char>(c));
+    }
+
+    if (s=="all") return "all"; // wildcard
+    if (s=="corr" || s=="correlation" || s=="correlations" || s=="corrqa") return "correlations";
+    if (s=="event" || s=="eventqa" || s=="events") return "eventqa";
+    if (s=="trigger" || s=="triggerqa" || s=="trg") return "triggerqa";
+    if (s=="jet" || s=="jetqa") return "jetqa";
+    if (s=="hcal" || s=="hcalqa" || s=="ihcal" || s=="ohcal" || s=="totalhcal") return "hcal";
+    if (s=="mbd" || s=="mbdqa") return "mbd";
+    if (s=="sepd" || s=="sep" || s=="sepdaq") return "sepd";
+    if (s=="sepdother" || s=="sepda" || s=="sepdaother" || s=="sepd_other") return "sepdother";
+    if (s=="pi0" || s=="pi0qa" || s=="pizero") return "pi0";
+    if (s=="emcal" || s=="emcalqa" || s=="cemc") return "emcal";
+    if (s=="vn" || s=="vnqa" || s=="vnana") return "vn";
+
+    // ignore benign shell words
+    if (s=="processonly" || s=="process" || s=="only" || s=="local" ||
+        s=="stage" || s=="stages" || s=="run" || s=="runs")
+        return {};
+
+    return s;
+}
+
+static inline void addTokensFromString(const std::string& srcName,
+                                       std::string raw,
+                                       std::unordered_set<std::string>& dst,
+                                       bool& sawAny)
+{
+    if (raw.empty()) return;
+    for (char& ch : raw) if (ch == ',') ch = ' ';
+    std::istringstream iss(raw);
+    std::string tok;
+    while (iss >> tok) {
+        const std::string c = canonTag(tok);
+        if (c.empty()) continue;
+        if (c == "all") {
+            dst.clear(); // wildcard → disable filtering entirely
+            ulog::info(std::string("QA filter: 'all' seen in ") + srcName + " → disabling filtering");
+            return;
+        }
+        dst.insert(c);
+        sawAny = true;
+    }
+}
+
+static inline void addTokensFromFile(const std::string& path,
+                                     std::unordered_set<std::string>& dst,
+                                     bool& sawAny)
+{
+    std::ifstream f(path);
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line.resize(hash);
+        addTokensFromString(std::string("file:") + path, line, dst, sawAny);
+    }
+}
+
+static inline void initQaFilterOnce()
+{
+    if (gQaInit) return;
+    gQaInit = true;
+
+    bool sawAny = false;
+
+    auto getenv_str = [](const char* name) -> std::string {
+        if (const char* v = std::getenv(name); v && *v) return std::string(v);
+        return {};
+    };
+
+    // 1) Explicit whitelist
+    addTokensFromString("QA_ONLY", getenv_str("QA_ONLY"), gQaFilter, sawAny);
+
+    // 2) Stage hints from wrappers/scripts
+    addTokensFromString("PROCESS_ONLY", getenv_str("PROCESS_ONLY"), gQaFilter, sawAny);
+    addTokensFromString("RUN_STAGES",   getenv_str("RUN_STAGES"),   gQaFilter, sawAny);
+    addTokensFromString("AUAU_STAGES",  getenv_str("AUAU_STAGES"),  gQaFilter, sawAny);
+    addTokensFromString("STAGES",       getenv_str("STAGES"),       gQaFilter, sawAny);
+
+    // 3) Optional exclusion list
+    addTokensFromString("QA_EXCEPT", getenv_str("QA_EXCEPT"), gQaExclude, /*sawAny*/sawAny);
+
+    // 4) Optional token file
+    const std::string filePath = getenv_str("QA_FILTER_FILE");
+    if (!filePath.empty()) addTokensFromFile(filePath, gQaFilter, sawAny);
+
+    // 5) Last resort: parse /proc/self/cmdline on Linux to catch "processOnly local correlations"
+    #if defined(__linux__)
+        {
+            std::ifstream cmd("/proc/self/cmdline", std::ios::binary);
+            if (cmd) {
+                // Read the NUL-separated argv buffer
+                std::string buf( (std::istreambuf_iterator<char>(cmd)),
+                                  std::istreambuf_iterator<char>() );
+
+                // First collect tokens from cmdline into a temporary set
+                std::unordered_set<std::string> fromCmd;
+                bool sawCmdAny = false;
+                std::string accum;
+
+                for (char ch : buf) {
+                    if (ch != '\0') { accum.push_back(ch); continue; }
+                    addTokensFromString("cmdline", accum, fromCmd, /*sawAny*/sawCmdAny);
+                    accum.clear();
+                }
+                if (!accum.empty())
+                    addTokensFromString("cmdline", accum, fromCmd, /*sawAny*/sawCmdAny);
+
+                // Keep only tags we actually support to avoid noisy warnings later
+                static const std::unordered_set<std::string> kAcceptFromCmd = {
+                    "correlations","hcal","mbd","sepd","sepdother",
+                    "jetqa","eventqa","triggerqa","pi0","emcal","vn","all"
+                };
+
+                for (const auto& t : fromCmd) {
+                    if (kAcceptFromCmd.count(t)) {
+                        gQaFilter.insert(t);
+                        sawAny = true;  // only mark as "saw something" when it is a valid tag
+                    }
+                }
+            }
+        }
+    #endif
+
+    // Keep only canonical, known tags
+    static const std::unordered_set<std::string> kKnown = {
+        "correlations","hcal","mbd","sepd","sepdother","jetqa","eventqa","triggerqa","pi0","emcal","vn"
+    };
+    auto purgeUnknowns = [&](std::unordered_set<std::string>& s, const char* label){
+        std::vector<std::string> toErase;
+        for (const auto& t : s) if (!kKnown.count(t)) toErase.push_back(t);
+        for (const auto& t : toErase) {
+            s.erase(t);
+            ulog::warn(std::string("QA filter: ignoring unknown token '") + t + "' from " + label);
+        }
+    };
+    purgeUnknowns(gQaFilter,  "whitelist");
+    purgeUnknowns(gQaExclude, "exclude");
+
+    // Exclusion overrides inclusion if both present
+    for (const auto& t : gQaExclude) gQaFilter.erase(t);
+
+    // Logging
+    if (!gQaFilter.empty() || !gQaExclude.empty()) {
+        std::ostringstream o;
+        o << "QA filter:";
+        if (!gQaFilter.empty()) {
+            o << " allow=[";
+            bool first = true;
+            for (const auto& t : gQaFilter) { o << (first?"":" ") << t; first=false; }
+            o << "]";
+        }
+        if (!gQaExclude.empty()) {
+            o << " deny=[";
+            bool first = true;
+            for (const auto& t : gQaExclude) { o << (first?"":" ") << t; first=false; }
+            o << "]";
+        }
+        ulog::info(o.str());
+    } else {
+        ulog::info("QA filter inactive – all modules enabled");
+    }
+
+    // Optional verbose decision table
+    if (const char* dbg = std::getenv("QA_DEBUG_FILTER"); dbg && *dbg && std::string(dbg) != "0") {
+        std::vector<std::string> tags = {
+            "correlations","hcal","mbd","sepd","sepdother","jetqa","eventqa","triggerqa","pi0","emcal","vn"
+        };
+        std::ostringstream o;
+        o << "QA filter decision table:\n";
+        for (const auto& t : tags) {
+            const bool allow = gQaExclude.count(t) ? false
+                             : (gQaFilter.empty() ? true
+                             :  gQaFilter.count(t) > 0);
+            o << "  - " << std::setw(11) << std::left << t << " : "
+              << (allow ? "ALLOW" : "DENY") << "\n";
+        }
+        ulog::info(o.str());
+    }
+}
 
 static bool wantQA(const std::string& tag)
 {
-    /* empty filter  →  accept every module */
-    return gQaFilter.empty() || gQaFilter.count(tag);
-}
+    initQaFilterOnce();
+    const std::string t = canonTag(tag);
 
-/* one‑time initialiser – runs before main() ------------------------ */
-struct _InitQaFilter_
-{
-    _InitQaFilter_()
-    {
-        const char* env = std::getenv("QA_ONLY");
-        if (!env || !*env) return;                 // no list supplied
-        std::stringstream ss(env);
-        std::string tok;
-        while (std::getline(ss, tok, ',')) {
-            std::transform(tok.begin(), tok.end(), tok.begin(), ::tolower);
-            gQaFilter.insert(tok);
-        }
-        if (!gQaFilter.empty()) {
-            std::ostringstream o;
-            o << "QA filter active → ";
-            for (const auto& t : gQaFilter) o << t << ' ';
-            ulog::info(o.str());
-        }
-    }
-} _initQaFilter_;
+    if (gQaExclude.count(t)) return false;          // exclusions always win
+    if (gQaFilter.empty())   return true;           // permissive when no whitelist
+    return gQaFilter.count(t) > 0;                  // strict when whitelist present
+}
 
 /* ===================================================================
  * H‑0  :  open ROOT file + discover centrality slices
@@ -7097,28 +7390,31 @@ QaMaps runQaProduction(TFile*              in,
             }
 
 
-            //------------------------------------------------------------------
-            // 2‑D. assemble QA module stack  (filter‑aware)
-            //------------------------------------------------------------------
+            // ──────────────────────────────────────────────────────────────────
+            // 2‑D. assemble QA module stack  (filter‑aware, LAZY construction)
+            // ──────────────────────────────────────────────────────────────────
             std::vector<std::unique_ptr<QA>> qa;
 
-            /* helper: add module only when wanted */
-            auto push = [&](const std::string& tag, auto p)
-                        { if (wantQA(tag)) qa.emplace_back(std::move(p)); };
+            /* construct the module only when wanted to avoid destructor side‑effects */
+            auto push = [&](const std::string& tag, auto&& make) {
+                if (wantQA(tag)) {
+                    qa.emplace_back(make());   // make() returns std::unique_ptr<Derived>
+                }
+            };
 
-            push("correlations", std::make_unique<CorrQA>(trg, trgBase, slices));
-            push("hcal",         std::make_unique<HcalQA>(trg, trgBase, slices));
-            push("mbd",          std::make_unique<MbdQA >(trg, trgBase, slices, mbdCache));
-            push("sepd",         std::make_unique<SepdQA>(trg, trgBase, slices, sepdCache));
-            push("sepdother",    std::make_unique<sEPDotherQA>(trg, trgBase, slices));
-            push("jetqa",        std::make_unique<JetQA >(trg, trgBase, slices));
-            push("eventqa",      std::make_unique<EventQA>(trg, trgBase, slices));
-            push("triggerqa",    std::make_unique<TriggerQA>(trg, trgBase, slices));
+            push("correlations", [&]{ return std::make_unique<CorrQA>(trg, trgBase, slices); });
+            push("hcal",         [&]{ return std::make_unique<HcalQA>(trg, trgBase, slices); });
+            push("mbd",          [&]{ return std::make_unique<MbdQA >(trg, trgBase, slices, mbdCache); });
+            push("sepd",         [&]{ return std::make_unique<SepdQA>(trg, trgBase, slices, sepdCache); });
+            push("sepdother",    [&]{ return std::make_unique<sEPDotherQA>(trg, trgBase, slices); });
+            push("jetqa",        [&]{ return std::make_unique<JetQA >(trg, trgBase, slices); });
+            push("eventqa",      [&]{ return std::make_unique<EventQA>(trg, trgBase, slices); });
+            push("triggerqa",    [&]{ return std::make_unique<TriggerQA>(trg, trgBase, slices); });
 
             if (hasLive) {
-                push("pi0",   std::make_unique<Pi0QA >(trg, trgBase, slices, csv));
-                push("emcal", std::make_unique<EmcalQA>(trg, trgBase, slices));
-                push("vn",    std::make_unique<VnPlotQA>(trg, trgBase, slices));
+                push("pi0",   [&]{ return std::make_unique<Pi0QA >(trg, trgBase, slices, csv); });
+                push("emcal", [&]{ return std::make_unique<EmcalQA>(trg, trgBase, slices); });
+                push("vn",    [&]{ return std::make_unique<VnPlotQA>(trg, trgBase, slices); });
             }
 
             ulog::trace("  ↳ instantiated "

@@ -3,6 +3,7 @@
 #  runAuAuExecutable.sh – Condor wrapper, one job per input ROOT file
 ##############################################################################
 set -euo pipefail
+echo "[wrapper] QA_ONLY=${QA_ONLY:-<unset>}  COMBINED_ONLY=${COMBINED_ONLY:-<unset>}  VERBOSE=${VERBOSE:-0}"
 
 export RUN_LOCATION=sphenix          # force scratch tree
 
