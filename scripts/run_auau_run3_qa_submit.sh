@@ -104,23 +104,25 @@ DATASET=${1:-run24auau}        # run24auau | run25auau
 shift || true                  # always consume at least one token
 
 # ---------------------------------------------------------------------------
-# Recognise an *optional* special‑mode keyword *before* ordinary dst‑type:
-#   run25auau caloFitting …
-# This switches the submitter to CALOFITTING‑specific list handling.
+# Recognise an *optional* Run‑3 special‑mode keyword before ordinary dst‑type:
+#   run25auau caloFitting  → Run‑3 DST_CALOFITTING lists (dst_calofitting-*.list)
+#   run25auau dstCalo      → Run‑3 DST_CALO         lists (dst_calo-*.list)
 # ---------------------------------------------------------------------------
-CALOFIT=0
-if [[ "$DATASET" == run25auau && "${1:-}" == caloFitting ]]; then
-  CALOFIT=1
-  shift                         # consume "caloFitting"
+CALO_MODE="none"   # cf | calo | none
+if [[ "$DATASET" == run25auau ]]; then
+  case "${1:-}" in
+    caloFitting|calofitting) CALO_MODE="cf";   shift ;;  # consume token
+    dstCalo|dstcalo)         CALO_MODE="calo"; shift ;;  # consume token
+  esac
 fi
 
 # ---------------------------------------------------------------------------
-# dst‑type selection for the standard JET* modes (only if CALOFIT == 0)
+# dst‑type selection for the standard JET* modes (only when CALO_MODE=none)
 #   • dstjet      → DST_JET      (default)
 #   • dstjetcalo  → DST_JETCALO
 # ---------------------------------------------------------------------------
 DSTTYPE=dstjet
-if (( ! CALOFIT )) && [[ "$DATASET" == run25auau && "${1:-}" =~ ^(dstjet|dstjetcalo)$ ]]; then
+if [[ "$DATASET" == run25auau && "$CALO_MODE" == "none" && "${1:-}" =~ ^(dstjet|dstjetcalo)$ ]]; then
   DSTTYPE=${1,,}                # lower‑case
   shift                         # consume the dst‑type token
 fi
@@ -134,12 +136,20 @@ case "$DATASET" in
     PAD_FMT="%05d"
     ;;
   run25auau)
-    if (( CALOFIT )); then
+    if [[ "$CALO_MODE" == "cf" ]]; then
+      # Run‑3 CALOFITTING lists (lowercase list filename prefix)
       FILE_PREFIX="dst_calofitting"
-      LIST_PATTERN="${FILE_PREFIX}-*.list"
+      LIST_PATTERN="${FILE_PREFIX}-000*.list"
+      LIST_FMT="${FILE_PREFIX}-%08d.list"
+      PAD_FMT="%08d"
+    elif [[ "$CALO_MODE" == "calo" ]]; then
+      # Run‑3 DST_CALO lists (lowercase list filename prefix)
+      FILE_PREFIX="dst_calo"
+      LIST_PATTERN="${FILE_PREFIX}-000*.list"
       LIST_FMT="${FILE_PREFIX}-%08d.list"
       PAD_FMT="%08d"
     else
+      # Run‑25 JET family
       case "$DSTTYPE" in
         dstjet)      FILE_PREFIX="DST_JET" ;;
         dstjetcalo)  FILE_PREFIX="DST_JETCALO" ;;
@@ -155,10 +165,11 @@ case "$DATASET" in
     ;;
 esac
 
+
 ##############################################################################
 # 1. USER CONSTANTS
 ##############################################################################
-CHUNK_SIZE=1
+CHUNK_SIZE=4
 MAX_JOBS=5000
 ##############################################################################
 
@@ -306,12 +317,13 @@ fi
 
 # -- automatic golden list ---------------------------------------------------
 if [[ "$DATASET" == run25auau && -z "$runListFile" ]]; then
-  if (( CALOFIT )); then
+  if [[ "$CALO_MODE" != "none" ]]; then
     for p in "${PROJECT_BASE}" .; do
       [[ -f "$p/run3goldenRuns.txt" ]] && runListFile="$p/run3goldenRuns.txt" && break
     done
+    label=$([[ "$CALO_MODE" == "cf" ]] && echo "caloFitting" || echo "dstCalo")
     [[ -n "$runListFile" ]] && \
-      say "run25auau(caloFitting) – using golden run list $(basename "$runListFile")"
+      say "run25auau(${label}) – using golden run list $(basename "$runListFile")"
   else
     for p in "${PROJECT_BASE}" .; do
       [[ -f "$p/run25GoldenRuns.txt" ]] && runListFile="$p/run25GoldenRuns.txt" && break

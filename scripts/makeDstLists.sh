@@ -87,73 +87,83 @@ case "$mode" in
 esac
 
 #####################  PRE‑FLIGHT (repo existence, banner)  ###################
-for p in "${prefix_dir[@]}"; do [[ -d "$p" ]] || fatal "Directory not found: $p"; done
-
-say "Mode                  : ${clr_bld}${mode}${clr_rst}"
-[[ -n $extra ]] && say "Extra workflow        : ${clr_bld}${extra}${clr_rst}"
-say "Destination .list dir : ${clr_bld}${list_dir}${clr_rst}"
-for k in "${!prefix_dir[@]}"; do say "Source for ${clr_bld}${k}${clr_rst}: ${prefix_dir[$k]}"; done
+if [[ $extra == caloFitting ]]; then
+  # Minimal banner for caloFitting; skip JET/JETCALO repo checks/prints
+  say "Skipping phase‑1 JET/JETCALO list building for caloFitting workflow."
+else
+  for p in "${prefix_dir[@]}"; do [[ -d "$p" ]] || fatal "Directory not found: $p"; done
+  say "Mode                  : ${clr_bld}${mode}${clr_rst}"
+  [[ -n $extra ]] && say "Extra workflow        : ${clr_bld}${extra}${clr_rst}"
+  say "Destination .list dir : ${clr_bld}${list_dir}${clr_rst}"
+  for k in "${!prefix_dir[@]}"; do say "Source for ${clr_bld}${k}${clr_rst}: ${prefix_dir[$k]}"; done
+fi
 
 rm -rf "${list_dir:?}"/* 2>/dev/null || true
 mkdir -p "$list_dir"
 good "Output directory prepared"
 
 ###########################  COLLECT RUN IDs  #################################
-declare -A run_set          # associative: run → 1 (dedup)
-
-for pfx in "${!prefix_dir[@]}"; do
-  base=${prefix_dir[$pfx]}
-  while IFS= read -r -d '' f; do
-    [[ $f =~ ([0-9]{8}) ]] && run_set[${BASH_REMATCH[1]}]=1
-  done < <(find "$base" -type f -name "${pfx}-????????-*.root" -print0)
-done
-
-runs=("${!run_set[@]}") ; IFS=$'\n' runs=($(sort -n <<<"${runs[*]}")) ; IFS=$'\n\t'
-(( ${#runs[@]} )) || fatal "No runs found to process"
-
-good "Runs to process       : ${#runs[@]}"
-echo
-
-##############################  HELPERS  ######################################
-inc() { local -n ref=$1; ref=$((ref+1)); }
-
-############################  MAIN LOOP  ######################################
-ok=0 miss=0 pruned=0
-empty_lists=()
-
-for run in "${runs[@]}"; do
-  run8=$(printf "%08d" "$((10#$run))")
-  say "▸ Run ${clr_bld}${run8}${clr_rst}"
+if [[ $extra != caloFitting ]]; then
+  declare -A run_set          # associative: run → 1 (dedup)
 
   for pfx in "${!prefix_dir[@]}"; do
     base=${prefix_dir[$pfx]}
-    mapfile -t files < <(find "$base" -type f -name "${pfx}-${run8}-*.root" -print)
-
-    list_file="${list_dir}/${pfx}-${run8}.list"
-    if (( ${#files[@]} )); then
-      printf "%s\n" "${files[@]}" >"$list_file"
-      good "  ${pfx}: wrote ${#files[@]} path(s)"
-      inc ok
-    else
-      warn "  ${pfx}: no files found"
-      empty_lists+=("$list_file") ; inc miss
-    fi
+    while IFS= read -r -d '' f; do
+      [[ $f =~ ([0-9]{8}) ]] && run_set[${BASH_REMATCH[1]}]=1
+    done < <(find "$base" -type f -name "${pfx}-????????-*.root" -print0)
   done
-done
 
-############################  CLEAN‑UP  #######################################
-for lf in "${empty_lists[@]}"; do
-  [[ -e "$lf" ]] || continue
-  rm -f "$lf"; inc pruned
-  warn "  Removed empty list $(basename "$lf")"
-done
+  runs=("${!run_set[@]}") ; IFS=$'\n' runs=($(sort -n <<<"${runs[*]}")) ; IFS=$'\n\t'
+  (( ${#runs[@]} )) || fatal "No runs found to process"
 
-############################  SUMMARY  ########################################
-echo
-good "Finished (phase‑1 list building):"
-say "  Successful lists : $ok"
-[[ $miss   -gt 0 ]] && warn "  Runs with no files: $miss"
-[[ $pruned -gt 0 ]] && warn "  Empty lists pruned: $pruned"
+  good "Runs to process       : ${#runs[@]}"
+  echo
+
+  ##############################  HELPERS  ####################################
+  inc() { local -n ref=$1; ref=$((ref+1)); }
+
+  ############################  MAIN LOOP  ####################################
+  ok=0 miss=0 pruned=0
+  empty_lists=()
+
+  for run in "${runs[@]}"; do
+    run8=$(printf "%08d" "$((10#$run))")
+    say "▸ Run ${clr_bld}${run8}${clr_rst}"
+
+    for pfx in "${!prefix_dir[@]}"; do
+      base=${prefix_dir[$pfx]}
+      mapfile -t files < <(find "$base" -type f -name "${pfx}-${run8}-*.root" -print)
+
+      list_file="${list_dir}/${pfx}-${run8}.list"
+      if (( ${#files[@]} )); then
+        printf "%s\n" "${files[@]}" >"$list_file"
+        good "  ${pfx}: wrote ${#files[@]} path(s)"
+        inc ok
+      else
+        warn "  ${pfx}: no files found"
+        empty_lists+=("$list_file") ; inc miss
+      fi
+    done
+  done
+
+  ############################  CLEAN‑UP  #####################################
+  for lf in "${empty_lists[@]}"; do
+    [[ -e "$lf" ]] || continue
+    rm -f "$lf"; inc pruned
+    warn "  Removed empty list $(basename "$lf")"
+  done
+
+  ############################  SUMMARY  ######################################
+  echo
+  good "Finished (phase‑1 list building):"
+  say "  Successful lists : $ok"
+  [[ $miss   -gt 0 ]] && warn "  Runs with no files: $miss"
+  [[ $pruned -gt 0 ]] && warn "  Empty lists pruned: $pruned"
+
+else
+  say "Skipping phase‑1 JET/JETCALO list building for caloFitting workflow."
+fi
+
 
 ###############################################################################
 #                        ░▒▓  EXTRA WORKFLOW ▓▒░                               #
@@ -169,17 +179,39 @@ if [[ $extra == caloFitting ]]; then
   min_gl1_evt=100000                 # GL1 events cut
   top_trig=20                        # show N most‑frequent triggers
 
-  # 3rd CLI arg may be either a version suffix (e.g. “v007”) or the
-  # literal string “forceFileList”.  A 4th arg can still be “forceFileList”.
-  default_ver="v006"
+  # 3rd CLI arg may be either a version suffix (v006|v007|v008) or a full tag
+  # like 'ana502_2025p004_v001'. A 4th arg can be 'forceFileList'.
+  #
+  # Mapping:
+  #   v006 → new_newcdbtag_v006
+  #   v007 → new_newcdbtag_v007
+  #   v008 → ana502_2025p004_v001   (run3 DSTs per production email)
+  #
+  default_ver="v008"
+
+  map_tag() {
+      case "$1" in
+          v006) echo "new_newcdbtag_v006" ;;
+          v007) echo "new_newcdbtag_v007" ;;
+          v008) echo "ana502_2025p004_v001" ;;   # NEW v008 mapping
+          ana502_*|new_newcdbtag_*) echo "$1" ;; # already a full tag
+          *)
+              warn "Unknown version suffix '$1' – defaulting to v008 (ana502_2025p004_v001)"
+              echo "ana502_2025p004_v001"
+              ;;
+      esac
+  }
+
   if [[ ${3:-} == forceFileList ]]; then
-      tag="new_newcdbtag_${default_ver}"
+      tag="$(map_tag "$default_ver")"
       build_mode=forceFileList
   else
-      ver_suffix=${3:-$default_ver}
-      tag="new_newcdbtag_${ver_suffix}"
-      build_mode=${4:-create}
+      ver_suffix="${3:-$default_ver}"
+      tag="$(map_tag "$ver_suffix")"
+      build_mode="${4:-create}"
   fi
+
+  say "Resolved production tag for CALOFITTING: ${clr_bld}${tag}${clr_rst}"
 
   run3_list="${list_dir}/run3auau-${tag}.list"
   golden_txt="${list_dir}/run3goldenruns.txt"
@@ -259,7 +291,8 @@ if [[ $extra == caloFitting ]]; then
     [[ $note == GOOD ]] && golden+=("$run") || ((++fail_cnt))
 
     rows+=("$run"$'\t'"$rt"$'\t'"$ev"$'\t'"$on"$'\t'"$off"$'\t'"$note")
-    (( tot_rt+=rt, tot_ev+=ev ))
+    tot_rt=$(( tot_rt + rt ))
+    tot_ev=$(( tot_ev + ev ))
   done
 
   ###########################################################################
@@ -278,14 +311,18 @@ if [[ $extra == caloFitting ]]; then
   timeRuns=0; timeRt=0; timeEv=0
   while IFS=$'\t' read -r _ rt ev _ _ note; do
       [[ $note == SHORT* ]] && continue        # drop the short ones
-      ((timeRuns++, timeRt+=rt, timeEv+=ev))
+      timeRuns=$(( timeRuns + 1 ))
+      timeRt=$(( timeRt + rt ))
+      timeEv=$(( timeEv + ev ))
   done <<<"$(printf '%s\n' "${rows[@]}")"
 
   # ── 3. after GL1 events ≥ ${min_gl1_evt} -------------------------------------
   eventRuns=0; eventRt=0; eventEv=0
   while IFS=$'\t' read -r _ rt ev _ _ note; do
       [[ $note != GOOD ]] && continue          # keep only the golden ones
-      ((eventRuns++, eventRt+=rt, eventEv+=ev))
+      eventRuns=$(( eventRuns + 1 ))
+      eventRt=$(( eventRt + rt ))
+      eventEv=$(( eventEv + ev ))
   done <<<"$(printf '%s\n' "${rows[@]}")"
 
   echo -e "\n${clr_grn}================ Cut-flow summary ===============${clr_rst}"
@@ -331,59 +368,84 @@ if [[ $extra == caloFitting ]]; then
 
 
   ###########################################################################
-  # 4 . produce per‑run .list files for the golden sample                  #
+  # 4 . produce per‑run .list files for the golden sample (both prefixes)  #
   ###########################################################################
 
-  # build_mode was set in the initialisation block above – do not override here
+  # build_mode was set earlier – do not override here
   : "${build_mode:=create}"      # fallback only if somehow unset
 
-  say "Generating ${calo_prefix} .list files for ${#golden[@]} golden runs  (mode=${build_mode})"
+  calo_prefix2="DST_CALO"
+
+  say "Generating ${calo_prefix} and ${calo_prefix2} .list files for ${#golden[@]} golden runs  (mode=${build_mode})"
 
   if [[ $build_mode == forceFileList ]]; then
       # ----------------------------------------------------------------------
-      # 4A. DIRECTORY TRAVERSAL BACK‑UP – build the list files ourselves
-      #     Base      : /sphenix/lustre01/sphnxpro/production/run3auau/physics/caloy2fitting/<tag>
+      # 4A. DIRECTORY TRAVERSAL – build the list files ourselves
+      #     Bases:
+      #       DST_CALOFITTING → caloy2fitting/<tag>/
+      #       DST_CALO        → caloy2calib/<tag>/
       #     Sub‑dirs  : run_<000NNN00>_<000NNN00> (100‑run buckets)
-      #     Pattern   : DST_CALOFITTING_<dataset>_<tag>-<run8>-NNNNN.root
+      #     Pattern   : <prefix>_<dataset>_<tag>-<run8>-*.root
       # ----------------------------------------------------------------------
-      calo_base="/sphenix/lustre01/sphnxpro/production/run3auau/physics/caloy2fitting/${tag}"
+      produce_list_from_tree() {
+          local prefix="$1"
+          local subdir="$2"
+          local base="/sphenix/lustre01/sphnxpro/production/run3auau/physics/${subdir}/${tag}"
+          [[ -d "$base" ]] || { warn "Base directory not found: $base"; return; }
 
-      for run in "${golden[@]}"; do
-        run_dec=$((10#$run))                                  # strip any octal :contentReference[oaicite:0]{index=0}
-        run8=$(printf "%08d" "$run_dec")                      # 8‑digit run number
+          for run in "${golden[@]}"; do
+              local run_dec run8 bucket_start bucket_end bucket_dir full_dir
+              run_dec=$((10#$run))
+              run8=$(printf "%08d" "$run_dec")
 
-        bucket_start=$(( (run_dec/100)*100 ))                 # integer division :contentReference[oaicite:1]{index=1}
-        bucket_end=$(( bucket_start + 100 ))
-        bucket_dir=$(printf "run_%08d_%08d" "$bucket_start" "$bucket_end")
+              bucket_start=$(( (run_dec/100)*100 ))
+              bucket_end=$(( bucket_start + 100 ))
+              bucket_dir=$(printf "run_%08d_%08d" "$bucket_start" "$bucket_end")
 
-        full_dir="${calo_base}/${bucket_dir}"
-        [[ -d $full_dir ]] || { warn "  ${run}: directory ${bucket_dir} missing"; continue; }
+              full_dir="${base}/${bucket_dir}"
+              if [[ ! -d "$full_dir" ]]; then
+                  warn "  ${run}: directory ${bucket_dir} missing under ${subdir}"
+                  continue
+              fi
 
-        # collect all segments for this run, sort them numerically for reproducibility
-        mapfile -t segs < <(find "$full_dir" -type f \
-                     -name "${calo_prefix}_${dataset}_${tag}-${run8}-*.root" \
-                     | sort -V)
+              local -a segs=()
+              mapfile -t segs < <(find "$full_dir" -type f \
+                                   -name "${prefix}_${dataset}_${tag}-${run8}-*.root" \
+                                   | sort -V)
 
-        out_list="${list_dir}/${calo_prefix}_${dataset}_${tag}-${run8}.list"
+              local out_list="${list_dir}/${prefix}_${dataset}_${tag}-${run8}.list"
+              if (( ${#segs[@]} )); then
+                  printf '%s\n' "${segs[@]}" >"$out_list"
+                  good "  ${run}: wrote ${#segs[@]} path(s) → $(basename "$out_list")"
+              else
+                  warn "  ${run}: no ${prefix} files found in ${bucket_dir}"
+              fi
+          done
+      }
 
-        if (( ${#segs[@]} )); then
-          printf '%s\n' "${segs[@]}" >"$out_list"
-          good "  ${run}: wrote ${#segs[@]} path(s)"
-        else
-          warn "  ${run}: no CALOFITTING files found in ${bucket_dir}"
-        fi
-  done
+      # CALOFITTING and CALO lists
+      produce_list_from_tree "${calo_prefix}"  "caloy2fitting"
+      produce_list_from_tree "${calo_prefix2}" "caloy2calib"
 
   else
       # ----------------------------------------------------------------------
-      # 4B. SINGLE‑PASS LIST CREATION – build all CALOFITTING lists in one go
+      # 4B. SINGLE‑PASS LIST CREATION – build all lists via CreateDstList.pl
+      #     Uses the golden run manifest for *both* prefixes.
       # ----------------------------------------------------------------------
       (
         cd "$list_dir" || fatal "Cannot cd into $list_dir"
+
+        # DST_CALOFITTING
         CreateDstList.pl --tag "$tag" \
                          --dataset "$dataset" \
                          --list "$golden_txt" \
                          "$calo_prefix"
+
+        # DST_CALO
+        CreateDstList.pl --tag "$tag" \
+                         --dataset "$dataset" \
+                         --list "$golden_txt" \
+                         "$calo_prefix2"
       )
   fi
 

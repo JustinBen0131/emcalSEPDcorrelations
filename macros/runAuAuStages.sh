@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
-##############################################################################
+#################################################################################################
 #  runAuAuStages.sh  –  Au+Au Run‑24/25 **end‑to‑end QA driver**
 #
-#  Quick command map
-#  ─────────────────
-#  • stage0              : launch one Condor job **per run** (per‑run QA)
-#  • stage1              : scan SEB/HCal, write *good‑run list* + bar chart
-#  • stage2              : Condor “hadd” groups of ≤10 good runs each
-#  • stage3 [mode] [...] : final merge **+ combined QA**
-#        mode            : local  – merge/QA on login node
-#                          condor – submit merge/QA to Condor (default)
-#        skipStage2      : build combined file directly from good‑run list
-#  • processOnly [mode] [qaList]
-#        mode            : local  | condor   (default = local)
-#        qaList          : comma‑separated subset of QA modules (see table)
-#                          leave empty to run the **full** QA suite
+#  SYNOPSIS
+#  --------
+#    ./runAuAuStages.sh <command> [options]
 #
-#  Example cheat‑sheet
-#  ───────────────────
-#    ./runAuAuStages.sh stage0                    # full per‑run grid
-#    ./runAuAuStages.sh stage1                    # build good‑run list
-#    ./runAuAuStages.sh stage2                    # group hadd on Condor
-#    ./runAuAuStages.sh stage3                    # final combined QA (Condor)
-#    ./runAuAuStages.sh stage3 local skipStage2   # local merge, skip stage‑2
-#    ./runAuAuStages.sh processOnly               # re‑run all QA on combined
-#    ./runAuAuStages.sh processOnly correlations  # correlations QA only
-#    ./runAuAuStages.sh processOnly condor pi0,jetqa
+#  COMMANDS (in‑house CLI)
+#  -----------------------
+#  • stage0 [rescueBusy]
+#      Launch one Condor job **per run** (per‑run QA). With `rescueBusy`, kill
+#      active Stage‑0 Condor jobs and process those runs locally, sequentially.
 #
-#  QA module keywords accepted by `processOnly`
-#  ─────────────────────────────────────────────
+#  • stage1
+#      Scan SEB/HCal; write the *good‑run list* and draw the
+#      `Combined/MissingSEB_distribution.png` summary plot.
+#
+#  • stage2
+#      Submit Condor “hadd” groups of ≤10 **good runs** each (uses the list from stage1).
+#
+#  • stage3 [local|condor] [skipStage2]
+#      Final merge → `output_ALL_COMBINED.root` **and** run the combined QA.
+#        - local  : do merge+QA on the login node.
+#        - condor : submit the merge+QA to Condor (default).
+#        - skipStage2 : build the combined file directly from the good‑run list
+#                       produced by stage1 (i.e. no group files from stage2).
+#
+#  • processOnly [local|condor] [qaList] [triggerList]
+#      Re‑run QA on the already‑combined file only.
+#        - local|condor : where to execute (default = local).
+#        - qaList       : comma‑separated subset of QA modules (see table below).
+#                         If omitted → run the **full** QA suite.
+#        - triggerList  : (optional) comma‑separated exact trigger names to limit
+#                         processing (e.g. `MBD_NS_geq_2_vtx_lt_10,photon_8_plus_MBD_NS_geq_2_vtx_lt_10`).
+#                         Internally forwarded as TRIGGER_ONLY. When active, TriggerQA
+#                         is skipped (other modules still run for those triggers).
+#
+#  • processOnlyParrallel [ALL|qaList]
+#      Submit one Condor job **per QA module** on the combined file.
+#      Use `ALL` (default) or provide a comma‑separated `qaList`.
+#      (Note: `TRIGGER_ONLY` is **not** applied in this parallel mode.)
+#
+#  QA MODULE KEYWORDS
+#  ------------------
 #  | Keyword        | Module executed                    |
 #  | -------------- | ---------------------------------- |
 #  | correlations   | CALO × sEPD × MBD correlations     |
@@ -41,13 +55,33 @@
 #  | triggerqa      | Trigger counters / rates           |
 #  | pi0            | π⁰ invariant‑mass QA               |
 #  | emcal          | EMCal occupancy / spectra          |
-#  | vn             | vₙ analysis QA                      |
+#  | vn             | vₙ analysis QA                     |
 #
-#  Pass multiple keywords comma‑separated, e.g.
-#       QA_ONLY="correlations,pi0,jetqa"
-#  (the wrapper sets this automatically for you when you use
-#   `./runAuAuStages.sh processOnly [...] <list>`).
-##############################################################################
+#  GLOBAL KNOBS (environment variables)
+#  ------------------------------------
+#  • VERBOSE=0|1|2      – 0: silent (default), 1: info logs, 2: +shell trace
+#  • QA_ONLY=...        – comma‑separated QA modules (same tokens as the table)
+#  • TRIGGER_ONLY=...   – comma‑separated trigger names to process (exact match)
+#                         e.g. TRIGGER_ONLY="MBD_NS_geq_2_vtx_lt_10,photon_10_plus_MBD_NS_geq_2_vtx_lt_150"
+#TRIGGER_ONLY="MBD_NS_geq_2_vtx_lt_10,MBD_NS_geq_2_vtx_lt_30,MBD_NS_geq_2_vtx_lt_150" \
+#VERBOSE=3 \
+#./runAuAuStages.sh processOnlyParrallel correlations,hcal,mbd,sepd,sepdother,jetqa,eventqa,pi0,emcal,vn
+#
+#  QUICK EXAMPLES
+#  --------------
+#    ./runAuAuStages.sh stage0
+#    ./runAuAuStages.sh stage0 rescueBusy
+#    ./runAuAuStages.sh stage1
+#    ./runAuAuStages.sh stage2
+#    ./runAuAuStages.sh stage3                       # final QA via Condor
+#    ./runAuAuStages.sh stage3 local skipStage2      # local merge from runlist + QA
+#    ./runAuAuStages.sh processOnly                  # re‑run all QA on combined
+#    ./runAuAuStages.sh processOnly correlations     # correlations only
+#    ./runAuAuStages.sh processOnly condor pi0,jetqa # Condor; π0 + jet QA only
+#    ./runAuAuStages.sh processOnly local emcal MBD_NS_geq_2_vtx_lt_10
+#    ./runAuAuStages.sh processOnly condor correlations,pi0 \
+#         MBD_NS_geq_2_vtx_lt_10,photon_8_plus_MBD_NS_geq_2_vtx_lt_10
+####################################################################################################################
 set -euo pipefail
 
 # ─────────  Verbosity control (same semantics as runAuAu.sh)  ─────────
@@ -585,6 +619,17 @@ case "${1:-}" in
             shift
         fi
 
+        # optional third token → trigger name(s), comma-separated
+        # examples:
+        #   MBD_NS_geq_2_vtx_lt_10
+        #   photon_10_plus_MBD_NS_geq_2_vtx_lt_150
+        #   MBD_NS_geq_2_vtx_lt_10,photon_8_plus_MBD_NS_geq_2_vtx_lt_10
+        if [[ $# -ge 1 && "$1" =~ ^[A-Za-z0-9_+,]+$ ]]; then
+            export TRIGGER_ONLY="$1"
+            note "TRIGGER_ONLY filter applied → ${TRIGGER_ONLY}"
+            shift
+        fi
+
         COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
         [[ -f "${COMBINED}" ]] || die "Combined file ${COMBINED} not found – run stage3 first"
 
@@ -597,13 +642,14 @@ case "${1:-}" in
         else
             launcher="${TMP_BASE}/processOnly_launcher.sh"
             cat > "${launcher}" <<EOF
-            #!/usr/bin/env bash
-            set -euo pipefail
-            export QA_ONLY="${QA_ONLY:-}"
-            export COMBINED_ONLY=1
-            export EXTERNAL_HADD=1
-            export VERBOSE="${VERBOSE:-0}"
-            exec "${EXEC_WRAPPER}" --final
+#!/usr/bin/env bash
+set -euo pipefail
+export QA_ONLY="${QA_ONLY:-}"
+export TRIGGER_ONLY="${TRIGGER_ONLY:-}"
+export COMBINED_ONLY=1
+export EXTERNAL_HADD=1
+export VERBOSE="${VERBOSE:-0}"
+exec "${EXEC_WRAPPER}" --final
             EOF
             chmod +x "${launcher}"
 
@@ -689,6 +735,6 @@ EOF
         done
         ;;
   *)
-        echo "Usage: $0  stage0 | stage1 | stage2 | stage3 [local|condor] | processOnly | processOnlyParrallel"
+        echo "Usage: $0  stage0 [rescueBusy] | stage1 | stage2 | stage3 [local|condor] [skipStage2] | processOnly [local|condor] [qaList] [triggerList] | processOnlyParrallel [ALL|qaList]"
         exit 1 ;;
 esac
