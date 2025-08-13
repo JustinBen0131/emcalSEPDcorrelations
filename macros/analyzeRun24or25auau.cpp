@@ -792,76 +792,117 @@ class Pi0QA : public QA
                   double& mu, double& muErr, // [out] η‑peak μ and error
                   double& sigma, double& sigmaErr)          // [out] σ and error
     {
-        mu = muErr = sigma = sigmaErr = 0.;          // default outputs
+        mu = muErr = sigma = sigmaErr = 0.;                   // default outputs
+        if (runID != "Combined" || !h) return false;          // fit η only once per pass
 
-        if (runID != "Combined" || !h)               // only do it once per macro
-            return false;
+        // Wider window to capture the broad η feature seen in data
+        const double fitLo = 0.38, fitHi = 0.80;
 
-        const double etaLo = 0.45, etaHi = 0.80, side = 0.03;
+        // Robust minimiser settings
+        ROOT::Math::MinimizerOptions::SetDefaultMinimizer("Minuit2");
+        ROOT::Math::MinimizerOptions::SetDefaultMaxFunctionCalls(20000);
+        ROOT::Math::MinimizerOptions::SetDefaultTolerance(1e-4);
 
-        int iLo  = binAt(h, etaLo);
-        int iHi  = binAt(h, etaHi);
-        int iMax = iLo;  double maxCnt = 0.;
+        const int iLo = binAt(h, fitLo);
+        const int iHi = binAt(h, fitHi);
 
-        for (int i = iLo; i <= iHi; ++i)
-            if (h->GetBinContent(i) > maxCnt) { maxCnt = h->GetBinContent(i); iMax = i; }
+        // ---- coarse background fit over the whole η window ----------------
+        TF1 bkg0("bkg0","pol2",fitLo,fitHi);
+        h->Fit(&bkg0, "QRN0");
 
-        if (maxCnt <= 0) return false;               // nothing to fit
-
-        const double mu0    = h->GetBinCenter(iMax);
-        const double sigma0 = 0.040;
-
-        /* --- local background pre‑fit ---------------------------------- */
-        TF1 bkg("bkg","pol2",etaLo,etaHi);
-        for (int i = iLo; i <= iHi; ++i)
-        {
-            const double x = h->GetBinCenter(i);
-            const bool inPk = (std::fabs(x - mu0) < side);
-            h->SetBinError(i, inPk ? 1e9 : std::sqrt(h->GetBinContent(i)));
+        // ---- seed from residual maximum (histogram − background) ----------
+        int    iMax   = iLo;
+        double resMax = -1e99;
+        for (int i = iLo; i <= iHi; ++i) {
+            const double x   = h->GetBinCenter(i);
+            const double res = h->GetBinContent(i) - bkg0.Eval(x);
+            if (res > resMax) { resMax = res; iMax = i; }
         }
-        h->Fit(&bkg,"QN0");
-        for (int i = iLo; i <= iHi; ++i)
-            h->SetBinError(i, std::sqrt(h->GetBinContent(i)));
+        if (resMax <= 0) return false;                         // nothing to fit
 
-        /* --- composite η‑model ----------------------------------------- */
-        TF1 gEta("gEta","gaus(0)+pol2(3)",etaLo,etaHi);
+        double mu0 = h->GetBinCenter(iMax);
+
+        // Estimate σ from residual FWHM (guards included)
+        const double halfMax = 0.5 * resMax;
+        int iL = iMax, iR = iMax;
+        while (iL > iLo) {
+            const double x = h->GetBinCenter(iL);
+            if (h->GetBinContent(iL) - bkg0.Eval(x) < halfMax) break;
+            --iL;
+        }
+        while (iR < iHi) {
+            const double x = h->GetBinCenter(iR);
+            if (h->GetBinContent(iR) - bkg0.Eval(x) < halfMax) break;
+            ++iR;
+        }
+        double fwhm   = std::max(0.01, h->GetBinCenter(iR) - h->GetBinCenter(iL));
+        double sigma0 = std::clamp(fwhm / 2.355, 0.030, 0.180);   // keep sane
+
+        // Wider mask around the seed peak for the background pre‑fit
+        double mask = std::clamp(1.5 * sigma0, 0.06, 0.15);
+
+        // ---- refined background pre‑fit (mask ±mask around seed) ----------
+        TF1 bkg("bkg","pol2",fitLo,fitHi);
+        for (int i = iLo; i <= iHi; ++i) {
+            const double x   = h->GetBinCenter(i);
+            const bool   inP = (std::fabs(x - mu0) < mask);
+            h->SetBinError(i, inP ? 1e9 : std::max(1.0, std::sqrt(h->GetBinContent(i))));
+        }
+        h->Fit(&bkg, "QRN0");
+        for (int i = iLo; i <= iHi; ++i)
+            h->SetBinError(i, std::max(1.0, std::sqrt(h->GetBinContent(i))));
+
+        // ---- full composite: Gaussian + quadratic background --------------
+        TF1 gEta("gEta","gaus(0)+pol2(3)",fitLo,fitHi);
         gEta.SetParNames("A","#mu","#sigma","c0","c1","c2");
-        gEta.SetParameters(maxCnt, mu0, sigma0,
-                           bkg.GetParameter(0),
-                           bkg.GetParameter(1),
-                           bkg.GetParameter(2));
-        gEta.SetParLimits(0, 0, 1e9);
-        gEta.SetParLimits(1, etaLo, etaHi);
-        gEta.SetParLimits(2, 0.020, 0.090);
-        for (int ip = 3; ip <= 5; ++ip)
-        {
+        gEta.SetParameters(std::max(1.0, resMax), mu0, sigma0,
+                           bkg.GetParameter(0), bkg.GetParameter(1), bkg.GetParameter(2));
+
+        // Much looser, data‑driven parameter limits
+        const double muLo = std::max(0.42, mu0 - 0.10);
+        const double muHi = std::min(0.78, mu0 + 0.10);
+        gEta.SetParLimits(0, 0.0, 1e12);            // amplitude
+        gEta.SetParLimits(1, muLo, muHi);           // μ allowed to roam across the bump
+        gEta.SetParLimits(2, 0.030, 0.200);         // σ up to 0.20 GeV for broad peaks
+
+        for (int ip = 3; ip <= 5; ++ip) {
             const double p  = bkg.GetParameter(ip - 3);
-            const double dp = std::max(std::fabs(p) * 0.20, 1e-3);
+            const double dp = std::max(std::fabs(p) * 0.40, 5e-3);
             gEta.SetParLimits(ip, p - dp, p + dp);
         }
+        gEta.SetNpx(1000);
 
-        const bool ok = (h->Fit(&gEta, "QRN0") == 0);
+        bool ok = (h->Fit(&gEta, "QRN0") == 0);     // pass‑1 fit
+
+        // ---- narrow‑range refit around the found peak ----------------------
+        if (ok) {
+            const double mu1 = gEta.GetParameter(1);
+            const double si1 = gEta.GetParameter(2);
+            const double lo  = std::max(fitLo, mu1 - 2.5*si1);
+            const double hi  = std::min(fitHi, mu1 + 3.0*si1);
+            gEta.SetRange(lo, hi);
+            ok = (h->Fit(&gEta, "QRN0") == 0) || ok;
+        }
+
         log(Lvl::INFO, std::string("η fit ") + (ok ? "succeeded" : "FAILED"));
+        if (!ok) return false;
 
-        if (ok)
-        {
-            mu       = gEta.GetParameter(1);
-            muErr    = gEta.GetParError (1);
-            sigma    = gEta.GetParameter(2);
-            sigmaErr = gEta.GetParError (2);
+        mu       = gEta.GetParameter(1);
+        muErr    = gEta.GetParError (1);
+        sigma    = gEta.GetParameter(2);
+        sigmaErr = gEta.GetParError (2);
 
-            // store first successful fit per slice
-            if (_storedEtaFit.count(slice) == 0)
-                _storedEtaFit[slice].reset(new TF1(gEta));
-        }
-        else
-        {
-            mu = muErr = sigma = sigmaErr = 0.;
-        }
+        // style for later draw
+        gEta.SetLineColor(kRed+1);
+        gEta.SetLineWidth(2);
+        gEta.SetLineStyle(1);
 
-        return ok;
+        if (_storedEtaFit.count(slice) == 0)
+            _storedEtaFit[slice].reset(new TF1(gEta));
+
+        return true;
     }
-
+    
     // -----------------------------------------------------------------------
     //  MAIN ENTRY – called once per histogram
     // -----------------------------------------------------------------------
@@ -1060,11 +1101,40 @@ class Pi0QA : public QA
                 h->SetStats(0);
                 h->Draw();                     // histogram first
 
-                /* draw CLONES so the pad owns its own copies, not the stack objects */
                 poly.DrawCopy("SAME");
                 total.DrawCopy("SAME");
-                if (_storedEtaFit.count(slice))
-                    _storedEtaFit[slice]->DrawCopy("SAME");   // safe for stored fits
+
+                /* η: draw composite, its polynomial background, and a dashed Gaussian */
+                if (_storedEtaFit.count(slice)) {
+                    TF1* fEta = _storedEtaFit[slice].get();
+
+                    // composite (gaus + pol2)
+                    fEta->SetLineColor(kRed+1);
+                    fEta->SetLineWidth(2);
+                    fEta->SetLineStyle(1);
+                    fEta->DrawCopy("SAME");
+
+                    // polynomial background only
+                    TF1 etaBkg("etaBkg","pol2", fEta->GetXmin(), fEta->GetXmax());
+                    etaBkg.SetParameters(fEta->GetParameter(3),
+                                         fEta->GetParameter(4),
+                                         fEta->GetParameter(5));
+                    etaBkg.SetLineColor(kGreen+2);
+                    etaBkg.SetLineWidth(2);
+                    etaBkg.SetLineStyle(2);
+                    etaBkg.DrawCopy("SAME");
+
+                    // Gaussian component only
+                    TF1 etaG("etaG","gaus", fEta->GetXmin(), fEta->GetXmax());
+                    etaG.SetParameters(fEta->GetParameter(0),
+                                       fEta->GetParameter(1),
+                                       fEta->GetParameter(2));
+                    etaG.SetLineColor(kRed+1);
+                    etaG.SetLineWidth(2);
+                    etaG.SetLineStyle(7);
+                    etaG.DrawCopy("SAME");
+                }
+
 
                 // labels and legend (same code, only log around) -------------
                 {
@@ -1277,7 +1347,35 @@ class Pi0QA : public QA
 
             h->SetMaximum(1.15 * h->GetMaximum());
             h->Draw();  fBg->Draw("SAME");  fTot->Draw("SAME");
-            if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
+            if (_storedEtaFit.count(sl)) {
+                TF1* fEta = _storedEtaFit[sl].get();
+
+                // composite (gaus + pol2)
+                fEta->SetLineColor(kRed+1);
+                fEta->SetLineWidth(2);
+                fEta->SetLineStyle(1);
+                fEta->Draw("SAME");
+
+                // polynomial background only
+                TF1 etaBkg("etaBkg","pol2", fEta->GetXmin(), fEta->GetXmax());
+                etaBkg.SetParameters(fEta->GetParameter(3),
+                                     fEta->GetParameter(4),
+                                     fEta->GetParameter(5));
+                etaBkg.SetLineColor(kGreen+2);
+                etaBkg.SetLineWidth(2);
+                etaBkg.SetLineStyle(2);
+                etaBkg.Draw("SAME");
+
+                // Gaussian component only
+                TF1 etaG("etaG","gaus", fEta->GetXmin(), fEta->GetXmax());
+                etaG.SetParameters(fEta->GetParameter(0),
+                                   fEta->GetParameter(1),
+                                   fEta->GetParameter(2));
+                etaG.SetLineColor(kRed+1);
+                etaG.SetLineWidth(2);
+                etaG.SetLineStyle(7);
+                etaG.Draw("SAME");
+            }
 
             double mu  = fTot->GetParameter(1), emu = fTot->GetParError(1);
             double sig = fTot->GetParameter(2), esig = fTot->GetParError(2);
@@ -1501,7 +1599,22 @@ class Pi0QA : public QA
                 fBg->DrawCopy("SAME");
                 fTot->SetLineColor(kRed  + 1);  fTot->SetLineWidth(2);
                 fTot->DrawCopy("SAME");
-                if (_storedEtaFit.count(sl)) _storedEtaFit[sl]->Draw("SAME");
+                if (_storedEtaFit.count(sl)) {
+                    TF1* fEta = _storedEtaFit[sl].get();
+                    fEta->SetLineColor(kRed+1);
+                    fEta->SetLineWidth(2);
+                    fEta->SetLineStyle(1);
+                    fEta->Draw("SAME");
+
+                    TF1 etaG("etaG","gaus", fEta->GetXmin(), fEta->GetXmax());
+                    etaG.SetParameters(fEta->GetParameter(0),
+                                       fEta->GetParameter(1),
+                                       fEta->GetParameter(2));
+                    etaG.SetLineColor(kRed+1);
+                    etaG.SetLineWidth(2);
+                    etaG.SetLineStyle(7);
+                    etaG.Draw("SAME");
+                }
 
                 CutKey tmpCK;
                 if (decodeInvName(hPt->GetName(), tmpCK))
@@ -3159,6 +3272,9 @@ public:
       constexpr int nEta =  96;                 // cols (X)
       constexpr int px   =   6;                 // pixel‑size in PNG
 
+      gStyle->SetPalette(kViridis);
+      gStyle->SetNumberContours(255);
+        
       /* 1)  clone & bad‑board masking ---------------------------------- */
       std::unique_ptr<TH2> h(static_cast<TH2*>(src->Clone()));
       h->SetDirectory(nullptr);
@@ -3180,31 +3296,39 @@ public:
         for (int ie = 1; ie <= nEta; ++ie)
           rot->SetBinContent(ie, ip, h->GetBinContent(ip, ie));
 
-      rot->SetDirectory(nullptr);
-      rot->SetMinimum(1.);                    // under‑flow colour = white
-      rot->SetTitleOffset(0.9, "X"); rot->SetTitleOffset(1.4, "Y");
-      rot->GetXaxis()->SetTitle("Tower #eta");
-      rot->GetYaxis()->SetTitle("Tower #phi");
-      rot->GetXaxis()->SetNdivisions(12, kFALSE);   // every 8 η
-      rot->GetYaxis()->SetNdivisions(32, kFALSE);   // every 8 φ
+        rot->SetDirectory(nullptr);
+        rot->SetContour(255);                    // smooth, uniform gradient on the drawn hist
+        rot->SetMinimum(1.0);                    // log‑safe; masked bins (−9999) stay white
+        rot->GetXaxis()->SetTitle("Tower #eta");
+        rot->GetYaxis()->SetTitle("Tower #phi");
+        rot->GetXaxis()->SetTitleOffset(0.9);
+        rot->GetYaxis()->SetTitleOffset(1.4);
+        rot->GetXaxis()->SetNdivisions(12, kFALSE);   // every 8 η
+        rot->GetYaxis()->SetNdivisions(32, kFALSE);   // every 8 φ
 
-      /* 2a) GLOBAL Z‑RANGE UPDATE  (ignore masked / empty) ------------- */
-      {
-        std::vector<double> vv; vv.reserve(nPhi * nEta);
-        for (int y = 1; y <= nPhi; ++y)
-          for (int x = 1; x <= nEta; ++x) {
-            const double v = rot->GetBinContent(x, y);
-            if (v > 0.) vv.push_back(v);
+        /* Robust per‑map Z‑range (ignore masked/empty):
+           use 99.5% quantile + 5% headroom for a clean log palette */
+        {
+          std::vector<double> vv; vv.reserve(nPhi * nEta);
+          for (int y = 1; y <= nPhi; ++y)
+            for (int x = 1; x <= nEta; ++x) {
+              const double v = rot->GetBinContent(x, y);
+              if (v > 0.) vv.push_back(v);
+            }
+
+          if (!vv.empty()) {
+            const std::size_t k = static_cast<std::size_t>(vv.size() * kFracSaturation);
+            std::nth_element(vv.begin(), vv.begin() + k, vv.end());
+            const double hi = vv[k];                       // 99.5th percentile
+            rot->SetMaximum(std::max(1.0, 1.05 * hi));     // tighten colour scale
+
+            // keep global bookkeeping for the 2×3 summary
+            const double lo = *std::min_element(vv.begin(), vv.end());
+            _zMin = std::min(_zMin, lo);
+            _zMax = std::max(_zMax, hi);
           }
-
-        if (!vv.empty()) {
-          std::sort(vv.begin(), vv.end());
-          const double lo = vv.front();
-          const double hi = vv[ static_cast<std::size_t>(vv.size() * kFracSaturation) ];
-          _zMin = std::min(_zMin, lo);
-          _zMax = std::max(_zMax, hi);
         }
-      }
+
         
       rot->SetTitle("");    // canvas title left blank – header will be drawn later
 
@@ -3226,16 +3350,17 @@ public:
                         / (src->GetName() + std::string(".png"));
       ensure_dir(outPng.parent_path());
 
-      TCanvas c("c_emcal", "", cw, ch);
-      c.SetRightMargin (0.17);
-      c.SetFixedAspectRatio(false);           // allow resizing in a viewer
-      c.SetLeftMargin  (0.14);
-      c.SetBottomMargin(0.08);
-      const double kTopPad = 0.055;          // 0.04 → 0.10 moves title upward
-      c.SetTopMargin(kTopPad);
-      c.SetFixedAspectRatio();                // lock 1 bin = 1 pixel
+        TCanvas c("c_emcal", "", cw, ch);
+        c.SetRightMargin (0.19);                // a bit more room for log ticks
+        c.SetLeftMargin  (0.14);
+        c.SetBottomMargin(0.08);
+        c.SetTopMargin   (0.055);
+        c.SetFixedAspectRatio();                // lock 1 bin = 1 pixel
+        c.SetLogz();                            // <<< enable logarithmic colour scale
 
-      rot->Draw("COLZ");
+        rot->Draw("COLZ");
+        rot->GetZaxis()->SetMoreLogLabels(true);
+        rot->GetZaxis()->SetNoExponent(true);   // cleaner labels (no ×10^N banner)
 
       /* draw header once a pad is active */
       TLatex tl;
@@ -3580,7 +3705,8 @@ public:
 
                 TLatex tl;
                 tl.SetNDC();
-                tl.SetTextSize(0.028);
+                tl.SetTextFont(42);
+                tl.SetTextSize(0.02);
                 tl.SetTextAlign(13);
 
                 const std::string trigLabel = prettifyTrigger(triggerName);
@@ -3962,91 +4088,146 @@ class NSDetectorQA : public QA
       if (sum > 0.0) h->Scale(100.0 / sum);
     };
 
-    // place palette tightly inside current pad (NDC)
-    auto placePalette = [](TH2* h, double x1, double x2, double y1, double y2)
-    {
-      gPad->Update();
-      if (auto pal = dynamic_cast<TPaletteAxis*>(
-              h->GetListOfFunctions()->FindObject("palette")))
+      // place palette tightly inside current pad (NDC) and silence its vertical title
+      auto placePalette = [](TH2* h, double x1, double x2, double y1, double y2)
       {
-        pal->SetLabelSize(0.035);
-        pal->SetTitleSize(0.035);
-        pal->SetX1NDC(x1); pal->SetX2NDC(x2);
-        pal->SetY1NDC(y1); pal->SetY2NDC(y2);
-      }
-    };
+        gPad->Update();
+        if (auto pal = dynamic_cast<TPaletteAxis*>(
+                h->GetListOfFunctions()->FindObject("palette")))
+        {
+          pal->SetLabelSize(0.033);
+          if (pal->GetAxis()) pal->GetAxis()->SetTitle("");   // remove default vertical title
+          pal->SetX1NDC(x1); pal->SetX2NDC(x2);
+          pal->SetY1NDC(y1); pal->SetY2NDC(y2);
+        }
+      };
 
-    // draw φ–r grid (spokes + rings) for an sEPD TH2 in the current pad
-    auto drawSepdGrid = [](TH2* h)
-    {
-      const double rInner = h->GetYaxis()->GetXmin();
-      const double rOuter = h->GetYaxis()->GetXmax();
-      const double edge   = rOuter;
+      // draw a small horizontal label centered above the palette
+      auto annotatePaletteTop = [](TH2* h, const char* text,
+                                   double dy = 0.018, double sz = 0.030)
+      {
+        gPad->Update();
+        if (auto pal = dynamic_cast<TPaletteAxis*>(
+                h->GetListOfFunctions()->FindObject("palette")))
+        {
+          const double xMid = 0.5 * (pal->GetX1NDC() + pal->GetX2NDC());
+          const double yTop = std::min(0.98, pal->GetY2NDC() + dy);   // keep inside canvas
+          TLatex lab;
+          lab.SetNDC();
+          lab.SetTextFont(42);
+          lab.SetTextAlign(23);   // centered
+          lab.SetTextSize(sz);
+          lab.DrawLatex(xMid, yTop, text);
+        }
+      };
 
-      const int    nPhi   = h->GetNbinsX();
-      const int    nRing  = h->GetNbinsY();
-      const double dPhi   = 2.0 * TMath::Pi() / std::max(nPhi,1);
-      const double dR     = (rOuter - rInner) / std::max(nRing,1);
+      // draw φ–r grid (spokes + rings) for an sEPD TH2 in the current pad
+      auto drawSepdGrid = [](TH2* h)
+      {
+        const double rInner = h->GetYaxis()->GetXmin();
+        const double rOuter = h->GetYaxis()->GetXmax();
+        const double edge   = rOuter;
 
-      // φ spokes
-      for (int i = 0; i < nPhi; ++i) {
-        const double a = i * dPhi;
-        TLine l(0., 0., edge * std::cos(a), edge * std::sin(a));
-        l.SetLineColor(kBlack); l.SetLineStyle(1); l.SetLineWidth(1); l.Draw();
-      }
-      // radial rings
-      for (int j = 1; j <= nRing; ++j) {
-        const double r = rInner + j * dR;
-        TEllipse e(0., 0., r, r);
-        e.SetFillStyle(0); e.SetLineColor(kBlack); e.SetLineStyle(1); e.SetLineWidth(1); e.Draw();
-      }
-    };
+        const int    nPhi   = h->GetNbinsX();
+        const int    nRing  = h->GetNbinsY();
+        const double dPhi   = 2.0 * TMath::Pi() / std::max(nPhi,1);
+        const double dR     = (rOuter - rInner) / std::max(nRing,1);
 
-    // one‑stop sEPD drawer (polar view + grid); withZ toggles palette
-    auto drawSepdPolar = [&](TH2* h, bool withZ, const char* zTitle)
-    {
-      // pad style
-      if (withZ) { gPad->SetLeftMargin(0.06); gPad->SetRightMargin(0.18); }
-      else       { gPad->SetLeftMargin(0.10); gPad->SetRightMargin(0.18); }
-      gPad->SetBottomMargin(0.10);
-      gPad->SetTopMargin  (0.08);
-      gPad->SetFixedAspectRatio();
-      gPad->SetLogz(0);
+        // φ spokes (heap allocate so the pad owns them until the canvas is destroyed)
+        for (int i = 0; i < nPhi; ++i) {
+          const double a = i * dPhi;
+          TLine* l = new TLine(0., 0., edge * std::cos(a), edge * std::sin(a));
+          l->SetLineColor(kBlack);
+          l->SetLineStyle(1);
+          l->SetLineWidth(1);
+          l->Draw("same");
+        }
 
-      // axis & auto limit (99.5‑pct + 5%)
-      h->SetTitle("");
-      h->GetZaxis()->SetTitle(zTitle);
-      h->GetZaxis()->SetTitleOffset(1.30);
-      const double zTop = 1.05 * quantile(h, 0.995);
-      if (zTop > 0.0) h->SetMaximum(zTop);
-      h->SetMinimum(0.0);
+        // radial rings
+        for (int j = 1; j <= nRing; ++j) {
+          const double r = rInner + j * dR;
+          TEllipse* e = new TEllipse(0., 0., r, r);
+          e->SetFillStyle(0);
+          e->SetLineColor(kBlack);
+          e->SetLineStyle(1);
+          e->SetLineWidth(1);
+          e->Draw("same");
+        }
 
-      const double edge = h->GetYaxis()->GetXmax();
-      const char* optFirst = withZ ? "COLZ POL AH" : "COL POL AH";
-      const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
+        // make sure the new primitives are registered before SaveAs()
+        gPad->Modified();
+        gPad->Update();
+      };
 
-      h->Draw(optFirst);
-      gPad->DrawFrame(-edge, -edge, edge, edge);
-      h->Draw(optSame);
-      drawSepdGrid(h);
-      if (withZ) placePalette(h, 0.88, 0.92, 0.12, 0.92);
-    };
 
-    // one‑stop MBD (TH2Poly) drawer; withZ toggles palette
-    auto drawMbdHex = [&](TH2* h, bool withZ, const char* zTitle)
-    {
-      if (withZ) { gPad->SetLeftMargin(0.10); gPad->SetRightMargin(0.12); }
-      else       { gPad->SetLeftMargin(0.12); gPad->SetRightMargin(0.06); }
-      gPad->SetBottomMargin(0.12);
-      gPad->SetTopMargin  (0.08);
+      auto drawSepdPolar = [&](TH2* h, bool withZ, const char* zTitle)
+      {
+        // symmetric pads
+        gPad->SetLeftMargin(0.12);
+        gPad->SetRightMargin(0.18);
+        gPad->SetBottomMargin(0.10);
+        gPad->SetTopMargin  (0.08);
+        gPad->SetFixedAspectRatio();
+        gPad->SetLogz(1);                                  // use logarithmic colour scale
 
-      h->SetTitle("");
-      h->GetZaxis()->SetTitle(zTitle);
-      h->GetZaxis()->SetTitleOffset(1.10);
-      h->Draw(withZ ? "POLZ" : "POL");
-      if (withZ) placePalette(h, 0.88, 0.92, 0.12, 0.92);
-    };
+        // smooth, uniform palette
+        gStyle->SetPalette(kViridis);
+        gStyle->SetNumberContours(255);
 
+        // compute robust min/max for log scale
+        double zMinPos = std::numeric_limits<double>::max();
+        for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+          for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+            const double v = h->GetBinContent(ix, iy);
+            if (v > 0.0 && v < zMinPos) zMinPos = v;
+          }
+        if (!(zMinPos > 0.0)) zMinPos = 1.0;               // fallback if empty
+
+        const double zTop = 1.05 * quantile(h, 0.995);     // 99.5th percentile + headroom
+
+        h->SetTitle("");
+        h->GetZaxis()->SetTitle(zTitle);
+        h->GetZaxis()->SetTitleOffset(1.30);
+        h->GetZaxis()->SetMoreLogLabels(true);
+        h->GetZaxis()->SetNoExponent(true);
+        h->SetMinimum(zMinPos);                             // log‑safe lower bound
+        if (zTop > zMinPos) h->SetMaximum(zTop);
+
+        const double edge = h->GetYaxis()->GetXmax();
+        const char* optFirst = withZ ? "COLZ POL AH" : "COL POL AH";
+        const char* optSame  = withZ ? "same COLZ POL AH" : "same COL POL AH";
+
+        h->Draw(optFirst);
+        gPad->DrawFrame(-edge, -edge, edge, edge);
+        h->Draw(optSame);
+        drawSepdGrid(h);
+
+        if (withZ) {
+          placePalette(h, 0.865, 0.935, 0.12, 0.92);
+          annotatePaletteTop(h, zTitle, 0.018, 0.030);
+        }
+      };
+
+      
+      auto drawMbdHex = [&](TH2* h, bool withZ, const char* zTitle)
+      {
+        // Identical margins; keep frames equal width on combined canvases
+        gPad->SetLeftMargin(0.12);
+        gPad->SetRightMargin(0.18);
+        gPad->SetBottomMargin(0.12);
+        gPad->SetTopMargin  (0.08);
+        gPad->SetFixedAspectRatio();
+
+        h->SetTitle("");
+        h->GetZaxis()->SetTitle(zTitle);           // keep meta; palette title is silenced
+        h->GetZaxis()->SetTitleOffset(1.10);
+        h->Draw(withZ ? "POLZ" : "POL");
+
+        if (withZ) {
+          placePalette(h, 0.865, 0.935, 0.12, 0.92);      // inside RHS margin
+          annotatePaletteTop(h, zTitle, 0.018, 0.030);    // horizontal label above palette
+        }
+      };
     // housekeeping on the two in‑hand histograms
     tidy(in.s); tidy(in.n);
 
@@ -4168,16 +4349,13 @@ class NSDetectorQA : public QA
         sDraw = sTmp; nDraw = nTmp;
       }
 
-      // left = South (no palette for MBD), right = North (with palette for MBD)
       c.cd(1);
       if (isHex) drawMbdHex(sDraw, /*withZ=*/false, "Occupancy [%]");
-      else       drawSepdPolar(sDraw, /*withZ=*/false, "Counts");
-      drawHeader(sDraw, DERIVED::titleSouth);
+      else       drawSepdPolar(sDraw, /*withZ=*/false, "Occupancy [%]");
 
       c.cd(2);
       if (isHex) drawMbdHex(nDraw, /*withZ=*/true,  "Occupancy [%]");
-      else       drawSepdPolar(nDraw, /*withZ=*/true,  "Counts");
-      drawHeader(nDraw, DERIVED::titleNorth);
+      else       drawSepdPolar(nDraw, /*withZ=*/true,  "Occupancy [%]");
 
       c.SaveAs(png.string().c_str());
       ulog::ok("[NSDetectorQA] Combined S/N map saved → " + png.string());
@@ -4787,8 +4965,6 @@ public:
 
 
 
-
-
 // ────────────────────────────────────────────────────────────────────
 //  Jet‑QA module
 //      • “generalHistos” : every raw histogram & projection
@@ -5228,7 +5404,8 @@ class JetQA : public QA
     }
     
     // ------------------------------------------------------------------
-    //  saveJetQA2D – draw 2‑D histogram keeping the descriptive header
+    //  saveJetQA2D – draw 2‑D histogram; for Et_vs_Nconst also add
+    //  log‑Z + quantile clipping and qualitative extra projections
     // ------------------------------------------------------------------
     static void saveJetQA2D(TH2* h, const fs::path& png)
     {
@@ -5237,15 +5414,19 @@ class JetQA : public QA
         try {
             ensure_dir(png.parent_path());
 
-            /* ── canvas identical to other Jet‑QA helpers ───────────────── */
+            // Detect the specific view we want to enhance
+            const std::string fname = png.filename().string();
+            const bool isEtVsN = (fname.find("_Et_vs_Nconst") != std::string::npos);
+
             TCanvas c;
+            if (isEtVsN) c.SetLogz();           // better dynamic range for this view
             h->SetStats(0);
 
-            /* preserve the header that saveProjection() injected */
+            // Preserve header that saveProjection() injected
             const std::string header = h->GetTitle();
             h->SetTitle("");                     // suppress ROOT’s own title box
 
-            /* automatic axis‑range trimming (same logic as handle2D) */
+            // -------- automatic axis‑range trimming (same base logic) ----------
             int fx = h->GetNbinsX()+1, lx = 0;
             int fy = h->GetNbinsY()+1, ly = 0;
             double zMin = std::numeric_limits<double>::max();
@@ -5261,21 +5442,120 @@ class JetQA : public QA
             if (fy < ly) h->GetYaxis()->SetRange(fy,ly);
             if (zMin < std::numeric_limits<double>::max()) h->SetMinimum(zMin);
 
+            // -------- quantile‑based Z clipping (Et_vs_Nconst only) ------------
+            if (isEtVsN) {
+                std::vector<double> z; z.reserve(h->GetNbinsX()*h->GetNbinsY());
+                for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
+                    for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
+                        const double v = h->GetBinContent(ix,iy);
+                        if (v > 0) z.push_back(v);
+                    }
+                if (!z.empty()) {
+                    std::sort(z.begin(), z.end());
+                    auto q = [&](double p)
+                    {
+                        const std::size_t n = z.size();
+                        const std::size_t k = static_cast<std::size_t>(std::floor(p*(n-1)));
+                        return z[ std::min(k, n-1) ];
+                    };
+                    const double zlo = q(0.01);
+                    const double zhi = q(0.995);
+                    if (zhi > zlo) {
+                        h->SetMinimum(std::max(1.0, zlo));    // >0 for log‑Z
+                        h->SetMaximum(zhi);
+                    }
+                }
+            }
+
             h->Draw("COLZ");
 
-            /* draw the preserved header */
+            // Draw preserved header (slightly larger)
             TLatex ttl; ttl.SetNDC();
             ttl.SetTextFont(42);
             ttl.SetTextAlign(23);
-            ttl.SetTextSize(0.03);
-            ttl.DrawLatex(0.50, 0.94, header.c_str());
+            ttl.SetTextSize(0.035);
+            ttl.DrawLatex(0.50, 0.95, header.c_str());
 
             c.SaveAs(png.string().c_str());
-        }
-        catch (const std::exception& ex) {
+
+            // ================== Extra qualitative views (Et_vs_Nconst) ==================
+            if (isEtVsN)
+            {
+                // ---- Overlay mean E_T profile on top of density ---------------
+                TCanvas cProf; cProf.SetLogz();
+                h->Draw("COLZ");
+                TProfile* pRaw = h->ProfileX("pEtVsN", 1, -1, "s");  // <E_T> vs N_const
+                std::unique_ptr<TProfile> pEt(pRaw);
+                if (pEt) {
+                    pEt->SetDirectory(nullptr);
+                    pEt->SetLineColor(kWhite);
+                    pEt->SetLineWidth(3);
+                    pEt->Draw("SAME");
+                }
+                fs::path pngProf = png.parent_path() / (png.stem().string() + "_withProfile.png");
+                cProf.SaveAs(pngProf.string().c_str());
+
+                // ---- Three E_T slices at X‑quantiles (low / mid / high N_const) -------
+                std::unique_ptr<TH1D> hx(h->ProjectionX("_px"));
+                if (hx && hx->Integral() > 0) {
+                    double probs[3] = {0.20, 0.50, 0.80};
+                    double qx[3]    = {0, 0, 0};
+                    hx->GetQuantiles(3, qx, probs);        // in physical N_const units
+
+                    auto window = [&](double xc){
+                        const int b   = h->GetXaxis()->FindBin(xc);
+                        const int hw  = std::max(1, h->GetNbinsX()/40);  // ~2.5% of X‑range
+                        return std::pair<int,int>( std::max(1,b-hw), std::min(h->GetNbinsX(),b+hw) );
+                    };
+                    auto w1 = window(qx[0]), w2 = window(qx[1]), w3 = window(qx[2]);
+
+                    std::unique_ptr<TH1D> e1(h->ProjectionY("Et_lowN",  w1.first, w1.second));
+                    std::unique_ptr<TH1D> e2(h->ProjectionY("Et_midN",  w2.first, w2.second));
+                    std::unique_ptr<TH1D> e3(h->ProjectionY("Et_highN", w3.first, w3.second));
+
+                    auto norm = [](TH1* hh){ double s = hh->Integral(); if (s>0) hh->Scale(1.0/s,"width"); hh->SetLineWidth(2); };
+                    if (e1) { norm(e1.get()); e1->SetLineColor(kAzure+2); }
+                    if (e2) { norm(e2.get()); e2->SetLineColor(kOrange+1); }
+                    if (e3) { norm(e3.get()); e3->SetLineColor(kMagenta+2); }
+
+                    TCanvas cSlices("cSlices","",1200,400);
+                    cSlices.Divide(3,1,0.01,0.01);
+                    auto drawSlice = [&](int pad, TH1* hh, const char* lbl)
+                    {
+                        cSlices.cd(pad); gPad->SetLogy();
+                        hh->SetTitle(Form("E_{T} | %s;E_{T} [GeV];normalised counts", lbl));
+                        hh->Draw("HIST");
+                    };
+                    if (e1) drawSlice(1, e1.get(), Form("N_{const} #approx %.0f", qx[0]));
+                    if (e2) drawSlice(2, e2.get(), Form("N_{const} #approx %.0f", qx[1]));
+                    if (e3) drawSlice(3, e3.get(), Form("N_{const} #approx %.0f", qx[2]));
+
+                    fs::path pngSlices = png.parent_path() / (png.stem().string() + "_EtSlices.png");
+                    cSlices.SaveAs(pngSlices.string().c_str());
+
+                    // ---- N_const projection with quantile markers ---------------------
+                    TCanvas cx("cNproj","",1000,450);
+                    hx->SetTitle(";N_{const};counts");
+                    hx->SetLineWidth(2);
+                    hx->Draw("HIST");
+                    const double ymax = 1.05 * hx->GetMaximum();
+                    auto vline = [&](double x, int col){
+                        TLine L(x, 0, x, ymax); L.SetLineColor(col); L.SetLineStyle(2); L.SetLineWidth(2); L.Draw();
+                    };
+                    vline(qx[0], kAzure+2);
+                    vline(qx[1], kOrange+1);
+                    vline(qx[2], kMagenta+2);
+                    fs::path pngN = png.parent_path() / (png.stem().string() + "_NconstProjection.png");
+                    cx.SaveAs(pngN.string().c_str());
+                }
+            }
+            // ==========================================================================
+
+        } catch (const std::exception& ex) {
             ulog::err(std::string("[JetQA] saveJetQA2D() exception – ")+ex.what());
         }
     }
+
 
     // =============== 3‑D ==================================================
     bool handle3D(TH3* h3, const fs::path& dir, const std::string& hname)
@@ -5294,19 +5574,157 @@ class JetQA : public QA
                               png3.filename().string(),
                               makeTitle(hname) + " (3D)"); }
 
-        const bool isEtaPhi =
-                  hname.find("_eta_phi_") != std::string::npos   ||   // legacy
-                  hname.find("EtaPhi_")    != std::string::npos;      // NEW
+          const bool isEtaPhi =
+                    hname.find("_eta_phi_") != std::string::npos   ||   // legacy
+                    hname.find("EtaPhi_")    != std::string::npos;      // NEW
 
-        if (!isEtaPhi) {
-                saveProjection(h3,"yx", dir/(hname + "_Et_vs_Area.png"));    // E_T vs A
-                saveProjection(h3,"xz", dir/(hname + "_Et_vs_Nconst.png"));  // E_T vs N
-                saveProjection(h3,"yz", dir/(hname + "_Area_vs_Nconst.png"));/* A vs N */
-        } else {
-                /* Jet E_T × η × φ  →  two useful views */
-                saveProjection(h3,"zx", dir/(hname + "_Et_vs_Eta.png"));     // E_T vs η
-                saveProjection(h3,"zy", dir/(hname + "_Et_vs_Phi.png"));     // E_T vs φ
-        }
+          if (!isEtaPhi) {
+              // Non-ηφ 3D: keep existing projections
+              saveProjection(h3,"yx", dir/(hname + "_Et_vs_Area.png"));    // E_T vs A
+              saveProjection(h3,"xz", dir/(hname + "_Et_vs_Nconst.png"));  // E_T vs N
+              saveProjection(h3,"yz", dir/(hname + "_Area_vs_Nconst.png"));/* A vs N */
+          } else {
+              /* Jet E_T × η × φ – keep the two standard views */
+              saveProjection(h3,"zx", dir/(hname + "_Et_vs_Eta.png"));     // E_T vs η
+              saveProjection(h3,"zy", dir/(hname + "_Et_vs_Phi.png"));     // E_T vs φ
+
+              /* ──────────────────────────────────────────────────────────────
+               * NEW: deeper look at η–φ peaks
+               *   1) E_T‑quantile slices → three η–φ LEGO maps (low/mid/high E_T)
+               *   2) Peak‑ROI E_T spectrum (ROI vs outside ROI vs all)
+               *   3) Line profiles through the hottest bin (η|φ0 and φ|η0)
+               * This code is self‑contained and does not alter other outputs.
+               * ────────────────────────────────────────────────────────────── */
+              try {
+                  TH1::AddDirectory(false);
+
+                  // ----- 1) Determine E_T quantiles from Z–projection -----
+                  std::unique_ptr<TH1D> hZ( h3->ProjectionZ("_pz_all", 1, h3->GetNbinsX(),
+                                                            1, h3->GetNbinsY(), "e") );
+                  if (hZ && hZ->Integral() > 0) {
+                      // Use equal‑population terciles to split low/mid/high
+                      double probs[2] = {0.33, 0.66};
+                      double qz[2]    = {0.0 , 0.0 };
+                      hZ->GetQuantiles(2, qz, probs);
+
+                      const double zmin = h3->GetZaxis()->GetXmin();
+                      const double zmax = h3->GetZaxis()->GetXmax();
+
+                      auto projSlice = [&](double zlo, double zhi, const char* tag)
+                      {
+                          const int z1sav = h3->GetZaxis()->GetFirst();
+                          const int z2sav = h3->GetZaxis()->GetLast();
+                          const int z1 = h3->GetZaxis()->FindBin(zlo + 1e-6);
+                          const int z2 = h3->GetZaxis()->FindBin(zhi - 1e-6);
+                          h3->GetZaxis()->SetRange(z1, z2);
+
+                          std::unique_ptr<TH2> h2( static_cast<TH2*>( h3->Project3D("yx") ) );
+                          h3->GetZaxis()->SetRange(z1sav, z2sav);
+
+                          if (h2) {
+                              h2->SetDirectory(nullptr);
+                              h2->SetStats(0);
+                              h2->SetContour(99);
+                              h2->SetTitle("");
+
+                              TCanvas cS(("c_"+std::string(tag)).c_str(),"",900,750);
+                              h2->Draw("LEGO2");
+
+                              fs::path pngS = dir / (hname + std::string("_EtaPhi_") + tag + ".png");
+                              cS.SaveAs(pngS.string().c_str());
+                          }
+                      };
+
+                      projSlice(zmin,  qz[0], "ET_low");
+                      projSlice(qz[0], qz[1], "ET_mid");
+                      projSlice(qz[1], zmax , "ET_high");
+                  }
+
+                  // ----- 2) Locate hottest η–φ bin and build ROI spectra -----
+                  std::unique_ptr<TH2> hAll( static_cast<TH2*>( h3->Project3D("yx") ) );
+                  if (hAll) {
+                      hAll->SetDirectory(nullptr);
+                      int bx=0, by=0, bz=0;
+                      hAll->GetMaximumBin(bx, by, bz);
+
+                      const double eta0 = hAll->GetXaxis()->GetBinCenter(bx);
+                      const double phi0 = hAll->GetYaxis()->GetBinCenter(by);
+
+                      // Convert physical half‑widths → bin windows around the peak
+                      auto windowBins = [&](TAxis* ax, double x0, double halfW) {
+                          const int b0 = ax->FindBin(x0);
+                          const double bw = ax->GetBinWidth(b0);
+                          const int hw = std::max(1, int(std::lround(halfW / bw)));
+                          return std::pair<int,int>( std::max(1, b0-hw),
+                                                     std::min(ax->GetNbins(), b0+hw) );
+                      };
+                      auto xb = windowBins(h3->GetXaxis(), eta0, 0.15);  // |Δη| ≤ 0.15
+                      auto yb = windowBins(h3->GetYaxis(), phi0, 0.25);  // |Δφ| ≤ 0.25
+
+                      std::unique_ptr<TH1D> hEtROI( h3->ProjectionZ("_pz_peakROI",
+                                                                     xb.first, xb.second,
+                                                                     yb.first, yb.second, "e") );
+                      std::unique_ptr<TH1D> hEtAll( h3->ProjectionZ("_pz_allMap",
+                                                                     1, h3->GetNbinsX(),
+                                                                     1, h3->GetNbinsY(), "e") );
+                      if (hEtROI && hEtAll) {
+                          std::unique_ptr<TH1D> hEtOut( static_cast<TH1D*>(hEtAll->Clone("_pz_outside")) );
+                          hEtOut->Add(hEtROI.get(), -1.0);
+
+                          TCanvas cE("cEtROI","",1000,700);
+                          cE.SetLogy();
+                          hEtAll->SetLineColor(kGray+2);   hEtAll->SetLineWidth(2);
+                          hEtOut->SetLineColor(kBlue+2);   hEtOut->SetLineWidth(2);
+                          hEtROI->SetLineColor(kRed+1);    hEtROI->SetLineWidth(3);
+                          hEtAll->SetTitle(Form("E_{T} spectra around peak  (#eta=%.2f, #phi=%.2f);E_{T} [GeV];counts",
+                                                eta0, phi0));
+                          hEtAll->Draw("HIST");
+                          hEtOut->Draw("HIST SAME");
+                          hEtROI->Draw("HIST SAME");
+
+                          TLegend L(0.62,0.72,0.90,0.90); L.SetBorderSize(0);
+                          L.AddEntry(hEtROI.get(), "ROI (peak)",  "l");
+                          L.AddEntry(hEtOut.get(), "Outside ROI", "l");
+                          L.AddEntry(hEtAll.get(), "All jets",    "l");
+                          L.Draw();
+
+                          fs::path pngE = dir / (hname + "_EtSpectrum_atPeak.png");
+                          cE.SaveAs(pngE.string().c_str());
+                      }
+
+                      // ----- 3) Line profiles through the peak (hold other axis fixed) -----
+                      const int xbin0 = h3->GetXaxis()->FindBin(eta0);
+                      const int ybin0 = h3->GetYaxis()->FindBin(phi0);
+
+                      std::unique_ptr<TH1D> profEta( h3->ProjectionX("_px_atPhi0",
+                                                                      ybin0, ybin0,
+                                                                      1, h3->GetNbinsZ(), "e") );
+                      std::unique_ptr<TH1D> profPhi( h3->ProjectionY("_py_atEta0",
+                                                                      xbin0, xbin0,
+                                                                      1, h3->GetNbinsZ(), "e") );
+                      if (profEta) {
+                          TCanvas cPX("cEtaProfile","",1000,450);
+                          profEta->SetTitle(Form("#int dE_{T} d#phi  at #phi=%.2f;#eta;counts", phi0));
+                          profEta->SetLineWidth(2);
+                          profEta->Draw("HIST");
+                          fs::path pngPX = dir / (hname + "_EtaProfile_atPeakPhi.png");
+                          cPX.SaveAs(pngPX.string().c_str());
+                      }
+                      if (profPhi) {
+                          TCanvas cPY("cPhiProfile","",1000,450);
+                          profPhi->SetTitle(Form("#int dE_{T} d#eta  at #eta=%.2f;#phi [rad];counts", eta0));
+                          profPhi->SetLineWidth(2);
+                          profPhi->Draw("HIST");
+                          fs::path pngPY = dir / (hname + "_PhiProfile_atPeakEta.png");
+                          cPY.SaveAs(pngPY.string().c_str());
+                      }
+                  }
+              }
+              catch (const std::exception& ex) {
+                  ulog::warn(std::string("[JetQA] extra EtaPhi slicing failed – ")+ex.what());
+              }
+          }
+
         return true;
       }
       catch (const std::exception& ex) {
@@ -5326,12 +5744,12 @@ class JetQA : public QA
       try {
         ensure_dir(png.parent_path());
 
-        /* ── canvas with generous margins for colour bar and axis titles ── */
-        TCanvas c("c3D","",1200,1000);
-        c.SetLeftMargin  (0.14);
-        c.SetBottomMargin(0.14);
-        c.SetRightMargin (0.32);                 // extra room for palette
-
+          TCanvas c("c3D","",1200,1000);
+          c.SetLeftMargin  (0.14);
+          c.SetBottomMargin(0.14);
+          c.SetRightMargin (0.32);                 // extra room for palette
+          c.SetTopMargin   (0.06);                 // ← allow header to sit higher
+          
         /* ── histogram cosmetics ─────────────────────────────────────────── */
         h->SetStats(0);
         h->SetContour(99);
@@ -5351,13 +5769,14 @@ class JetQA : public QA
         std::unique_ptr<TH2> h2;          // only used for η–φ maps
         TH1* hDraw = h;                   // histogram actually drawn (TH2/TH3 inherit from TH1)
 
-        if (isEtaPhi) {
-              h2.reset( static_cast<TH2*>( h->Project3D("yx") ) );  // η vs φ
-              h2->SetDirectory(nullptr);
-              h2->SetStats(0);
-              h2->SetContour(99);
-              hDraw = h2.get();
-        }
+          if (isEtaPhi) {
+                h2.reset(static_cast<TH2*>(h->Project3D("yx")));      // η vs φ
+                h2->SetDirectory(nullptr);
+                h2->SetStats(0);
+                h2->SetContour(99);
+                h2->SetTitle("");                                    // ← suppress "yx projection"
+                hDraw = h2.get();
+          }
 
         hDraw->Draw("LEGO2");
 
@@ -5389,14 +5808,13 @@ class JetQA : public QA
                 lab.DrawLatex(xMid, yTop, "Counts");
         }
 
-        /* ── professional header via TLatex ─────────────────────────────── */
-        {
-              TLatex ttl; ttl.SetNDC();
-              ttl.SetTextFont(42);
-              ttl.SetTextAlign(23);
-              ttl.SetTextSize(0.03);
-              ttl.DrawLatex(0.50, 0.94, makeTitle(h->GetName()).c_str());
-        }
+          {
+                TLatex ttl; ttl.SetNDC();
+                ttl.SetTextFont(42);
+                ttl.SetTextAlign(23);
+                ttl.SetTextSize(0.045);                       // larger title
+                ttl.DrawLatex(0.50, 0.975, makeTitle(h->GetName()).c_str()); // higher
+          }
 
         c.SaveAs(png.string().c_str());
       }
@@ -5570,12 +5988,43 @@ class JetQA : public QA
                                        [&](auto& p){return p.first==key;});
                 if (it != vec.end()) {
                     TH1* h = it->second.get();
-                    if (h->InheritsFrom(TH2::Class())||
-                        h->InheritsFrom(TH3::Class()))
-                        h->Draw("COLZ");
-                    else
-                        h->Draw("HIST");
 
+                    // For 3D η–φ maps, collapse E_T and draw the η×φ map with LEGO2.
+                    if (h->InheritsFrom(TH3::Class())) {
+                        TH3* h3 = static_cast<TH3*>(h);
+
+                        const bool isEtaPhi3D =
+                            (std::strstr(h3->GetName(), "EtaPhi_")    != nullptr) ||
+                            (std::strstr(h3->GetName(), "_eta_phi_")  != nullptr);
+
+                        if (isEtaPhi3D) {
+                            TH2* h2 = static_cast<TH2*>( h3->Project3D("yx") );  // η vs φ
+                            if (h2) {
+                                h2->SetDirectory(nullptr);
+                                h2->SetStats(0);
+                                h2->SetContour(99);
+                                h2->SetTitle("");
+                                _owned1D.emplace_back(h2);   // keep object alive until after SaveAs
+                                h2->Draw("LEGO2");
+                            } else {
+                                h3->SetStats(0);
+                                h3->SetContour(99);
+                                h3->Draw("LEGO2");           // fallback
+                            }
+                        } else {
+                            h3->SetStats(0);
+                            h3->SetContour(99);
+                            h3->Draw("LEGO2");
+                        }
+                    }
+                    else if (h->InheritsFrom(TH2::Class())) {
+                        TH2* h2 = static_cast<TH2*>(h);
+                        h2->SetStats(0);
+                        h2->Draw("COLZ");
+                    }
+                    else {
+                        h->Draw("HIST");
+                    }
                     // Build pretty centrality label: "lo-hi%" (ASCII hyphen)
                     std::string centLabel;
                     if (key.rfind("Cent_", 0) == 0) {
@@ -5590,9 +6039,15 @@ class JetQA : public QA
                     } else {
                         centLabel = key + "%";
                     }
+                    const double lm = gPad->GetLeftMargin();
+                    const double tm = gPad->GetTopMargin();
+                    const double xText = lm + 0.02;       // a bit inside the left margin
+                    const double yText = 1.0 - tm - 0.02; // a bit below the top margin
+
                     TLatex lb; lb.SetNDC(); lb.SetTextFont(42);
-                    lb.SetTextAlign(23); lb.SetTextSize(0.04);
-                    lb.DrawLatex(0.50, 0.92, centLabel.c_str());
+                    lb.SetTextAlign(13);                  // left-aligned, top-anchored
+                    lb.SetTextSize(0.055);                // larger font
+                    lb.DrawLatex(xText, yText, centLabel.c_str());
                 } else {
                     TLatex na; na.SetNDC(); na.SetTextFont(42);
                     na.SetTextAlign(22); na.SetTextSize(0.04);
