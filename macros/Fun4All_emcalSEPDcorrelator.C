@@ -41,7 +41,6 @@
 #include <jetbase/Jet.h>
 #include <jetbase/FastJetOptions.h>
 #include <jetbackground/FastJetAlgoSub.h>
-#include <epd/EpdReco.h>
 #include <zdcinfo/ZdcReco.h>
 #include <globalvertex/GlobalVertexReco.h>
 #include <caloreco/CaloTowerCalib.h>
@@ -63,6 +62,7 @@
 #include <jetbackground/CopyAndSubtractJets.h>
 
 // analysis module
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/localEPDbuild/EpdReco.h"
 #include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"
 
 // C / C++
@@ -80,7 +80,7 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
-R__LOAD_LIBRARY(libepd.so)
+R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libepd.so)
 R__LOAD_LIBRARY(libglobalvertex.so)
 R__LOAD_LIBRARY(libeventplaneinfo.so)
 R__LOAD_LIBRARY(libcentrality.so)      // always
@@ -231,7 +231,6 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
   CaloTowerCalib *calibIHCal = new CaloTowerCalib("HCALIN");
   calibIHCal->set_detector_type(CaloTowerDefs::HCALIN);
   se->registerSubsystem(calibIHCal);
-    
     
   std::cout << "Building clusters" << std::endl;
   RawClusterBuilderTemplate *ClusterBuilder = new RawClusterBuilderTemplate("EmcRawClusterBuilderTemplate");

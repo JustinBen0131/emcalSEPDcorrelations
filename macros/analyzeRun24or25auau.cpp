@@ -269,7 +269,7 @@ static void buildSummaryPages(const fs::path& combinedRoot,
     // ---------------------------------------------------------------------
     // Master skip switch: set to true to disable all work in this function.
     // ---------------------------------------------------------------------
-    constexpr bool kSkipBuildSummaryPages = true;  // <-- set to true to skip
+    constexpr bool kSkipBuildSummaryPages = false;  // <-- set to true to skip
     if (kSkipBuildSummaryPages) {
         static bool once = false;
         if (!once) {
@@ -468,7 +468,6 @@ static void buildSummaryPages(const fs::path& combinedRoot,
 
     std::cout << "[summary] all pages complete.\n";
 }
-
 
 
 // ╔══════════════════════════════════════════════╗
@@ -2583,6 +2582,331 @@ static void drawRunLabel(const std::string& runID)
 struct NSPair { std::shared_ptr<TH2> n, s; };
 static inline std::unordered_map<std::string, NSPair> g_nsCache;
 
+
+// =====================================================================
+// Golden-run residual checker FOR 2D CORRELATION PLOTS
+//
+//  • Turn ON/OFF with kDoResidualCheck (bool below)
+//  • Set the golden run once via kGoldenRunRef (no leading zeros needed)
+//  • Runs ONLY during the Combined pass
+//  • Reads TH2 directly from input ROOT files (kInputDir)
+//  • Writes:
+//       …/Combined/<…>/residualSummary/<histStem>/deviants_<histStem>.txt
+//       …/Combined/<…>/residualSummary/<histStem>/pageN.png  (4×4 deviants)
+// =====================================================================
+
+// ─────────────── user-tweakable local switches / thresholds ───────────────
+static constexpr bool        kDoResidualCheck = true;  // ← flip to false to disable entirely
+static const     std::string kGoldenRunRef    = "66484"; // ← set once; leading zeros not required
+
+static constexpr double      kScoreThr        = 0.35;   // composite threshold
+static constexpr double      kRmin            = 0.85;   // minimum Pearson r
+static constexpr long long   kMinEntries      = 500;    // minimum integral (all bins)
+
+// ───────────────────────── Helper #1 ────────────────────────────────
+// Bin-weighted linear stats from a TH2 (over bin centers)
+static void computeBinWeightedStats(const TH2* h,
+                                    double& m, double& b, double& r,
+                                    long long& entries)
+{
+    m = b = r = 0.0; entries = 0;
+    if (!h) return;
+
+    const TAxis* axX = h->GetXaxis();
+    const TAxis* axY = h->GetYaxis();
+    const int nBX = axX->GetNbins();
+    const int nBY = axY->GetNbins();
+
+    double S=0.0, Sx=0.0, Sy=0.0, Sxx=0.0, Syy=0.0, Sxy=0.0;
+
+    for (int ix=1; ix<=nBX; ++ix) {
+        const double x = axX->GetBinCenter(ix);
+        for (int iy=1; iy<=nBY; ++iy) {
+            const double y = axY->GetBinCenter(iy);
+            const double w = h->GetBinContent(ix,iy);
+            if (w<=0) continue;
+            S   += w;
+            Sx  += w*x;
+            Sy  += w*y;
+            Sxx += w*x*x;
+            Syy += w*y*y;
+            Sxy += w*x*y;
+        }
+    }
+
+    entries = static_cast<long long>(h->Integral(0,-1,0,-1));
+    if (S<=0.0) return;
+
+    const double invS = 1.0/S;
+    const double xbar = Sx*invS, ybar = Sy*invS;
+    const double varx = Sxx*invS - xbar*xbar;
+    const double vary = Syy*invS - ybar*ybar;
+    const double cov  = Sxy*invS - xbar*ybar;
+
+    m = (varx>0.0) ? (cov/varx) : 0.0;
+    b = ybar - m*xbar;
+    r = (varx>0.0 && vary>0.0) ? (cov/std::sqrt(varx*vary)) : 0.0;
+}
+
+// ───────────────────────── Helper #2 ────────────────────────────────
+// Golden Y-scale for normalization: weighted IQR_y (fallback range/RMS)
+static double goldenYScaleIQR(const TH2* h)
+{
+    if (!h) return 0.0;
+    std::unique_ptr<TH1> py( h->ProjectionY("_py_for_iqr", 1, -1, "e") );
+    if (!py || py->GetEntries()<=0) return 0.0;
+
+    double qs[2] = {0.0, 0.0};
+    const double ps[2] = {0.25, 0.75};
+    if (py->GetQuantiles(2, qs, ps)) {
+        const double iqr = qs[1]-qs[0];
+        if (iqr>0) return iqr;
+    }
+    int first = py->FindFirstBinAbove(0.0, 1);
+    int last  = py->FindLastBinAbove (0.0, 1);
+    if (first>=1 && last>=first) {
+        const double range = py->GetXaxis()->GetBinUpEdge(last) -
+                             py->GetXaxis()->GetBinLowEdge(first);
+        if (range>0) return range;
+    }
+    return std::max(1e-12, (double)py->GetRMS());
+}
+
+// ─────────────────────────── Final function ─────────────────────────
+// Run once per TH2 during the Combined pass
+static void runGoldenResidualCheckSimple(const fs::path& combinedRoot,
+                                         const fs::path& targetDir,   // …/Combined/…/correlations/<groupDir>[/Cent_*]
+                                         const std::string& trigger,  // TDirectory name in input files
+                                         const std::string& slice,    // "Inclusive" or "<lo>_<hi>"
+                                         const std::string& hName,    // exact TH2 just drawn for Combined
+                                         const std::string& pageTitle // page header
+                                         )
+{
+    // Master switch (internal)
+    if (!kDoResidualCheck) return;
+
+    // Accept only Combined or Combined/<trigger>
+    fs::path combDir = combinedRoot;
+    if (combDir.filename() != "Combined")
+        combDir = combDir.parent_path();
+    if (combDir.filename() != "Combined")
+        return;
+
+    // Zero-pad helper for runs
+    auto zeroPad8 = [](std::string s) {
+        s = stripLeadingZeros(s);
+        if (s.size()>=8) return s;
+        return std::string(8 - s.size(), '0') + s;
+    };
+    const std::string goldenRun = zeroPad8(kGoldenRunRef);
+
+    // Hist "stem": strip any "_<lo>_<hi>_…"
+    auto stemOf = [](const std::string& full) {
+        const std::regex re("_(\\d{1,3})_(\\d{1,3})_.*$");
+        return std::regex_replace(full, re, "");
+    };
+    const std::string histStem = stemOf(hName);
+
+    // Find the best TH2 in a file under <trigger>:
+    //   name starts with histStem; if slice != "Inclusive" requires "_<slice>_"
+    //   break ties by largest integral.
+    auto findTH2 = [&](TFile* tf) -> std::shared_ptr<TH2>
+    {
+        if (!tf) return nullptr;
+        TDirectory* d = dynamic_cast<TDirectory*>( tf->Get(trigger.c_str()) );
+        if (!d) return nullptr;
+
+        const bool needSlice = (slice != "Inclusive");
+        const std::string sliceTok = "_" + slice + "_";
+
+        double bestW = -1.0;
+        std::shared_ptr<TH2> best;
+
+        TIter it(d->GetListOfKeys());
+        while (auto* k = (TKey*)it()) {
+            const char* cl = k->GetClassName();
+            if (strcmp(cl,"TH2D") && strcmp(cl,"TH2F") && strcmp(cl,"TH2")) continue;
+
+            const std::string nm = k->GetName();
+            if (nm.rfind(histStem, 0) != 0) continue;
+            if (needSlice && nm.find(sliceTok)==std::string::npos) continue;
+
+            std::unique_ptr<TH2> h( dynamic_cast<TH2*>(k->ReadObj()) );
+            if (!h) continue;
+
+            const double w = h->Integral(0,-1,0,-1);
+            if (w > bestW) {
+                auto cln = std::shared_ptr<TH2>( static_cast<TH2*>(h->Clone()) );
+                cln->SetDirectory(nullptr);
+                best = std::move(cln);
+                bestW = w;
+            }
+        }
+        return best;
+    };
+
+    // ---------- 1) Golden line ----------
+    const fs::path goldenPath = kInputDir / ("output_" + goldenRun + ".root");
+    if (!fs::exists(goldenPath)) {
+        std::cout << "[residual][ERR] Golden file missing: " << goldenPath << "\n";
+        return;
+    }
+    std::unique_ptr<TFile> fg( TFile::Open(goldenPath.string().c_str(), "READ") );
+    if (!fg || fg->IsZombie()) { std::cout << "[residual][ERR] Can't open golden file\n"; return; }
+
+    std::shared_ptr<TH2> hG = findTH2(fg.get());
+    if (!hG) {
+        std::cout << "[residual][ERR] Golden TH2 not found under trigger=" << trigger
+                  << " stem=" << histStem << " slice=" << slice << "\n";
+        return;
+    }
+
+    long long entG=0; double mg=0, bg=0, rg=0;
+    computeBinWeightedStats(hG.get(), mg, bg, rg, entG);
+    if (entG < kMinEntries) {
+        std::cout << "[residual][WARN] Golden has too few entries (" << entG
+                  << " < " << kMinEntries << "); skipping\n";
+        return;
+    }
+    const double scaleYg = std::max(1e-9, goldenYScaleIQR(hG.get()));
+
+    // Perpendicular RMS (normalized) wrt golden line (weighted by bin content)
+    auto rmsPerpNorm = [&](const TH2* h) -> double
+    {
+        const double denom = std::sqrt(mg*mg + 1.0);
+        if (!h || denom<=0 || scaleYg<=0) return 0.0;
+
+        const TAxis* axX = h->GetXaxis();
+        const TAxis* axY = h->GetYaxis();
+        const int nBX = axX->GetNbins();
+        const int nBY = axY->GetNbins();
+
+        double Sw=0.0, Sd2=0.0;
+        for (int ix=1; ix<=nBX; ++ix) {
+            const double x = axX->GetBinCenter(ix);
+            for (int iy=1; iy<=nBY; ++iy) {
+                const double y = axY->GetBinCenter(iy);
+                const double w = h->GetBinContent(ix,iy);
+                if (w<=0) continue;
+                const double d = (mg*x - y + bg) / denom;
+                Sd2 += w*d*d;
+                Sw  += w;
+            }
+        }
+        if (Sw<=0.0) return 0.0;
+        return std::sqrt(Sd2/Sw) / scaleYg;
+    };
+
+    // ---------- 2) Scan all runs, score, collect deviants ----------
+    struct ResidRow {
+        std::string run; long long entries=0;
+        double r=0, m=0, b=0;
+        double dm_frac=0, db_norm=0, rms_perp=0, score=0;
+        std::shared_ptr<TH2> h;
+    };
+
+    std::vector<ResidRow> deviants;
+    int nFiles=0;
+
+    for (const auto& e : fs::directory_iterator(kInputDir)) {
+        if (!e.is_regular_file()) continue;
+        const std::string fn = e.path().filename().string();
+
+        std::smatch m; // match output_XXXXXXXX.root
+        if (!std::regex_match(fn, m, std::regex(R"(output_([0-9]{8})\.root)"))) continue;
+        const std::string run = m[1].str();
+        ++nFiles;
+
+        std::unique_ptr<TFile> fr( TFile::Open(e.path().string().c_str(), "READ") );
+        if (!fr || fr->IsZombie()) continue;
+
+        std::shared_ptr<TH2> h = findTH2(fr.get());
+        if (!h) continue;
+
+        long long ent=0; double mR=0, bR=0, rR=0;
+        computeBinWeightedStats(h.get(), mR, bR, rR, ent);
+
+        const double dm_frac = std::fabs(mR - mg) / std::max(1e-12, std::fabs(mg));
+        const double db_norm = std::fabs(bR - bg) / scaleYg;
+        const double rmsN    = rmsPerpNorm(h.get());
+        const double score   = std::sqrt(dm_frac*dm_frac + db_norm*db_norm + rmsN*rmsN);
+
+        const bool flag = (score > kScoreThr) || (rR < kRmin) || (ent < kMinEntries);
+        if (flag) {
+            ResidRow rr;
+            rr.run = run; rr.entries = ent; rr.r=rR; rr.m=mR; rr.b=bR;
+            rr.dm_frac=dm_frac; rr.db_norm=db_norm; rr.rms_perp=rmsN; rr.score=score;
+
+            auto cl = std::shared_ptr<TH2>( static_cast<TH2*>(h->Clone()) );
+            cl->SetDirectory(nullptr); tidyAxes(cl.get()); styleAxes(cl.get(), false);
+            rr.h = std::move(cl);
+            deviants.emplace_back(std::move(rr));
+        }
+    }
+
+    std::cout << "[residual] scanned " << nFiles << " files; deviants=" << deviants.size() << "\n";
+
+    // ---------- 3) Emit artifacts ----------
+    fs::path outDir = targetDir / "residualSummary" / histStem;
+    ensure_dir(outDir);
+
+    // 3a) CSV of deviants (text)
+    {
+        fs::path csv = outDir / ("deviants_" + histStem + ".txt");
+        std::ofstream f(csv);
+        f << "run,entries,r,m,b,delta_m_frac,delta_b_norm,rms_perp,score\n";
+        for (const auto& d : deviants) {
+            f << stripLeadingZeros(d.run) << ","
+              << d.entries << ","
+              << std::setprecision(6) << d.r << ","
+              << d.m << "," << d.b << ","
+              << d.dm_frac << "," << d.db_norm << ","
+              << d.rms_perp << "," << d.score << "\n";
+        }
+        std::cout << "[residual] wrote " << csv << "\n";
+    }
+
+    // 3b) 4×4 deviants-only pages drawn directly from TH2
+    if (!deviants.empty()) {
+        const int perPage=16, nCols=4, nRows=4;
+        const int pages = (int)((deviants.size() + perPage - 1)/perPage);
+
+        double zMax=0.0;
+        for (const auto& d : deviants) if (d.h) zMax = std::max(zMax, d.h->GetMaximum());
+        if (zMax<=0.0) zMax=1.0;
+
+        for (int p=0; p<pages; ++p) {
+            const int first = p*perPage;
+            const int last  = std::min<int>(deviants.size(), first+perPage);
+
+            TCanvas c(Form("c_deviants_%d", p+1), "", nCols*550, nRows*500);
+            c.Divide(nCols, nRows, 0.001, 0.001);
+
+            c.cd(); TLatex hd; hd.SetNDC(); hd.SetTextAlign(22); hd.SetTextFont(42); hd.SetTextSize(0.035);
+            hd.DrawLatex(0.5, 0.97, Form("%s — Deviants (Page %d)", pageTitle.c_str(), p+1));
+
+            for (int i=first; i<last; ++i) {
+                c.cd(i-first+1);
+                setupPad(gPad); gPad->SetLogz();
+                if (auto* h = deviants[i].h.get()) {
+                    h->SetMaximum(zMax); h->SetMinimum(1.0);
+                    tightenAxes(h); h->Draw("COLZ");
+                } else {
+                    TLatex miss; miss.SetNDC(); miss.SetTextAlign(22); miss.SetTextFont(42); miss.SetTextSize(0.05);
+                    miss.DrawLatex(0.5,0.5,"missing");
+                }
+                TLatex rl; rl.SetNDC(); rl.SetTextAlign(13); rl.SetTextFont(42); rl.SetTextSize(0.040);
+                rl.DrawLatex(0.02, 0.97, stripLeadingZeros(deviants[i].run).c_str());
+            }
+
+            fs::path outPng = outDir / (std::string("page") + std::to_string(p+1) + ".png");
+            c.SaveAs(outPng.string().c_str());
+            std::cout << "[residual] wrote " << outPng << "\n";
+        }
+    }
+}
+
+
 class CorrQA : public QA
 {
     
@@ -2905,6 +3229,22 @@ class CorrQA : public QA
                               outDir,            // folder that now holds pngFile
                               pngFile.filename().string(),
                               plotTitle);        // header on each summary page
+            
+            // ── Combined‑only residual scan for TH2 correlations ─────────────
+            {
+                fs::path combinedDir = root;
+                if (combinedDir.filename() != "Combined")
+                    combinedDir = combinedDir.parent_path();
+
+                if (combinedDir.filename() == "Combined" && h2) {
+                    runGoldenResidualCheckSimple(combinedDir,   // “…/outputPlots/Combined”
+                                                 outDir,        // “…/Combined/…/correlations/<groupDir>[/Cent_*]”
+                                                 m_trig,        // trigger directory name in input files
+                                                 slice,         // "Inclusive" or "<lo>_<hi>"
+                                                 hName,         // exact TH2 name just drawn
+                                                 plotTitle);    // header for pages
+                }
+            }
 
             /* cache six inclusive maps for the 2×3 calorimeter summary */
             if (!hasCent && h2) {
@@ -4162,35 +4502,35 @@ class NSDetectorQA : public QA
 
       auto drawSepdPolar = [&](TH2* h, bool withZ, const char* zTitle)
       {
-        // symmetric pads
-        gPad->SetLeftMargin(0.12);
-        gPad->SetRightMargin(0.18);
+        // Symmetric pads and a wider right margin so the palette/labels never clip
+        gPad->SetLeftMargin  (0.12);
+        gPad->SetRightMargin (0.22);   // wider RHS for palette and tick labels
         gPad->SetBottomMargin(0.10);
-        gPad->SetTopMargin  (0.08);
+        gPad->SetTopMargin   (0.08);
         gPad->SetFixedAspectRatio();
-        gPad->SetLogz(1);                                  // use logarithmic colour scale
+        gPad->SetLogz(1);
 
-        // smooth, uniform palette
-        gStyle->SetPalette(kViridis);
+        // Palette: use kBird only
+        gStyle->SetPalette(kBird);
         gStyle->SetNumberContours(255);
 
-        // compute robust min/max for log scale
+        // Robust Z range for log‑scale
         double zMinPos = std::numeric_limits<double>::max();
         for (int ix = 1; ix <= h->GetNbinsX(); ++ix)
           for (int iy = 1; iy <= h->GetNbinsY(); ++iy) {
             const double v = h->GetBinContent(ix, iy);
             if (v > 0.0 && v < zMinPos) zMinPos = v;
           }
-        if (!(zMinPos > 0.0)) zMinPos = 1.0;               // fallback if empty
+        if (!(zMinPos > 0.0)) zMinPos = 1.0;
 
-        const double zTop = 1.05 * quantile(h, 0.995);     // 99.5th percentile + headroom
+        const double zTop = 1.05 * quantile(h, 0.995);
 
         h->SetTitle("");
         h->GetZaxis()->SetTitle(zTitle);
-        h->GetZaxis()->SetTitleOffset(1.30);
+        h->GetZaxis()->SetTitleOffset(1.45);   // push title farther from ticks
         h->GetZaxis()->SetMoreLogLabels(true);
         h->GetZaxis()->SetNoExponent(true);
-        h->SetMinimum(zMinPos);                             // log‑safe lower bound
+        h->SetMinimum(zMinPos);
         if (zTop > zMinPos) h->SetMaximum(zTop);
 
         const double edge = h->GetYaxis()->GetXmax();
@@ -4203,31 +4543,36 @@ class NSDetectorQA : public QA
         drawSepdGrid(h);
 
         if (withZ) {
-          placePalette(h, 0.865, 0.935, 0.12, 0.92);
-          annotatePaletteTop(h, zTitle, 0.018, 0.030);
+          // Keep palette entirely inside the pad's right margin and give extra top room
+          placePalette(h, 0.860, 0.960, 0.12, 0.92);
+          annotatePaletteTop(h, zTitle, 0.026, 0.028);
         }
       };
 
-      
       auto drawMbdHex = [&](TH2* h, bool withZ, const char* zTitle)
       {
-        // Identical margins; keep frames equal width on combined canvases
-        gPad->SetLeftMargin(0.12);
-        gPad->SetRightMargin(0.18);
+        // Equal frame geometry on both pads; extra RHS room for palette labels
+        gPad->SetLeftMargin  (0.12);
+        gPad->SetRightMargin (0.22);
         gPad->SetBottomMargin(0.12);
-        gPad->SetTopMargin  (0.08);
+        gPad->SetTopMargin   (0.08);
         gPad->SetFixedAspectRatio();
 
+        // Palette: use kBird only
+        gStyle->SetPalette(kBird);
+        gStyle->SetNumberContours(255);
+
         h->SetTitle("");
-        h->GetZaxis()->SetTitle(zTitle);           // keep meta; palette title is silenced
-        h->GetZaxis()->SetTitleOffset(1.10);
+        h->GetZaxis()->SetTitle(zTitle);
+        h->GetZaxis()->SetTitleOffset(1.55);   // more space so text never runs off
         h->Draw(withZ ? "POLZ" : "POL");
 
         if (withZ) {
-          placePalette(h, 0.865, 0.935, 0.12, 0.92);      // inside RHS margin
-          annotatePaletteTop(h, zTitle, 0.018, 0.030);    // horizontal label above palette
+          placePalette(h, 0.860, 0.960, 0.12, 0.92);
+          annotatePaletteTop(h, zTitle, 0.026, 0.028);
         }
       };
+
     // housekeeping on the two in‑hand histograms
     tidy(in.s); tidy(in.n);
 
@@ -4243,30 +4588,59 @@ class NSDetectorQA : public QA
 
     /* ---------- save arm‑specific PNGs and build 8×8 summaries ---- */
     {
-      auto saveArm = [&](TH2* h, const char* armLabel, const char* titleTxt)
-      {
-        fs::path armDir = cPath(root, slice, DERIVED::subdir) / armLabel;
-        ensure_dir(armDir);
+        auto saveArm = [&](TH2* h, const char* armLabel, const char* titleTxt)
+        {
+          fs::path armDir = cPath(root, slice, DERIVED::subdir) / armLabel;
+          ensure_dir(armDir);
 
-        std::string armPngName =
-            std::string(DERIVED::fileName(trig)) + "_" + armLabel + ".png";
-        fs::path armPng = armDir / armPngName;
+          std::string armPngName =
+              std::string(DERIVED::fileName(trig)) + "_" + armLabel + ".png";
+          fs::path armPng = armDir / armPngName;
 
-        if (h->InheritsFrom(TH2Poly::Class())) {
-          // MBD: hex view, palette near frame, keep "Counts" for per‑arm pages
-          TCanvas cArm(("c_"+std::string(armLabel)).c_str(), "", 800, 650);
-          drawMbdHex(h, /*withZ=*/true, "Counts");
+          TCanvas cArm(("c_"+std::string(armLabel)).c_str(), "", 900, 700);
+
+          // Draw the map (with palette) using the kBird scheme
+          if (h->InheritsFrom(TH2Poly::Class()))
+            drawMbdHex(h, /*withZ=*/true, "Counts");
+          else
+            drawSepdPolar(h, /*withZ=*/true, "Counts");
+
+            // Top header: detector arm + trigger + centrality + run label
+            std::string centLabel = (slice == "Inclusive") ? "Centrality IND" : slice;
+
+            // Build run label locally (the outer 'runLabel' is not visible in this lambda)
+            std::string runLabelLocal;
+            {
+              const std::string passDir = root.parent_path().filename().string();
+              if (passDir == "Combined") {
+                runLabelLocal = "Combined Run";
+              } else {
+                std::smatch m;
+                std::regex_search(kInputFile, m, std::regex(R"((\d{8}))"));
+                runLabelLocal = !m.empty() ? ("run " + m[1].str()) : "run ?";
+              }
+            }
+
+            TLatex hdr; hdr.SetNDC(); hdr.SetTextFont(42); hdr.SetTextAlign(23); hdr.SetTextSize(0.036);
+            hdr.DrawLatex(0.50, 0.985,
+                          (std::string(titleTxt) + " — " +
+                           prettifyTrigger(trig) + " — " + centLabel + " — " + runLabelLocal).c_str());
+
+
+          // Arm statistics (entries and sum of weights)
+          const unsigned long long nEnt = static_cast<unsigned long long>(h->GetEntries());
+          const double sumW = h->GetSumOfWeights();
+          TLatex stats; stats.SetNDC(); stats.SetTextFont(42); stats.SetTextAlign(13); stats.SetTextSize(0.030);
+          stats.DrawLatex(0.14, 0.945,
+                          Form("%s: entries = %llu, #Sigma w = %.0f", armLabel, nEnt, sumW));
+
           cArm.SaveAs(armPng.string().c_str());
-        } else {
-          // sEPD: polar view with grid, palette on right (per‑arm pages)
-          TCanvas cArm(("c_"+std::string(armLabel)).c_str(), "", 800, 650);
-          drawSepdPolar(h, /*withZ=*/true, "Counts");
-          cArm.SaveAs(armPng.string().c_str());
-        }
 
-        std::string pageHeader = std::string(titleTxt) + " (" + prettifyTrigger(trig) + ")";
-        buildSummaryPages(root, armDir, armPngName, pageHeader);
-      };
+          // Summary page header (unchanged)
+          std::string pageHeader = std::string(titleTxt) + " (" + prettifyTrigger(trig) + ")";
+          buildSummaryPages(root, armDir, armPngName, pageHeader);
+        };
+
 
       saveArm(in.s, "South", DERIVED::titleSouth);
       saveArm(in.n, "North", DERIVED::titleNorth);
@@ -4299,69 +4673,77 @@ class NSDetectorQA : public QA
     }
 
     try
-    {
-      TCanvas c("c_hit", "", 1200, 600);
-      c.Divide(2, 1, 0.00, 0.01);
-
-      // header helper (reused by both arms)
-      auto drawHeader = [&](TH2* h, const char* ttl)
       {
-        const unsigned long long nEvt =
-            static_cast<unsigned long long>( h->GetEntries() );
-        std::string trigLabel = prettifyTrigger(trig);
+        TCanvas c("c_hit", "", 1400, 650);
+        c.Divide(2, 1, 0.00, 0.00);
 
-        char buf[160];
-        snprintf(buf, sizeof(buf),
-                 "%s for %s (%s, nEvents = %llu)",
-                 ttl, trigLabel.c_str(), runLabel.c_str(), nEvt);
+        // GLOBAL header across both pads: trigger + centrality + run label
+        {
+          c.cd(); // canvas (no sub‑pad)
+          std::string centLabel = (slice == "Inclusive") ? "Centrality IND" : slice;
+          TLatex hdr; hdr.SetNDC(); hdr.SetTextFont(42); hdr.SetTextAlign(23); hdr.SetTextSize(0.038);
+          // Use DERIVED::titleSouth as detector tag and indicate both arms
+          std::string detNS = std::string(DERIVED::titleSouth) + " / North";
+          hdr.DrawLatex(0.50, 0.995,
+                        (detNS + " — " + prettifyTrigger(trig) +
+                         " — " + centLabel + " — " + runLabel).c_str());
+        }
 
-        TLatex lbl;
-        lbl.SetNDC();
-        lbl.SetTextAlign(13);
-        lbl.SetTextFont(42);
-        lbl.SetTextSize(0.028);
-        lbl.DrawLatex(0.08, 0.98, buf);
-      };
+        // choose what to draw: possibly normalised clones
+        TH2 *sDraw = in.s, *nDraw = in.n, *sTmp = nullptr, *nTmp = nullptr;
 
-      // choose what to draw: possibly normalised clones
-      TH2 *sDraw = in.s, *nDraw = in.n, *sTmp = nullptr, *nTmp = nullptr;
+        if (isHex) {
+          // MBD on combined page: normalise to percent and share one palette (right)
+          auto cloneDetach = [](TH2* h){ TH2* c = static_cast<TH2*>(h->Clone()); if (c) c->SetDirectory(nullptr); return c; };
+          sTmp = cloneDetach(in.s);
+          nTmp = cloneDetach(in.n);
+          normToPercent(sTmp);
+          normToPercent(nTmp);
+          // shared z‑range after normalisation
+          double zTop = 1.05 * std::max(sTmp->GetMaximum(), nTmp->GetMaximum());
+          if (zTop <= 0.0) zTop = 1.0;
+          sTmp->SetMinimum(0.0);  nTmp->SetMinimum(0.0);
+          sTmp->SetMaximum(zTop); nTmp->SetMaximum(zTop);
+          sDraw = sTmp; nDraw = nTmp;
+        } else {
+          // sEPD on combined page: normalise each arm to its own total (percent)
+          auto cloneDetach = [](TH2* h){ TH2* c = static_cast<TH2*>(h->Clone()); if (c) c->SetDirectory(nullptr); return c; };
+          sTmp = cloneDetach(in.s);
+          nTmp = cloneDetach(in.n);
+          normToPercent(sTmp);
+          normToPercent(nTmp);
+          sDraw = sTmp; nDraw = nTmp;
+        }
 
-      if (isHex) {
-        // MBD on combined page: normalise to percent and share one palette (right)
-        auto cloneDetach = [](TH2* h){ TH2* c = static_cast<TH2*>(h->Clone()); if (c) c->SetDirectory(nullptr); return c; };
-        sTmp = cloneDetach(in.s);
-        nTmp = cloneDetach(in.n);
-        normToPercent(sTmp);
-        normToPercent(nTmp);
-        // shared z‑range after normalisation
-        double zTop = 1.05 * std::max(sTmp->GetMaximum(), nTmp->GetMaximum());
-        if (zTop <= 0.0) zTop = 1.0;
-        sTmp->SetMinimum(0.0);  nTmp->SetMinimum(0.0);
-        sTmp->SetMaximum(zTop); nTmp->SetMaximum(zTop);
-        sDraw = sTmp; nDraw = nTmp;
-      } else {
-        // sEPD on combined page: normalise each arm to its own total (percent)
-        auto cloneDetach = [](TH2* h){ TH2* c = static_cast<TH2*>(h->Clone()); if (c) c->SetDirectory(nullptr); return c; };
-        sTmp = cloneDetach(in.s);
-        nTmp = cloneDetach(in.n);
-        normToPercent(sTmp);
-        normToPercent(nTmp);
-        sDraw = sTmp; nDraw = nTmp;
-      }
+        // Left pad (South) — no palette, but margins match right pad so frames are identical
+        c.cd(1);
+        if (isHex) drawMbdHex(sDraw, /*withZ=*/false, "Occupancy [%]");
+        else       drawSepdPolar(sDraw, /*withZ=*/false, "Occupancy [%]");
+        {
+          const unsigned long long nEnt = static_cast<unsigned long long>(in.s->GetEntries());
+          const double sumW = in.s->GetSumOfWeights();
+          TLatex stats; stats.SetNDC(); stats.SetTextFont(42); stats.SetTextAlign(13); stats.SetTextSize(0.030);
+          stats.DrawLatex(0.14, 0.945, Form("South: entries = %llu, #Sigma w = %.0f", nEnt, sumW));
+        }
 
-      c.cd(1);
-      if (isHex) drawMbdHex(sDraw, /*withZ=*/false, "Occupancy [%]");
-      else       drawSepdPolar(sDraw, /*withZ=*/false, "Occupancy [%]");
+        // Right pad (North) — with palette
+        c.cd(2);
+        if (isHex) drawMbdHex(nDraw, /*withZ=*/true,  "Occupancy [%]");
+        else       drawSepdPolar(nDraw, /*withZ=*/true,  "Occupancy [%]");
+        {
+          const unsigned long long nEnt = static_cast<unsigned long long>(in.n->GetEntries());
+          const double sumW = in.n->GetSumOfWeights();
+          TLatex stats; stats.SetNDC(); stats.SetTextFont(42); stats.SetTextAlign(13); stats.SetTextSize(0.030);
+          stats.DrawLatex(0.14, 0.945, Form("North: entries = %llu, #Sigma w = %.0f", nEnt, sumW));
+        }
 
-      c.cd(2);
-      if (isHex) drawMbdHex(nDraw, /*withZ=*/true,  "Occupancy [%]");
-      else       drawSepdPolar(nDraw, /*withZ=*/true,  "Occupancy [%]");
+        c.SaveAs(png.string().c_str());
+        ulog::ok("[NSDetectorQA] Combined S/N map saved → " + png.string());
 
-      c.SaveAs(png.string().c_str());
-      ulog::ok("[NSDetectorQA] Combined S/N map saved → " + png.string());
-
-      delete sTmp; delete nTmp;
+        delete sTmp; delete nTmp;
     }
+      
+      
     catch (const std::exception& e)
     {
       ulog::err("[NSDetectorQA] Error while drawing/saving \"" +
@@ -5973,11 +6355,12 @@ class JetQA : public QA
             TCanvas c(("c_"+base).c_str(),"",3*550,2*500);
             c.Divide(3,2,0.001,0.001);
 
-            /* global header (plot type, trigger, radius) */
+            /* global header – makeTitle(base) already contains (R, centrality tag, trigger) */
             c.cd();
             TLatex hd; hd.SetNDC(); hd.SetTextFont(42); hd.SetTextAlign(22);
             hd.SetTextSize(0.038);
-            hd.DrawLatex(0.50,0.97,(makeTitle(base)+"  ["+trig+", "+rLab+']').c_str());
+            hd.DrawLatex(0.50,0.97, makeTitle(base).c_str());    // no extra [trigger, rXX]
+            (void)trig;  // keep compilers happy if -Werror=unused-variable is enabled
 
             /* draw six pads ------------------------------------------------- */
             int pad = 1;

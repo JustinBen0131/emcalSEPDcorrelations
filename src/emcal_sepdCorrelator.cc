@@ -33,8 +33,8 @@
 #include <mbd/MbdOut.h>
 #include <ffarawobjects/Gl1Packet.h>
 #include <mbd/MbdPmtContainer.h>
-#include <epd/EpdGeom.h>
-#include <epd/EpdReco.h>
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/localEPDbuild/EpdReco.h"
+#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/localEPDbuild/EpdGeom.h"
 #include <centrality/CentralityInfo.h>
 #include <calotrigger/MinimumBiasInfo.h>
 #include <calotrigger/MinimumBiasClassifier.h>   // optional but handy
