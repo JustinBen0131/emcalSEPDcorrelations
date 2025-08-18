@@ -589,10 +589,155 @@ EOF
 
 # ─────────────────────────────  main dispatch  ─────────────────────────────
 case "${1:-}" in
-  stage0)       shift; stage0 "$@" ;;
-  stage1)       shift; stage1 "$@" ;;
-  stage2)       shift; stage2 "$@" ;;
-  stage3)       shift; stage3 "$@" ;;
+  stage0)
+        note "[DISPATCH] stage0 | argv='${*}'"
+        shift
+        note "[DISPATCH] stage0 → calling: stage0 $*"
+        stage0 "$@"
+        ;;
+  stage1)
+        note "[DISPATCH] stage1 | argv='${*}'"
+        shift
+        note "[DISPATCH] stage1 → calling: stage1 $*"
+        stage1 "$@"
+        ;;
+  stage2)
+        note "[DISPATCH] stage2 | argv='${*}'"
+        shift
+        note "[DISPATCH] stage2 → calling: stage2 $*"
+        stage2 "$@"
+        ;;
+  stage3)
+        note "[DISPATCH] stage3 | argv='${*}'"
+        shift
+        note "[DISPATCH] stage3 → calling: stage3 $*"
+        stage3 "$@"
+        ;;
+  quickEventCheck)
+        # Usage:
+        #   ./runAuAuStages.sh quickEventCheck <triggerName> [topN]
+        # Example:
+        #   ./runAuAuStages.sh quickEventCheck MBD_NS_geq_2_vtx_lt_10
+        note "[DISPATCH] quickEventCheck | argv='${*}'"
+        shift
+        trig="${1:-}"
+        topN="${2:-20}"
+        note "[ARGS] trigger='${trig:-<empty>}'  topN='${topN}'"
+        [[ -n "${trig}" ]] || die "Usage: $0 quickEventCheck <triggerName> [topN]"
+        if ! [[ "${topN}" =~ ^[0-9]+$ ]]; then
+          die "topN must be an integer (got '${topN}')"
+        fi
+
+        step "Quick Event Check – ${trig}"
+        note "[SETUP] TMP_BASE='${TMP_BASE}'"
+        note "[SETUP] INPUT_DIR='${INPUT_DIR}'"
+        mkdir -p "${TMP_BASE}" || warn "[SETUP] mkdir -p '${TMP_BASE}' failed (continuing; may already exist)"
+
+        # Emit a tiny ROOT macro that scans ${INPUT_DIR} and prints Top-N runs
+        macro_path="${TMP_BASE}/quickEventCheck.C"
+        note "[GEN] Writing ROOT macro to: ${macro_path}"
+        cat > "${macro_path}" <<'CPP'
+#include <filesystem>
+#include <regex>
+#include <vector>
+#include <string>
+#include <iostream>
+#include <iomanip>
+#include <algorithm>
+#include <memory>
+#include <cmath>
+#include "TFile.h"
+#include "TDirectory.h"
+#include "TH1.h"
+
+namespace fs = std::filesystem;
+
+void quickEventCheck(const char* inDirC, const char* trigC, int topN = 20)
+{
+    const std::string inDir = inDirC ? inDirC : ".";
+    const std::string trig  = trigC  ? trigC  : "";
+    if (trig.empty()) {
+        std::cerr << "[FATAL] trigger name is empty\n";
+        return;
+    }
+
+    std::vector<std::pair<std::string, long long>> rows; // {run, scaledCount}
+    const std::regex fileRe(R"(output_([0-9]{5,12})\.root)");
+
+    for (const auto& e : fs::directory_iterator(inDir)) {
+        if (!e.is_regular_file()) continue;
+        const std::string fname = e.path().filename().string();
+
+        std::smatch m;
+        if (!std::regex_match(fname, m, fileRe)) continue;
+        const std::string run = m[1].str();
+
+        long long cnt = 0;
+        std::unique_ptr<TFile> f(TFile::Open(e.path().c_str(), "READ"));
+        if (f && !f->IsZombie()) {
+            TDirectory* d = dynamic_cast<TDirectory*>(f->Get(trig.c_str()));
+            if (d) {
+                const std::string hname = "cnt_" + trig + "_scaled";
+                TH1* h = dynamic_cast<TH1*>(d->Get(hname.c_str()));
+                if (h) {
+                    cnt = static_cast<long long>(std::llround(h->GetBinContent(1)));
+                }
+            }
+        }
+        rows.emplace_back(run, cnt);
+    }
+
+    std::sort(rows.begin(), rows.end(),
+              [](const auto& a, const auto& b){
+                  if (a.second != b.second) return a.second > b.second; // desc by count
+                  return a.first < b.first;                              // tie-break by run
+              });
+
+    const int n = std::min<int>(topN, rows.size());
+    std::size_t runW = 3;
+    for (const auto& r : rows) runW = std::max<std::size_t>(runW, r.first.size());
+
+    std::cout << "\n==========  Quick Event Check  ==========\n";
+    std::cout << "Directory : " << inDir << "\n";
+    std::cout << "Trigger   : " << trig  << "\n";
+    std::cout << "Histogram : cnt_" << trig << "_scaled\n\n";
+
+    std::cout << std::left  << std::setw(6)      << "Rank"
+              << std::setw(static_cast<int>(runW)+2) << "Run"
+              << std::right << std::setw(16)     << "Scaled Counts" << "\n";
+
+    std::cout << std::string(6 + (runW+2) + 16, '-') << "\n";
+    for (int i = 0; i < n; ++i) {
+        std::cout << std::left  << std::setw(6)                  << (i+1)
+                  << std::setw(static_cast<int>(runW)+2)         << rows[i].first
+                  << std::right << std::setw(16)                 << rows[i].second
+                  << "\n";
+    }
+    std::cout << std::string(6 + (runW+2) + 16, '-') << "\n";
+    std::cout << "Total runs scanned: " << rows.size() << "\n";
+    std::cout << "=========================================\n";
+}
+CPP
+        # Non-fatal confirmation of the generated file (do not change control flow)
+        if [[ -s "${macro_path}" ]]; then
+            note "[GEN] Macro created OK (size=$(wc -c < "${macro_path}") bytes)"
+        else
+            warn "[GEN] Macro file '${macro_path}' is missing or empty (ROOT will likely fail below)"
+        fi
+
+        note "[ROOT] Compiling and executing macro via ACLiC (C+)"
+        note "[ROOT] Build dir: ${TMP_BASE}"
+        note "[ROOT] Command: root -l -b -q -e \"gSystem->SetBuildDir(\\\"${TMP_BASE}\\\",kTRUE)\" \"${macro_path}+(\\\"${INPUT_DIR}\\\",\\\"${trig}\\\",${topN})\""
+
+        # Compile + run the macro; print the table and exit
+        root -l -b -q \
+             -e "gSystem->SetBuildDir(\"${TMP_BASE}\",kTRUE)" \
+             "${macro_path}+(\"${INPUT_DIR}\",\"${trig}\",${topN})" \
+        || die "QuickEventCheck C++ macro failed"
+
+        note "[DONE] quickEventCheck finished successfully"
+        exit 0
+        ;;
   processOnly)
         # ────────────────────────────────────────────────────────────────
         # Usage examples
@@ -602,6 +747,7 @@ case "${1:-}" in
         #   ./runAuAuStages.sh processOnly local correlations    → same, executed locally
         #   ./runAuAuStages.sh processOnly condor correlations   → filtered QA, via Condor
         # ----------------------------------------------------------------
+        note "[DISPATCH] processOnly | argv='${*}'"
         shift                                # remove keyword ‘processOnly’
         execMode="local"                     # default = run here
 
@@ -610,37 +756,42 @@ case "${1:-}" in
             execMode="$1"
             shift
         fi
+        note "[ARGS] execMode='${execMode}'"
 
-        # optional second token  →  comma‑separated QA list
-        # e.g.  correlations,pi0,jetqa
+        # optional second token  →  comma‑separated QA list (lower‑cased)
         if [[ $# -ge 1 && "$1" =~ ^[A-Za-z0-9_,]+$ ]]; then
-            export QA_ONLY="${1,,}"          # lower‑case, pass to C++
-            note "QA_ONLY filter applied → ${QA_ONLY}"
+            export QA_ONLY="${1,,}"
+            note "[FILTER] QA_ONLY='${QA_ONLY}'"
             shift
+        else
+            note "[FILTER] QA_ONLY (unset) – running full QA suite"
         fi
 
         # optional third token → trigger name(s), comma-separated
-        # examples:
-        #   MBD_NS_geq_2_vtx_lt_10
-        #   photon_10_plus_MBD_NS_geq_2_vtx_lt_150
-        #   MBD_NS_geq_2_vtx_lt_10,photon_8_plus_MBD_NS_geq_2_vtx_lt_10
         if [[ $# -ge 1 && "$1" =~ ^[A-Za-z0-9_+,]+$ ]]; then
             export TRIGGER_ONLY="$1"
-            note "TRIGGER_ONLY filter applied → ${TRIGGER_ONLY}"
+            note "[FILTER] TRIGGER_ONLY='${TRIGGER_ONLY}'"
             shift
+        else
+            note "[FILTER] TRIGGER_ONLY (unset) – all allowed triggers"
         fi
 
         COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
+        note "[CHECK] Looking for combined file: ${COMBINED}"
         [[ -f "${COMBINED}" ]] || die "Combined file ${COMBINED} not found – run stage3 first"
 
         # Tell the C++ macro it should process only the combined file
         export COMBINED_ONLY=1
         export EXTERNAL_HADD=1
+        note "[ENV] COMBINED_ONLY=1  EXTERNAL_HADD=1  VERBOSE=${VERBOSE:-0}"
 
         if [[ "${execMode}" == "local" ]]; then
+            note "[RUN] Local execution via: ${EXEC_WRAPPER} --final"
             "${EXEC_WRAPPER}" --final
         else
+            note "[RUN] Submitting Condor job for processOnly"
             launcher="${TMP_BASE}/processOnly_launcher.sh"
+            note "[FILE] Writing launcher: ${launcher}"
             cat > "${launcher}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -650,10 +801,11 @@ export COMBINED_ONLY=1
 export EXTERNAL_HADD=1
 export VERBOSE="${VERBOSE:-0}"
 exec "${EXEC_WRAPPER}" --final
-            EOF
+EOF
             chmod +x "${launcher}"
 
             sub="${TMP_BASE}/processOnly.sub"
+            note "[FILE] Writing submit file: ${sub}"
             cat > "${sub}" <<EOF
 universe      = vanilla
 executable    = ${launcher}
@@ -667,6 +819,7 @@ request_memory= 4GB
 +JobFlavour   = "tomorrow"
 queue
 EOF
+            note "[CONDOR] condor_submit ${sub}"
             condor_submit "${sub}" || die "condor_submit failed (processOnly)"
         fi
         ;;
@@ -677,35 +830,42 @@ EOF
         #   ./runAuAuStages.sh processOnlyParrallel correlations,jetqa,pi0
         #   ./runAuAuStages.sh processOnlyParrallel ALL
         # ----------------------------------------------------------------
+        note "[DISPATCH] processOnlyParrallel | argv='${*}'"
         shift  # remove keyword ‘processOnlyParrallel’
 
         COMBINED="${INPUT_DIR}/output_ALL_COMBINED.root"
+        note "[CHECK] Looking for combined file: ${COMBINED}"
         [[ -f "${COMBINED}" ]] || die "Combined file ${COMBINED} not found – run stage3 first"
 
         # Full module list; 'ALL' expands to all of these
         all_modules=(correlations hcal mbd sepd sepdother jetqa eventqa triggerqa pi0 emcal vn)
+        note "[INFO] Available modules: ${all_modules[*]}"
 
         # Parse requested modules
         req="${1:-ALL}"
         if [[ "${req^^}" == "ALL" ]]; then
             modules=( "${all_modules[@]}" )
+            note "[ARGS] Requested modules: ALL → expanding to full set"
         else
             IFS=',' read -r -a modules <<< "${req,,}"
+            note "[ARGS] Requested modules: ${modules[*]}"
         fi
 
-        mkdir -p "${TMP_BASE}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}"
+        mkdir -p "${TMP_BASE}" "${LOG_DIR}" "${STDOUT_DIR}" "${STDERR_DIR}" || \
+          warn "[SETUP] mkdir -p for tmp/log/stdout/stderr failed (continuing if already present)"
 
         # Submit one Condor job per module
         for m in "${modules[@]}"; do
             # validate module name
             if [[ ! " ${all_modules[*]} " =~ " ${m} " ]]; then
-                warn "Unknown QA module '${m}' – skipped"
+                warn "[FILTER] Unknown QA module '${m}' – skipped"
                 continue
             fi
 
-            note "Submitting parallel processOnly job for module: ${m}"
+            note "[SUBMIT] Parallel processOnly job for module: ${m}"
 
             launcher="${TMP_BASE}/processOnly_${m}.sh"
+            note "[FILE] Writing launcher: ${launcher}"
             cat > "${launcher}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -718,6 +878,7 @@ EOF
             chmod +x "${launcher}"
 
             sub="${TMP_BASE}/processOnly_${m}.sub"
+            note "[FILE] Writing submit file: ${sub}"
             cat > "${sub}" <<EOF
 universe      = vanilla
 executable    = ${launcher}
@@ -731,10 +892,13 @@ request_memory= 1.5GB
 +JobFlavour   = "tomorrow"
 queue
 EOF
+            note "[CONDOR] condor_submit ${sub}"
             condor_submit "${sub}" || warn "condor_submit failed for module ${m}"
         done
         ;;
   *)
-        echo "Usage: $0  stage0 [rescueBusy] | stage1 | stage2 | stage3 [local|condor] [skipStage2] | processOnly [local|condor] [qaList] [triggerList] | processOnlyParrallel [ALL|qaList]"
-        exit 1 ;;
+        warn "[USAGE] Invalid or missing command: '${1:-<none>}'"
+        echo "Usage: $0  stage0 [rescueBusy] | stage1 | stage2 | stage3 [local|condor] [skipStage2] | processOnly [local|condor] [qaList] [triggerList] | processOnlyParrallel [ALL|qaList] | quickEventCheck <triggerName> [topN]"
+        exit 1
+        ;;
 esac

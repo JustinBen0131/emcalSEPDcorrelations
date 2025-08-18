@@ -7704,7 +7704,7 @@ static inline std::string canonTag(std::string t)
     else if (s=="event" || s=="eventqa" || s=="events") out = "eventqa";
     else if (s=="trigger" || s=="triggerqa" || s=="trg") out = "triggerqa";
     else if (s=="jet" || s=="jetqa") out = "jetqa";
-    else if (s=="hcal" || s=="hcalqa" || s=="ihcal" || s=="ohcal" || s=="totalhcal") out = "hcal";
+    else if (s=="hcal" || s=="hcalqa" || s=="ihcal" || s=="ohcal" || s=="totalhcal") out = "hcal";#
     else if (s=="mbd" || s=="mbdqa") out = "mbd";
     else if (s=="sepd" || s=="sep" || s=="sepdaq") out = "sepd";
     else if (s=="sepdother" || s=="sepda" || s=="sepdaother" || s=="sepd_other") out = "sepdother";
