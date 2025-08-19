@@ -60,9 +60,7 @@
 #include <jetbackground/DetermineTowerBackground.h>
 #include <jetbackground/SubtractTowers.h>
 #include <jetbackground/CopyAndSubtractJets.h>
-
-// analysis module
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/localEPDbuild/EpdReco.h"
+#include <epd/EpdReco.h>
 #include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/src/emcal_sepdCorrelator.h"
 
 // C / C++
@@ -80,7 +78,7 @@ R__LOAD_LIBRARY(libcaloTreeGen.so)
 R__LOAD_LIBRARY(libjetbackground.so)
 R__LOAD_LIBRARY(libg4jets.so)
 R__LOAD_LIBRARY(libjetbase.so)
-R__LOAD_LIBRARY(/sphenix/user/patsfan753/install/lib/libepd.so)
+R__LOAD_LIBRARY(libepd.so)
 R__LOAD_LIBRARY(libglobalvertex.so)
 R__LOAD_LIBRARY(libeventplaneinfo.so)
 R__LOAD_LIBRARY(libcentrality.so)      // always
@@ -419,14 +417,14 @@ void Fun4All_emcalSEPDcorrelator(const int   nEvents   =  0,
 
   // 3e) Run‑information helper (optional but handy)
   auto* trigInfo = new TriggerRunInfoReco();
-  trigInfo->Verbosity(verbose ? 1 : 0);
+  trigInfo->Verbosity(0);
   se->registerSubsystem(trigInfo);
 
   // 3f) User analysis module – must come *last*
   auto* correl = new emcal_sepdCorrelator(outRoot);
   correl->setVzCut(10.);
   correl->enableVzCut(true);
-  correl->setVerbose(0);
+  correl->setVerbose(10);
   se->registerSubsystem(correl);
     
 

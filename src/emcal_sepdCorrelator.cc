@@ -33,8 +33,8 @@
 #include <mbd/MbdOut.h>
 #include <ffarawobjects/Gl1Packet.h>
 #include <mbd/MbdPmtContainer.h>
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/localEPDbuild/EpdReco.h"
-#include "/sphenix/u/patsfan753/scratch/emcalSEPDcorrelations/localEPDbuild/EpdGeom.h"
+#include <epd/EpdReco.h>
+#include <epd/EpdGeom.h>
 #include <centrality/CentralityInfo.h>
 #include <calotrigger/MinimumBiasInfo.h>
 #include <calotrigger/MinimumBiasClassifier.h>   // optional but handy
@@ -504,27 +504,93 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
                                nC, 0, cMax, nE, 0, eMax);
 
   H["h_SEPD_S_vs_CEMC_South"] = book2(("h_SEPD_S_vs_CEMC_South_" + trig).c_str(),
-                                      "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
-                                      nC, 0, cMax, nE, 0, eMax);
+                                        "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
+                                        nC, 0, cMax, nE, 0, eMax);
   H["h_SEPD_N_vs_CEMC_North"] = book2(("h_SEPD_N_vs_CEMC_North_" + trig).c_str(),
-                                      "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
-                                      nC, 0, cMax, nE, 0, eMax);
-    
-  H["h_IHCAL_vs_CEMC"] = book2(("h_IHCAL_vs_CEMC_" + trig).c_str(),
-                                 "IHCAL #SigmaE vs CEMC #SigmaE",
-                                 nE, 0, eMax,   nE, 0, eMax);
+                                        "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
+                                        nC, 0, cMax, nE, 0, eMax);
 
+  H["h_SEPD_S_vs_IHCAL_South"] = book2(("h_SEPD_S_vs_IHCAL_South_" + trig).c_str(),
+                                         "#SigmaQ_{sEPD South}  vs  #SigmaEt_{IHCAL #eta<0}",
+                                         nC, 0, cMax, nE, 0, eMax);
+  H["h_SEPD_N_vs_IHCAL_North"] = book2(("h_SEPD_N_vs_IHCAL_North_" + trig).c_str(),
+                                         "#SigmaQ_{sEPD North}  vs  #SigmaEt_{IHCAL #eta>0}",
+                                         nC, 0, cMax, nE, 0, eMax);
+
+  H["h_SEPD_S_vs_OHCAL_South"] = book2(("h_SEPD_S_vs_OHCAL_South_" + trig).c_str(),
+                                         "#SigmaQ_{sEPD South}  vs  #SigmaEt_{OHCAL #eta<0}",
+                                         nC, 0, cMax, nE, 0, eMax);
+  H["h_SEPD_N_vs_OHCAL_North"] = book2(("h_SEPD_N_vs_OHCAL_North_" + trig).c_str(),
+                                         "#SigmaQ_{sEPD North}  vs  #SigmaEt_{OHCAL #eta>0}",
+                                         nC, 0, cMax, nE, 0, eMax);
+
+  H["h_SEPD_S_vs_MBD_South"] = book2(("h_SEPD_S_vs_MBD_South_" + trig).c_str(),
+                                       "#SigmaQ_{sEPD South}  vs  #SigmaQ_{MBD South}",
+                                       nC, 0, cMax, nC, 0, cMax);
+  H["h_SEPD_N_vs_MBD_North"] = book2(("h_SEPD_N_vs_MBD_North_" + trig).c_str(),
+                                       "#SigmaQ_{sEPD North}  vs  #SigmaQ_{MBD North}",
+                                       nC, 0, cMax, nC, 0, cMax);
+
+  H["h_IHCAL_vs_CEMC"] = book2(("h_IHCAL_vs_CEMC_" + trig).c_str(),
+                                  "IHCAL #SigmaE vs CEMC #SigmaE",
+                                  nE, 0, eMax,   nE, 0, eMax);
   H["h_OHCAL_vs_CEMC"] = book2(("h_OHCAL_vs_CEMC_" + trig).c_str(),
-                                 "OHCAL #SigmaE vs CEMC #SigmaE",
-                                 nE, 0, eMax,   nE, 0, eMax);
-    
-    
+                                  "OHCAL #SigmaE vs CEMC #SigmaE",
+                                  nE, 0, eMax,   nE, 0, eMax);
+
+  H["h_IHCAL_vs_OHCAL"] = book2(("h_IHCAL_vs_OHCAL_" + trig).c_str(),
+                                  "IHCAL #SigmaE vs OHCAL #SigmaE",
+                                  nE, 0, eMax,   nE, 0, eMax);
+
+  H["h_CEMC_S_vs_IHCAL_South"] = book2(("h_CEMC_S_vs_IHCAL_South_" + trig).c_str(),
+                                         "#SigmaEt_{CEMC #eta<0}  vs  #SigmaEt_{IHCAL #eta<0}",
+                                         nE, 0, eMax, nE, 0, eMax);
+  H["h_CEMC_N_vs_IHCAL_North"] = book2(("h_CEMC_N_vs_IHCAL_North_" + trig).c_str(),
+                                         "#SigmaEt_{CEMC #eta>0}  vs  #SigmaEt_{IHCAL #eta>0}",
+                                         nE, 0, eMax, nE, 0, eMax);
+
+  H["h_CEMC_S_vs_OHCAL_South"] = book2(("h_CEMC_S_vs_OHCAL_South_" + trig).c_str(),
+                                         "#SigmaEt_{CEMC #eta<0}  vs  #SigmaEt_{OHCAL #eta<0}",
+                                         nE, 0, eMax, nE, 0, eMax);
+  H["h_CEMC_N_vs_OHCAL_North"] = book2(("h_CEMC_N_vs_OHCAL_North_" + trig).c_str(),
+                                         "#SigmaEt_{CEMC #eta>0}  vs  #SigmaEt_{OHCAL #eta>0}",
+                                         nE, 0, eMax, nE, 0, eMax);
+
+  H["h_IHCAL_S_vs_OHCAL_South"] = book2(("h_IHCAL_S_vs_OHCAL_South_" + trig).c_str(),
+                                          "#SigmaEt_{IHCAL #eta<0}  vs  #SigmaEt_{OHCAL #eta<0}",
+                                          nE, 0, eMax, nE, 0, eMax);
+  H["h_IHCAL_N_vs_OHCAL_North"] = book2(("h_IHCAL_N_vs_OHCAL_North_" + trig).c_str(),
+                                          "#SigmaEt_{IHCAL #eta>0}  vs  #SigmaEt_{OHCAL #eta>0}",
+                                          nE, 0, eMax, nE, 0, eMax);
+
+  H["h_MBD_S_vs_CEMC_South"] = book2(("h_MBD_S_vs_CEMC_South_" + trig).c_str(),
+                                       "#SigmaQ_{MBD South}  vs  #SigmaEt_{CEMC #eta<0}",
+                                       nC, 0, cMax, nE, 0, eMax);
+  H["h_MBD_N_vs_CEMC_North"] = book2(("h_MBD_N_vs_CEMC_North_" + trig).c_str(),
+                                       "#SigmaQ_{MBD North}  vs  #SigmaEt_{CEMC #eta>0}",
+                                       nC, 0, cMax, nE, 0, eMax);
+
+  H["h_MBD_S_vs_IHCAL_South"] = book2(("h_MBD_S_vs_IHCAL_South_" + trig).c_str(),
+                                        "#SigmaQ_{MBD South}  vs  #SigmaEt_{IHCAL #eta<0}",
+                                        nC, 0, cMax, nE, 0, eMax);
+  H["h_MBD_N_vs_IHCAL_North"] = book2(("h_MBD_N_vs_IHCAL_North_" + trig).c_str(),
+                                        "#SigmaQ_{MBD North}  vs  #SigmaEt_{IHCAL #eta>0}",
+                                        nC, 0, cMax, nE, 0, eMax);
+
+  H["h_MBD_S_vs_OHCAL_South"] = book2(("h_MBD_S_vs_OHCAL_South_" + trig).c_str(),
+                                        "#SigmaQ_{MBD South}  vs  #SigmaEt_{OHCAL #eta<0}",
+                                        nC, 0, cMax, nE, 0, eMax);
+  H["h_MBD_N_vs_OHCAL_North"] = book2(("h_MBD_N_vs_OHCAL_North_" + trig).c_str(),
+                                        "#SigmaQ_{MBD North}  vs  #SigmaEt_{OHCAL #eta>0}",
+                                        nC, 0, cMax, nE, 0, eMax);
+
   H["h_dEta_CEMC_IHCAL"] = new TH1F(("h_dEta_CEMC_IHCAL_" + trig).c_str(),
                                       "#Delta#eta (IHCAL – CEMC);#Delta#eta;Events",
                                       120, -6.0, 6.0);     // 0.1‑wide bins
   H["h_dPhi_CEMC_IHCAL"] = new TH1F(("h_dPhi_CEMC_IHCAL_" + trig).c_str(),
                                       "#Delta#phi (IHCAL – CEMC);#Delta#phi;Events",
                                       128, -TMath::Pi(), TMath::Pi());   // 5° bins
+
 
   /* --- ΣQ(sEPD South) × ΣQ(sEPD North) ----------------------- */
   H["h_SEPD_S_vs_SEPD_N"] =
@@ -588,23 +654,93 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
     addClone("h_MBD_vs_OHCAL",lo,hi,
              "MBD #SigmaQ vs OHCAL #SigmaE",nC,0,cMax, nE,0,eMax);
 
+    /* arm‑matched sEPD ↔ CEMC (existing) */
     addClone("h_SEPD_S_vs_CEMC_South",lo,hi,
-             "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
-             nC,0,cMax, nE,0,eMax);
+               "#SigmaQ_{sEPD South}  vs  #SigmaEt_{CEMC #eta<0}",
+               nC,0,cMax, nE,0,eMax);
     addClone("h_SEPD_N_vs_CEMC_North",lo,hi,
-             "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
-             nC,0,cMax, nE,0,eMax);
+               "#SigmaQ_{sEPD North}  vs  #SigmaEt_{CEMC #eta>0}",
+               nC,0,cMax, nE,0,eMax);
+
+    /* NEW ► arm‑matched sEPD ↔ IHCAL / OHCAL / MBD */
+    addClone("h_SEPD_S_vs_IHCAL_South",lo,hi,
+               "#SigmaQ_{sEPD South}  vs  #SigmaEt_{IHCAL #eta<0}",
+               nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_N_vs_IHCAL_North",lo,hi,
+               "#SigmaQ_{sEPD North}  vs  #SigmaEt_{IHCAL #eta>0}",
+               nC,0,cMax, nE,0,eMax);
+
+    addClone("h_SEPD_S_vs_OHCAL_South",lo,hi,
+               "#SigmaQ_{sEPD South}  vs  #SigmaEt_{OHCAL #eta<0}",
+               nC,0,cMax, nE,0,eMax);
+    addClone("h_SEPD_N_vs_OHCAL_North",lo,hi,
+               "#SigmaQ_{sEPD North}  vs  #SigmaEt_{OHCAL #eta>0}",
+               nC,0,cMax, nE,0,eMax);
+
+    addClone("h_SEPD_S_vs_MBD_South",lo,hi,
+               "#SigmaQ_{sEPD South}  vs  #SigmaQ_{MBD South}",
+               nC,0,cMax, nC,0,cMax);
+    addClone("h_SEPD_N_vs_MBD_North",lo,hi,
+               "#SigmaQ_{sEPD North}  vs  #SigmaQ_{MBD North}",
+               nC,0,cMax, nC,0,cMax);
+
+    addClone("h_CEMC_S_vs_IHCAL_South",lo,hi,
+               "#SigmaEt_{CEMC #eta<0}  vs  #SigmaEt_{IHCAL #eta<0}",
+               nE,0,eMax, nE,0,eMax);
+    addClone("h_CEMC_N_vs_IHCAL_North",lo,hi,
+               "#SigmaEt_{CEMC #eta>0}  vs  #SigmaEt_{IHCAL #eta>0}",
+               nE,0,eMax, nE,0,eMax);
+
+    addClone("h_CEMC_S_vs_OHCAL_South",lo,hi,
+               "#SigmaEt_{CEMC #eta<0}  vs  #SigmaEt_{OHCAL #eta<0}",
+               nE,0,eMax, nE,0,eMax);
+    addClone("h_CEMC_N_vs_OHCAL_North",lo,hi,
+               "#SigmaEt_{CEMC #eta>0}  vs  #SigmaEt_{OHCAL #eta>0}",
+               nE,0,eMax, nE,0,eMax);
+
+    addClone("h_IHCAL_S_vs_OHCAL_South",lo,hi,
+               "#SigmaEt_{IHCAL #eta<0}  vs  #SigmaEt_{OHCAL #eta<0}",
+               nE,0,eMax, nE,0,eMax);
+    addClone("h_IHCAL_N_vs_OHCAL_North",lo,hi,
+               "#SigmaEt_{IHCAL #eta>0}  vs  #SigmaEt_{OHCAL #eta>0}",
+               nE,0,eMax, nE,0,eMax);
+
+    addClone("h_MBD_S_vs_CEMC_South",lo,hi,
+               "#SigmaQ_{MBD South}  vs  #SigmaEt_{CEMC #eta<0}",
+               nC,0,cMax, nE,0,eMax);
+    addClone("h_MBD_N_vs_CEMC_North",lo,hi,
+               "#SigmaQ_{MBD North}  vs  #SigmaEt_{CEMC #eta>0}",
+               nC,0,cMax, nE,0,eMax);
+
+    addClone("h_MBD_S_vs_IHCAL_South",lo,hi,
+               "#SigmaQ_{MBD South}  vs  #SigmaEt_{IHCAL #eta<0}",
+               nC,0,cMax, nE,0,eMax);
+    addClone("h_MBD_N_vs_IHCAL_North",lo,hi,
+               "#SigmaQ_{MBD North}  vs  #SigmaEt_{IHCAL #eta>0}",
+               nC,0,cMax, nE,0,eMax);
+
+    addClone("h_MBD_S_vs_OHCAL_South",lo,hi,
+               "#SigmaQ_{MBD South}  vs  #SigmaEt_{OHCAL #eta<0}",
+               nC,0,cMax, nE,0,eMax);
+    addClone("h_MBD_N_vs_OHCAL_North",lo,hi,
+               "#SigmaQ_{MBD North}  vs  #SigmaEt_{OHCAL #eta>0}",
+               nC,0,cMax, nE,0,eMax);
+
     addClone("h_SEPD_S_vs_SEPD_N", lo,hi,
                "#SigmaQ_{sEPD South}  vs  #SigmaQ_{sEPD North}",
                nC,0,cMax, nC,0,cMax);
-      
+
     addClone("h_IHCAL_vs_CEMC", lo,hi,
                "IHCAL #SigmaE vs CEMC #SigmaE",
                nE,0,eMax, nE,0,eMax);
     addClone("h_OHCAL_vs_CEMC", lo,hi,
                "OHCAL #SigmaE vs CEMC #SigmaE",
                nE,0,eMax, nE,0,eMax);
+    addClone("h_IHCAL_vs_OHCAL", lo,hi,
+               "IHCAL #SigmaE vs OHCAL #SigmaE",
+               nE,0,eMax, nE,0,eMax);
 
+    /* keep diagnostics clones */
     clone1D("h_dEta_CEMC_IHCAL", lo,hi,
               "#Delta#eta (IHCAL – CEMC);#Delta#eta;Events",
               120,-6.0,6.0);
@@ -612,6 +748,7 @@ void emcal_sepdCorrelator::bookEnergyChargeCorrel(const std::string& trig,
     clone1D("h_dPhi_CEMC_IHCAL", lo,hi,
               "#Delta#phi (IHCAL – CEMC);#Delta#phi;Events",
               128,-TMath::Pi(),TMath::Pi());
+
   }
 }
 
@@ -650,36 +787,37 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
     }
   };
 
-  /* ---------- NEW ► helper for the three 2‑D correlation plots ---------- */
   auto addHist2D = [&](const std::string& baseKey,
-                       int    nx, double xmin, double xmax,
-                       int    ny, double ymin, double ymax,
-                       const  char* xTitle,
-                       const  char* yTitle)
-  {
-    /* global */
-    const std::string gName = baseKey + "_" + trig;
-    H[gName] = new TH2F(gName.c_str(),
-                        (std::string(xTitle) + ";" + yTitle).c_str(),
-                        nx, xmin, xmax,
-                        ny, ymin, ymax);
-
-    /* centrality‑tagged */
-    for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+                         int    nx, double xmin, double xmax,
+                         int    ny, double ymin, double ymax,
+                         const  char* xTitle,
+                         const  char* yTitle)
     {
-      const int lo = m_centEdges[i];
-      const int hi = m_centEdges[i + 1];
+      // ROOT parses titles as "MainTitle;X axis;Y axis".
+      // Build a proper string once and reuse it.
+      const std::string title = std::string(yTitle) + " vs " + xTitle
+                              + ";" + xTitle + ";" + yTitle;
 
-      std::ostringstream name;
-      name << baseKey << '_' << lo << '_' << hi << '_' << trig;
+      /* global */
+      const std::string gName = baseKey + "_" + trig;
+      H[gName] = new TH2F(gName.c_str(), title.c_str(),
+                          nx, xmin, xmax,
+                          ny, ymin, ymax);
 
-      H[name.str()] = new TH2F(name.str().c_str(),
-                               (std::string(xTitle) + ";" + yTitle).c_str(),
-                               nx, xmin, xmax,
-                               ny, ymin, ymax);
-    }
+      /* centrality‑tagged */
+      for (std::size_t i = 0; i + 1 < m_centEdges.size(); ++i)
+      {
+        const int lo = m_centEdges[i];
+        const int hi = m_centEdges[i + 1];
+
+        std::ostringstream name;
+        name << baseKey << '_' << lo << '_' << hi << '_' << trig;
+
+        H[name.str()] = new TH2F(name.str().c_str(), title.c_str(),
+                                 nx, xmin, xmax,
+                                 ny, ymin, ymax);
+      }
   };
-  /* --------------------------------------------------------------------- */
 
   /* ---- pT‑binned 1‑D spectra ------------------------------------------ */
   for (auto pt : m_ptBins)
@@ -1516,13 +1654,12 @@ void emcal_sepdCorrelator::doSepdQA(const std::vector<std::string>& trig)
             h->Fill(wrapDeg(phi), r, w);
         }
     };
-
-  /* ------------------------------------------------------------------ */
-
   /* ------------------------------------------------------------------ */
   /* 1. Per‑event initialisation                                        */
   /* ------------------------------------------------------------------ */
   m_sepdQ = 0.;
+  m_sepdQ_arm[0] = 0.;
+  m_sepdQ_arm[1] = 0.;
   std::size_t nFiredS = 0, nFiredN = 0;
 
   float qxS[4] = {0}, qyS[4] = {0};
@@ -1856,6 +1993,8 @@ void emcal_sepdCorrelator::doMbdQA(const std::vector<std::string>& trig)
   /* 0. Event‑level bookkeeping                                         */
   /* ------------------------------------------------------------------ */
   m_mbdQ      = 0.;
+  m_mbdQ_arm[0] = 0.;
+  m_mbdQ_arm[1] = 0.;
   std::size_t nFiredS = 0,            // PMT multiplicities
               nFiredN = 0;
 
@@ -2031,7 +2170,12 @@ void emcal_sepdCorrelator::doCaloQA(
   // (0)  Reset per‑event flow accumulators
   //------------------------------------------------------------------------
   for (auto& [det, vec] : m_flowAcc)
-    for (auto& acc : vec) acc.reset();
+      for (auto& acc : vec) acc.reset();
+
+  /* also reset per‑arm ΣE_t accumulators used by correlation maps */
+  m_cemcEt_arm[0] = 0.;  m_cemcEt_arm[1] = 0.;
+  m_ihcalEt_arm[0] = 0.; m_ihcalEt_arm[1] = 0.;
+  m_ohcalEt_arm[0] = 0.; m_ohcalEt_arm[1] = 0.;
 
   //------------------------------------------------------------------------
   // (1)  Tower loop – iterate over every configured calorimeter subsystem
@@ -2600,13 +2744,75 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
 
     /* — 3.1 arm‑matched maps —————————————————————— */
     binsFilled[t] += safeFill(H["h_SEPD_S_vs_CEMC_South"], m_sepdQ_arm[0],
-                              m_cemcEt_arm[0],
-                              "h_SEPD_S_vs_CEMC_South", t);
+                                m_cemcEt_arm[0],
+                                "h_SEPD_S_vs_CEMC_South", t);
     binsFilled[t] += safeFill(H["h_SEPD_N_vs_CEMC_North"], m_sepdQ_arm[1],
-                              m_cemcEt_arm[1],
-                              "h_SEPD_N_vs_CEMC_North", t);
+                                m_cemcEt_arm[1],
+                                "h_SEPD_N_vs_CEMC_North", t);
 
-    /* — 3.2 global (all events) maps ————————————— */
+    binsFilled[t] += safeFill(H["h_SEPD_S_vs_IHCAL_South"], m_sepdQ_arm[0],
+                                m_ihcalEt_arm[0],
+                                "h_SEPD_S_vs_IHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_SEPD_N_vs_IHCAL_North"], m_sepdQ_arm[1],
+                                m_ihcalEt_arm[1],
+                                "h_SEPD_N_vs_IHCAL_North", t);
+
+    binsFilled[t] += safeFill(H["h_SEPD_S_vs_OHCAL_South"], m_sepdQ_arm[0],
+                                m_ohcalEt_arm[0],
+                                "h_SEPD_S_vs_OHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_SEPD_N_vs_OHCAL_North"], m_sepdQ_arm[1],
+                                m_ohcalEt_arm[1],
+                                "h_SEPD_N_vs_OHCAL_North", t);
+
+    binsFilled[t] += safeFill(H["h_SEPD_S_vs_MBD_South"],  m_sepdQ_arm[0],
+                                m_mbdQ_arm[0],
+                                "h_SEPD_S_vs_MBD_South", t);
+    binsFilled[t] += safeFill(H["h_SEPD_N_vs_MBD_North"],  m_sepdQ_arm[1],
+                                m_mbdQ_arm[1],
+                                "h_SEPD_N_vs_MBD_North", t);
+
+    binsFilled[t] += safeFill(H["h_CEMC_S_vs_IHCAL_South"], m_cemcEt_arm[0],
+                                m_ihcalEt_arm[0],
+                                "h_CEMC_S_vs_IHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_CEMC_N_vs_IHCAL_North"], m_cemcEt_arm[1],
+                                m_ihcalEt_arm[1],
+                                "h_CEMC_N_vs_IHCAL_North", t);
+
+    binsFilled[t] += safeFill(H["h_CEMC_S_vs_OHCAL_South"], m_cemcEt_arm[0],
+                                m_ohcalEt_arm[0],
+                                "h_CEMC_S_vs_OHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_CEMC_N_vs_OHCAL_North"], m_cemcEt_arm[1],
+                                m_ohcalEt_arm[1],
+                                "h_CEMC_N_vs_OHCAL_North", t);
+
+    binsFilled[t] += safeFill(H["h_IHCAL_S_vs_OHCAL_South"], m_ihcalEt_arm[0],
+                                m_ohcalEt_arm[0],
+                                "h_IHCAL_S_vs_OHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_IHCAL_N_vs_OHCAL_North"], m_ihcalEt_arm[1],
+                                m_ohcalEt_arm[1],
+                                "h_IHCAL_N_vs_OHCAL_North", t);
+
+    binsFilled[t] += safeFill(H["h_MBD_S_vs_CEMC_South"],  m_mbdQ_arm[0],
+                                m_cemcEt_arm[0],
+                                "h_MBD_S_vs_CEMC_South", t);
+    binsFilled[t] += safeFill(H["h_MBD_N_vs_CEMC_North"],  m_mbdQ_arm[1],
+                                m_cemcEt_arm[1],
+                                "h_MBD_N_vs_CEMC_North", t);
+
+    binsFilled[t] += safeFill(H["h_MBD_S_vs_IHCAL_South"], m_mbdQ_arm[0],
+                                m_ihcalEt_arm[0],
+                                "h_MBD_S_vs_IHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_MBD_N_vs_IHCAL_North"], m_mbdQ_arm[1],
+                                m_ihcalEt_arm[1],
+                                "h_MBD_N_vs_IHCAL_North", t);
+
+    binsFilled[t] += safeFill(H["h_MBD_S_vs_OHCAL_South"], m_mbdQ_arm[0],
+                                m_ohcalEt_arm[0],
+                                "h_MBD_S_vs_OHCAL_South", t);
+    binsFilled[t] += safeFill(H["h_MBD_N_vs_OHCAL_North"], m_mbdQ_arm[1],
+                                m_ohcalEt_arm[1],
+                                "h_MBD_N_vs_OHCAL_North", t);
+
     binsFilled[t] += safeFill(H["h_SEPD_vs_CEMC" ], m_sepdQ, cemc ,
                               "h_SEPD_vs_CEMC", t);
     binsFilled[t] += safeFill(H["h_SEPD_vs_IHCAL"], m_sepdQ, ihcal,
@@ -2627,11 +2833,12 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
     binsFilled[t] += safeFill(H["h_MBD_vs_OHCAL"], m_mbdQ, ohcal,
                                 "h_MBD_vs_OHCAL", t);
 
-    /* --- NEW global EMCal ↔ HCal maps ---------------------------------- */
     binsFilled[t] += safeFill(H["h_IHCAL_vs_CEMC"], ihcal, cemc,
                                 "h_IHCAL_vs_CEMC", t);
     binsFilled[t] += safeFill(H["h_OHCAL_vs_CEMC"], ohcal, cemc,
                                 "h_OHCAL_vs_CEMC", t);
+    binsFilled[t] += safeFill(H["h_IHCAL_vs_OHCAL"], ihcal, ohcal,
+                                "h_IHCAL_vs_OHCAL", t);
 
     auto tryCent = [&](const std::string& base,
                          double x, double y)
@@ -2644,24 +2851,73 @@ void emcal_sepdCorrelator::fillCorrelations(const std::vector<std::string>& trig
         return true;
     };
       
-    binsFilled[t] += tryCent("h_SEPD_vs_CEMC",  m_sepdQ, cemc);
-    binsFilled[t] += tryCent("h_SEPD_vs_IHCAL", m_sepdQ, ihcal);
-    binsFilled[t] += tryCent("h_SEPD_vs_OHCAL", m_sepdQ, ohcal);
-    binsFilled[t] += tryCent("h_SEPD_vs_MBD",   m_sepdQ, m_mbdQ);
+      /* globals with centrality tags */
+      binsFilled[t] += tryCent("h_SEPD_vs_CEMC",   m_sepdQ, cemc);
+      binsFilled[t] += tryCent("h_SEPD_vs_IHCAL",  m_sepdQ, ihcal);
+      binsFilled[t] += tryCent("h_SEPD_vs_OHCAL",  m_sepdQ, ohcal);
+      binsFilled[t] += tryCent("h_SEPD_vs_MBD",    m_sepdQ, m_mbdQ);
 
-    binsFilled[t] += tryCent("h_MBD_vs_CEMC",   m_mbdQ, cemc);
-    binsFilled[t] += tryCent("h_MBD_vs_IHCAL",  m_mbdQ, ihcal);
-    binsFilled[t] += tryCent("h_MBD_vs_OHCAL",  m_mbdQ, ohcal);
+      binsFilled[t] += tryCent("h_MBD_vs_CEMC",    m_mbdQ, cemc);
+      binsFilled[t] += tryCent("h_MBD_vs_IHCAL",   m_mbdQ, ihcal);
+      binsFilled[t] += tryCent("h_MBD_vs_OHCAL",   m_mbdQ, ohcal);
 
-    binsFilled[t] += tryCent("h_SEPD_S_vs_CEMC_South", m_sepdQ_arm[0],
+      binsFilled[t] += tryCent("h_IHCAL_vs_CEMC",  ihcal,  cemc);
+      binsFilled[t] += tryCent("h_OHCAL_vs_CEMC",  ohcal,  cemc);
+      binsFilled[t] += tryCent("h_IHCAL_vs_OHCAL", ihcal,  ohcal);
+
+      binsFilled[t] += tryCent("h_SEPD_S_vs_CEMC_South", m_sepdQ_arm[0],
                                m_cemcEt_arm[0]);
-    binsFilled[t] += tryCent("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1],
+      binsFilled[t] += tryCent("h_SEPD_N_vs_CEMC_North", m_sepdQ_arm[1],
                                m_cemcEt_arm[1]);
-        
-    binsFilled[t] += tryCent("h_SEPD_S_vs_SEPD_N",
-                                 m_sepdQ_arm[0], m_sepdQ_arm[1]);
-    binsFilled[t] += tryCent("h_IHCAL_vs_CEMC", ihcal, cemc);
-    binsFilled[t] += tryCent("h_OHCAL_vs_CEMC", ohcal, cemc);
+
+      binsFilled[t] += tryCent("h_SEPD_S_vs_IHCAL_South", m_sepdQ_arm[0],
+                               m_ihcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_SEPD_N_vs_IHCAL_North", m_sepdQ_arm[1],
+                               m_ihcalEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_SEPD_S_vs_OHCAL_South", m_sepdQ_arm[0],
+                               m_ohcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_SEPD_N_vs_OHCAL_North", m_sepdQ_arm[1],
+                               m_ohcalEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_SEPD_S_vs_MBD_South",   m_sepdQ_arm[0],
+                               m_mbdQ_arm[0]);
+      binsFilled[t] += tryCent("h_SEPD_N_vs_MBD_North",   m_sepdQ_arm[1],
+                               m_mbdQ_arm[1]);
+
+      binsFilled[t] += tryCent("h_CEMC_S_vs_IHCAL_South", m_cemcEt_arm[0],
+                               m_ihcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_CEMC_N_vs_IHCAL_North", m_cemcEt_arm[1],
+                               m_ihcalEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_CEMC_S_vs_OHCAL_South", m_cemcEt_arm[0],
+                               m_ohcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_CEMC_N_vs_OHCAL_North", m_cemcEt_arm[1],
+                               m_ohcalEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_IHCAL_S_vs_OHCAL_South", m_ihcalEt_arm[0],
+                               m_ohcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_IHCAL_N_vs_OHCAL_North", m_ihcalEt_arm[1],
+                               m_ohcalEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_MBD_S_vs_CEMC_South",    m_mbdQ_arm[0],
+                               m_cemcEt_arm[0]);
+      binsFilled[t] += tryCent("h_MBD_N_vs_CEMC_North",    m_mbdQ_arm[1],
+                               m_cemcEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_MBD_S_vs_IHCAL_South",   m_mbdQ_arm[0],
+                               m_ihcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_MBD_N_vs_IHCAL_North",   m_mbdQ_arm[1],
+                               m_ihcalEt_arm[1]);
+
+      binsFilled[t] += tryCent("h_MBD_S_vs_OHCAL_South",   m_mbdQ_arm[0],
+                               m_ohcalEt_arm[0]);
+      binsFilled[t] += tryCent("h_MBD_N_vs_OHCAL_North",   m_mbdQ_arm[1],
+                               m_ohcalEt_arm[1]);
+
+      /* keep this cross‑check */
+      binsFilled[t] += tryCent("h_SEPD_S_vs_SEPD_N",
+                               m_sepdQ_arm[0], m_sepdQ_arm[1]);
   } // trigger loop
 
   /* —— 4. Human‑readable one‑line summary ——————————————————— */
