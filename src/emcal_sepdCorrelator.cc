@@ -855,8 +855,8 @@ void emcal_sepdCorrelator::bookPi0MassSpectra(const std::string& trig,
 
 void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
 {
-    /* one TProfile per {detector, harmonic, centrality} filled versus *real* pT */
-    std::vector<double> ptEdge;                         // lower‑edge array
+    /* one TProfile per {detector, harmonic, centrality} filled versus tower ENERGY (QA mode) */
+    std::vector<double> ptEdge;                         // lower-edge array (reused for ENERGY bins)
     ptEdge.reserve(m_ptBins.size()+1);
     ptEdge.push_back(m_ptBins.front().first);
     for (auto& b : m_ptBins) ptEdge.push_back(b.second);
@@ -866,7 +866,7 @@ void emcal_sepdCorrelator::bookFlowQA(const std::string& trig, HistMap& H)
       std::ostringstream name;
       name << "p_v" << n << '_' << det << '_' << lo << '_' << hi << '_' << trig;
       auto* p = new TProfile(name.str().c_str(),
-                             Form("v_{%d} (%s);p_{T}^{tower} [GeV];v_{%d}",
+                             Form("v_{%d} (%s);E^{tower} [GeV];v_{%d}",
                                   n,det.c_str(),n),
                              ptEdge.size()-1, &ptEdge[0], "s");
       p->SetStats(0);
@@ -2107,8 +2107,8 @@ void emcal_sepdCorrelator::accumulateFlowContribution(const std::string& calorim
     {
       static std::unordered_set<std::string> warned;
       if (warned.insert(detKey).second)
-        LOG(1, CLR_YELLOW, "      [WARN] detector \"" << detKey
-                               << "\" missing or pT‑bin out of range");
+          LOG(1, CLR_YELLOW, "      [WARN] detector \"" << detKey
+                                         << "\" missing or bin index out of range");
       return;
     }
 
@@ -2212,23 +2212,23 @@ void emcal_sepdCorrelator::doCaloQA(
         
         RawTowerGeom* tg   = ck.second.g->get_tower_geometry(key);
         const double  eta  = tg ? tg->get_eta() : 0.0;
-        const double  et   = e  / std::cosh(eta);           // transverse energy
-        
-        /* 1‑C) ΣE bookkeeping per arm ---------------------------------- */
+        const double  eTow = e;
+
+        /* 1-C) ΣE bookkeeping per arm ---------------------------------- */
         if (label == "CEMC")
         {
-            isSouthCEMC(ieta) ? m_cemcEt_arm[0] += et
-            : m_cemcEt_arm[1] += et;
+            isSouthCEMC(ieta) ? m_cemcEt_arm[0] += eTow
+            : m_cemcEt_arm[1] += eTow;
         }
         else if (label == "IHCAL")
         {
-            isSouthHCal(ieta) ? m_ihcalEt_arm[0] += et
-            : m_ihcalEt_arm[1] += et;
+            isSouthHCal(ieta) ? m_ihcalEt_arm[0] += eTow
+            : m_ihcalEt_arm[1] += eTow;
         }
         else if (label == "OHCAL")
         {
-            isSouthHCal(ieta) ? m_ohcalEt_arm[0] += et
-            : m_ohcalEt_arm[1] += et;
+            isSouthHCal(ieta) ? m_ohcalEt_arm[0] += eTow
+            : m_ohcalEt_arm[1] += eTow;
         }
         
         /* 1‑D) η–φ hit‑map fills (global + centrality) ------------------ */
@@ -2260,42 +2260,43 @@ void emcal_sepdCorrelator::doCaloQA(
         
         /* ----------------------------------------------------------------
          * (A)  vₙ accumulators   (harmonics n = 1,2,3)
-         *      – one entry per pT‑bin  ×  detector
+         *      – one entry per ENERGY-bin × detector (QA mode)
+         *      – weight = tower ENERGY (eTow)
          * ----------------------------------------------------------------*/
         int ptBin = -1;
         for (std::size_t b = 0; b < m_ptBins.size(); ++b)
-            if (et >= m_ptBins[b].first && et < m_ptBins[b].second)
+            if (eTow >= m_ptBins[b].first && eTow < m_ptBins[b].second)
             { ptBin = static_cast<int>(b); break; }
-        
-        if (et < 0)
+
+        if (eTow < 0)
         {
-            LOG(20, CLR_YELLOW, "      [WARN] negative et=" << et
+            LOG(20, CLR_YELLOW, "      [WARN] negative energy=" << eTow
                 << " – tower skipped");
             continue;
         }
-        
+
         if (ptBin < 0)          // clamp under/overflow to nearest bin edge
         {
-            ptBin = (et < m_ptBins.front().first) ? 0
-            : static_cast<int>(m_ptBins.size() - 1);
-            
+            ptBin = (eTow < m_ptBins.front().first) ? 0
+                 : static_cast<int>(m_ptBins.size() - 1);
+
             static bool warned = false;
             if (!warned)
             {
-                LOG(20, CLR_YELLOW, "      [INFO] et=" << et
-                    << " outside configured pT range – clamped "
+                LOG(20, CLR_YELLOW, "      [INFO] energy=" << eTow
+                    << " outside configured ENERGY range – clamped "
                     << "to bin " << ptBin);
                 warned = true;
             }
         }
-        
+
         double phi = tg ? tg->get_phi() : 0.0;        // (-π,π]
         if (phi < 0) phi += 2.*M_PI;                  //  [0,2π)
-        
+
         /* cache CEMC tower positions for later Δη/Δφ comparisons -------- */
         if (label == "CEMC")
             cemcPos.emplace_back(eta, phi);
-        
+
         /* Δη/Δφ resolution plots: nearest CEMC tower to an IHCAL tower -- */
         if (label == "IHCAL" && !cemcPos.empty())
         {
@@ -2309,7 +2310,7 @@ void emcal_sepdCorrelator::doCaloQA(
                     bestDEta = dEta;  bestDPhi = dPhi;
                 }
             }
-            
+
             for (const auto& t : trig)
             {
                 /* global */
@@ -2317,25 +2318,26 @@ void emcal_sepdCorrelator::doCaloQA(
                 ->Fill(bestDEta);
                 static_cast<TH1F*>(qaHistogramsByTrigger[t]["h_dPhi_CEMC_IHCAL"])
                 ->Fill(bestDPhi);
-                
-                /* centrality‑tagged */
+
+                /* centrality-tagged */
                 if (hasCentSlice)
                 {
                     const std::string kEta = "h_dEta_CEMC_IHCAL" + centTag + '_' + t;
                     const std::string kPhi = "h_dPhi_CEMC_IHCAL" + centTag + '_' + t;
-                    
+
                     if (auto it = qaHistogramsByTrigger[t].find(kEta);
                         it != qaHistogramsByTrigger[t].end())
                         static_cast<TH1F*>(it->second)->Fill(bestDEta);
-                    
+
                     if (auto it = qaHistogramsByTrigger[t].find(kPhi);
                         it != qaHistogramsByTrigger[t].end())
                         static_cast<TH1F*>(it->second)->Fill(bestDPhi);
                 }
             }
         }
-        
-        accumulateFlowContribution(label, ieta, et, phi, ptBin);
+
+        /* pass ENERGY as the weight */
+        accumulateFlowContribution(label, ieta, eTow, phi, ptBin);
     }
 
     LOG(3, CLR_GREEN, "    " << label << " : "
@@ -3312,10 +3314,84 @@ emcal_sepdCorrelator::fillFlowHists(const std::vector<std::string>& trig)
                             << "  v=( " << v1 << ", " << v2 << ", " << v3 << " )"
                             << "  Σw=" << a.sumW);
         }
+    }
+ }
+
+ /* --- fill combined “_T” profiles from S/N with proper weights ----- */
+ {
+   auto fill_T_from_SN = [&](const std::string& base)
+   {
+     const std::string detS = base + "_S";
+     const std::string detN = base + "_N";
+     const std::string detT = base + "_T";
+
+     // both S and N must exist in m_flowAcc
+     if (!m_flowAcc.count(detS) || !m_flowAcc.count(detN) || !m_flowAcc.count(detT)) return;
+
+     const auto& vecS = m_flowAcc.at(detS);
+     const auto& vecN = m_flowAcc.at(detN);
+
+     // For each energy (bin) index, build “T” v_n as weighted average of S and N
+     for (std::size_t ib = 0; ib < vecS.size() && ib < vecN.size(); ++ib)
+     {
+       const FlowAcc& aS = vecS[ib];
+       const FlowAcc& aN = vecN[ib];
+
+       const double wS = aS.sumW;
+       const double wN = aN.sumW;
+       const double W  = wS + wN;
+       if (W <= 0.) continue;
+
+       // energy-bin center to plot on x-axis (consistent with booking)
+       const double xCtr = 0.5 * (m_ptBins[ib].first + m_ptBins[ib].second);
+
+       // project S against North EP and N against South EP (same as above),
+       // then combine by weights W = wS + wN
+       auto proj_v = [&](const FlowAcc& a, bool southArm, int n)
+       {
+         const double c = southArm
+                          ? (n==1 ? std::cos(m_psi1_N) : (n==2 ? std::cos(2.*m_psi2_N) : std::cos(3.*m_psi3_N)))
+                          : (n==1 ? std::cos(m_psi1_S) : (n==2 ? std::cos(2.*m_psi2_S) : std::cos(3.*m_psi3_S)));
+         const double s = southArm
+                          ? (n==1 ? std::sin(m_psi1_N) : (n==2 ? std::sin(2.*m_psi2_N) : std::sin(3.*m_psi3_N)))
+                          : (n==1 ? std::sin(m_psi1_S) : (n==2 ? std::sin(2.*m_psi2_S) : std::sin(3.*m_psi3_S)));
+         const double qx = a.qx[n], qy = a.qy[n];
+         return (a.sumW > 0.) ? (qx*c + qy*s) / a.sumW : 0.0;
+       };
+
+       const double v1S = proj_v(aS, /*southArm=*/true , 1);
+       const double v2S = proj_v(aS, /*southArm=*/true , 2);
+       const double v3S = proj_v(aS, /*southArm=*/true , 3);
+       const double v1N = proj_v(aN, /*southArm=*/false, 1);
+       const double v2N = proj_v(aN, /*southArm=*/false, 2);
+       const double v3N = proj_v(aN, /*southArm=*/false, 3);
+
+       const double v1T = (wS*v1S + wN*v1N) / W;
+       const double v2T = (wS*v2S + wN*v2N) / W;
+       const double v3T = (wS*v3S + wN*v3N) / W;
+
+       for (const std::string& t : trig)
+       {
+         auto& H = qaHistogramsByTrigger[t];
+         const std::string k1 = Form("p_v1_%s_%d_%d_%s", detT.c_str(), lo, hi, t.c_str());
+         const std::string k2 = Form("p_v2_%s_%d_%d_%s", detT.c_str(), lo, hi, t.c_str());
+         const std::string k3 = Form("p_v3_%s_%d_%d_%s", detT.c_str(), lo, hi, t.c_str());
+         if (auto* p = dynamic_cast<TProfile*>(H[k1])) p->Fill(xCtr, v1T, 1.0);
+         if (auto* p = dynamic_cast<TProfile*>(H[k2])) p->Fill(xCtr, v2T, 1.0);
+         if (auto* p = dynamic_cast<TProfile*>(H[k3])) p->Fill(xCtr, v3T, 1.0);
+       }
      }
+   };
+
+   // Detectors that have S/N/T triplets booked
+   fill_T_from_SN("CEMC");
+   fill_T_from_SN("IHCAL");
+   fill_T_from_SN("OHCAL");
+   fill_T_from_SN("HCAL");
+   fill_T_from_SN("ALL");
   }
 
-  /* (4) store ⟨cos n ΔΨ⟩ (n = 1,2,3) for later Rₙ extraction ----------- */
+  /* (4) store ⟨cos n ΔΨ⟩ (n = 1,2,3) for later Rₙ extraction ----------- */
   const double cos1 = std::cos( m_psi1_N - m_psi1_S );
   const double cos2 = std::cos( 2.*(m_psi2_N - m_psi2_S) );
   const double cos3 = std::cos( 3.*(m_psi3_N - m_psi3_S) );
