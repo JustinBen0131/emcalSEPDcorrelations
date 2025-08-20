@@ -31,10 +31,13 @@
 #
 #    [OPTION]       firstTen       – with *condor*: cap the launch to 10 chunks
 #                   round <N>      – with *condor*: use segment file # N
+#                   checkJobCount  – with *condor*: print ONLY how many jobs
+#                                    would be submitted (no submission)
 #                   <runID>        – with *local*: which run to test
 #
 #./run_auau_run3_qa_submit.sh         run25auau caloFitting         splitRunList run3goldenRuns.txt
-#./run_auau_run3_qa_submit.sh run25auau caloFitting condor round 1
+#./run_auau_run3_qa_submit.sh         run25auau caloFitting         condor checkJobCount
+#./run_auau_run3_qa_submit.sh         run25auau caloFitting         condor round 1
 #  Examples
 #  ────────
 #  • Run-24 quick local test (first DST only)
@@ -45,6 +48,9 @@
 #
 #  • Submit the first 10 CALOFITTING chunks for a smoke test
 #      ./run_auau_run3_qa_submit.sh run25auau caloFitting condor firstTen
+#
+#  • Count jobs for the Run-3 CALOFITTING campaign (no submission)
+#      ./run_auau_run3_qa_submit.sh run25auau caloFitting condor checkJobCount
 #
 #  • Split a golden-run list into segment files of ≤10 000 Condor jobs each
 #      ./run_auau_run3_qa_submit.sh run25auau splitRunList run25GoldenRuns.txt
@@ -69,7 +75,9 @@
 #                     first run) and prints progress messages.
 #  • condor         : Walks every *.list file (or the supplied run list) and
 #                     submits one Condor job per CHUNK_SIZE files.  Optional
-#                     “firstTen” hard-caps the launch at 10 jobs.
+#                     “firstTen” hard-caps the launch at 10 jobs. Optional
+#                     “checkJobCount” prints the number of jobs that would be
+#                     submitted and exits without submitting.
 #  • splitRunList   : Utility helper.  Takes a plain-text list of run numbers
 #                     and produces runSegment_<DATASET>_<n>.txt files that each
 #                     expand to ≤ MAX_JOBS Condor jobs.
@@ -82,6 +90,7 @@
 #  run_auau_run3_qa.sh – executable Condor wrapper (called per chunk)
 #
 ##############################################################################
+
 
 set -euo pipefail
 shopt -s extglob
@@ -272,13 +281,17 @@ if [[ "$mode" == "splitRunList" ]]; then
 fi
 
 # ------------------------------------------------------------------
-# 6. VERBOSITY / CAP
+# 6. VERBOSITY / CAP  +  DRY-COUNT MODE
 # ------------------------------------------------------------------
 VERBOSE=0
 [[ "$mode" == "condorTest" || "$mode" == "condor" ]] && VERBOSE=1   # verbose for *all* Condor submissions
 
-vecho() {                               # helper: prints only when VERBOSE=1
-  if (( VERBOSE )); then
+# DRYCOUNT=1 when user requests job-count only (no submission, still verbose)
+DRYCOUNT=0
+[[ "$mode" == "condor" && "${limitSwitch:-}" == "checkJobCount" ]] && DRYCOUNT=1
+
+vecho() {                               # helper: always prints in verbose OR dry-count
+  if (( VERBOSE )) || (( DRYCOUNT )); then
     printf "%b\n" "${CLR_B}•${CLR_RST} $*"
   fi
   return 0
@@ -407,12 +420,14 @@ for idx in "${!runs[@]}"; do
   runDec=$((10#$runPad))
   masterList=${listFiles[$idx]}
 
-  echo "Considering run $runPad  (list: $(basename "$masterList"))"
+  vecho "Considering run $runPad  (list: $(basename "$masterList"))"
 
   rm -f "${TMP_LIST_DIR}/run${runPad}_chunk_"* 2>/dev/null || true
+  vecho "  Splitting $(basename "$masterList") into chunks of ${CHUNK_SIZE} files…"
   split -l "$CHUNK_SIZE" -d -a 3 "$masterList" "${TMP_LIST_DIR}/run${runPad}_chunk_"
 
-  mapfile -t chunks < <(ls "${TMP_LIST_DIR}/run${runPad}_chunk_"* 2>/dev/null)
+  mapfile -t chunks < <(ls "${TMP_LIST_DIR}/run${runPad}_chunk_"* 2>/dev/null | sort)
+  vecho "  Found ${#chunks[@]} chunks for run ${runPad}"
   (( ${#chunks[@]} )) || { warn "Empty run $runPad – skipped."; continue; }
 
   if (( jobCap && submitted + ${#chunks[@]} > jobCap )); then
@@ -440,26 +455,37 @@ request_memory= 8500MB
 +JobFlavour   = "tomorrow"
 queue
 EOS
-    if condor_submit "$subFile" >/dev/null; then
+    if (( DRYCOUNT )); then
+      vecho "  counting chunk $chunkNo/${#chunks[@]} → $(basename "$listFile")"
       (( ++submitted ))
-      echo "  submitted chunk $chunkNo/${#chunks[@]}"
     else
-      warn "condor_submit failed for $subFile"
+      if condor_submit "$subFile" >/dev/null; then
+        (( ++submitted ))
+        echo "  submitted chunk $chunkNo/${#chunks[@]}"
+      else
+        warn "condor_submit failed for $subFile"
+      fi
     fi
   done
 
-  echo "Completed run $runPad – jobs now at $submitted"
+  vecho "Completed run $runPad – jobs now at $submitted"
   [[ "$mode" == "condorTest" ]] && { echo "condorTest done."; break; }
 done
 
-good "Grand‑total Condor jobs submitted: $submitted"
-[[ $jobCap -gt 0 ]] && say  "Launch cap in effect          : $jobCap"
+if (( DRYCOUNT )); then
+  # Job-count only: print just the number (no colour, no extra text)
+  printf '%d\n' "$submitted"
+  exit 0
+else
+  good "Grand-total Condor jobs submitted: $submitted"
+  [[ $jobCap -gt 0 ]] && say  "Launch cap in effect          : $jobCap"
 
-# ------------------------------------------------------------------
-#  After a successful “condor round N” submission, delete the file
-#  we just processed so the next round is clearly the next segment.
-# ------------------------------------------------------------------
-if [[ "$mode" == "condor" && "$limitSwitch" == "round" && -n "$runListFile" ]]; then
-  rm -f "$runListFile" && good "Segment file $(basename "$runListFile") deleted"
+  # ----------------------------------------------------------------
+  # After a successful “condor round N” submission, delete the file
+  # we just processed so the next round is clearly the next segment.
+  # ----------------------------------------------------------------
+  if [[ "$mode" == "condor" && "$limitSwitch" == "round" && -n "$runListFile" ]]; then
+    rm -f "$runListFile" && good "Segment file $(basename "$runListFile") deleted"
+  fi
 fi
 ##############################################################################
