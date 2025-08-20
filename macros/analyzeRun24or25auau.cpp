@@ -3335,43 +3335,69 @@ class CorrQA : public QA
         return std::regex_replace(h, re, "");
     }
 
-    /* ==================================================================== *
-     * §1  North / South paired canvas (unchanged logic, moved to a helper) *
-     * ==================================================================== */
-    void handleNorthSouthPairing(const std::string& hName,bool isNorth,bool isSouth,
+    void handleNorthSouthPairing(const std::string& hName,
+                                 bool isNorth, bool isSouth,
                                  bool hasCent, [[maybe_unused]] const std::string& groupDir,
-                                 const std::string& slice,TObject* o)
+                                 const std::string& slice, TObject* o)
     {
-        const bool isNScandidate =
-            (hName.find("SEPD")!=std::string::npos || hName.find("sEPD")!=std::string::npos) &&
-            (isNorth ^ isSouth);
+        // Re-extract detector tokens and canonical names so we can decide if this
+        // histogram is in a family we want to pair (even if it is not sEPD-only).
+        std::string tokA, tokB;
+        {
+            const std::size_t vsPos = hName.find("_vs_");
+            if (vsPos != std::string::npos) {
+                tokA = hName.substr(2, vsPos - 2);    // drop leading "h_"
+                tokB = hName.substr(vsPos + 4);
+            } else {
+                // If not an “…_vs_…” map, nothing to pair here.
+                return;
+            }
+        }
 
+        const std::string detA = canonicalDet(tokA);  // EMCal/IHCal/OHCal/MBD/sEPD/…
+        const std::string detB = canonicalDet(tokB);
+
+        auto isCal = [](const std::string& d){ return d=="EMCal" || d=="IHCal" || d=="OHCal"; };
+        auto isRef = [](const std::string& d){ return d=="MBD"  || d=="sEPD"; };
+
+        // Families we want to pair:
+        //   ( Calorimeter ∈ {EMCal,IHCal,OHCal} ) × ( Reference ∈ {MBD,sEPD} )
+        //   plus the original pure sEPD N–S case.
+        const bool isPairFamily =
+            ( (isCal(detA) && isRef(detB)) || (isCal(detB) && isRef(detA)) ) ||
+            ( detA=="sEPD" && detB=="sEPD" );
+
+        // Require exactly one arm tag (we will pair the opposite arm when it arrives)
+        const bool isNScandidate = isPairFamily && (isNorth ^ isSouth);
         if (!isNScandidate) return;
 
-        std::string baseKey = std::regex_replace(hName,
-                                                 std::regex("(_North|_South)"),
-                                                 "");
+        // Normalise a cache key by removing the explicit arm token so that the
+        // North/South halves land in the same slot.
+        std::string baseKey = std::regex_replace(hName, std::regex("(_North|_South)"), "");
         const std::string cacheKey = groupDir + "|" + baseKey + "|" + slice;
-        auto& pair = g_nsCache[cacheKey];
 
+        // Clone and park this arm into the pair structure.
         auto* cl = static_cast<TH2*>(o->Clone());
-        cl->SetDirectory(nullptr);  tidyAxes(cl); styleAxes(cl,false);
+        cl->SetDirectory(nullptr);
+        tidyAxes(cl);
+        styleAxes(cl,false);
+
+        auto& pair = g_nsCache[cacheKey];
         (isSouth ? pair.s : pair.n).reset(cl);
 
-        if (pair.n && pair.s) {                          // both halves ready
+        // When both halves are available, produce the combined plots.
+        if (pair.n && pair.s)
+        {
             fs::path dir = root / "correlations" / groupDir;
             if (hasCent) dir /= ("Cent_" + slice);
             ensure_dir(dir);
 
-            /* ------------------------------------------------------------ *
-             * 1.  Produce a single “North + South” map by a straightforward
-             *     bin‑by‑bin ADDITION, preserving statistics.
-             * ------------------------------------------------------------ */
+            // 1) Combined (South + North) map by binwise addition
             std::unique_ptr<TH2> hTot(
-                static_cast<TH2*>(pair.s->Clone(
-                    (baseKey + std::string("_combined")).c_str())));
-            hTot->Add(pair.n.get());                    // ⟵ real addition
-            tidyAxes(hTot.get());  styleAxes(hTot.get(), false);
+                static_cast<TH2*>(pair.s->Clone( (baseKey + std::string("_combined")).c_str())));
+            hTot->Add(pair.n.get());
+            tidyAxes(hTot.get());
+            styleAxes(hTot.get(), false);
 
             fs::path pngTot = dir / (baseKey + std::string("_combined.png"));
             {
@@ -3384,17 +3410,15 @@ class CorrQA : public QA
                 cTot.SaveAs(pngTot.string().c_str());
             }
 
-            /* ------------------------------------------------------------ *
-             * 2.  Keep the original side‑by‑side view for quick checks.
-             * ------------------------------------------------------------ */
+            // 2) Side-by-side North / South view (same Z scale)
             fs::path pngNS = dir / (baseKey + std::string("_NS.png"));
-
-            const double zMax = std::max(pair.n->GetMaximum(),
-                                          pair.s->GetMaximum());
+            const double zMax = std::max(pair.n->GetMaximum(), pair.s->GetMaximum());
             pair.n->SetMaximum(zMax);  pair.s->SetMaximum(zMax);
             pair.n->SetMinimum(1);     pair.s->SetMinimum(1);
 
-            TCanvas c("c_ns","",1200,600); c.Divide(2,1,0.01,0.01);
+            TCanvas c("c_ns","",1200,600);
+            c.Divide(2,1,0.01,0.01);
+
             c.cd(1); setupPad(gPad); gPad->SetLogz();
             tightenAxes(pair.s.get());
             pair.s->DrawCopy("COLZ");
@@ -3406,9 +3430,9 @@ class CorrQA : public QA
             drawRunLabel(stripLeadingZeros(root.parent_path().filename().string()));
             c.SaveAs(pngNS.string().c_str());
 
-            g_nsCache.erase(cacheKey);                  // clean‑up
+            // Done with this pair
+            g_nsCache.erase(cacheKey);
         }
-
     }
 
     /* ==================================================================== *
