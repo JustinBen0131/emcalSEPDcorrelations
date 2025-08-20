@@ -5415,14 +5415,32 @@ class JetQA : public QA
         //----------------------------------------------------------------
         // 1.1  Build destination directory:  …/<slice>/jetQA/generalHistos/<rXX>
         //----------------------------------------------------------------
-        const std::string slice = sliceKey(n);       // e.g. "Inclusive" or "Cent_0_10"
-        const std::string rLab  = radiusTag(n);      // e.g. "r02", "r04", …
+          const std::string slice = sliceKey(n);     // e.g. "Inclusive" or "Cent_0_10"
+          const std::string rLab  = radiusTag(n);    // e.g. "r02", "r04", …
+          bool isEvt3D = ( n.find("_evt") != std::string::npos ) &&
+                         ( n.rfind("h_jetEtEtaPhi_",0) == 0 || n.rfind("h_jetEt_eta_phi_",0) == 0 );
 
-        fs::path baseGen =
-            cPath(root, slice,
-                  fs::path("jetQA/generalHistos") / rLab);
+          // Extract evt tag if present (e.g. "_evt000123")
+          std::string evtTag;
+          if (isEvt3D)
+          {
+              std::smatch m;
+              if (std::regex_search(n, m, std::regex(R"(_evt([0-9]+))")))
+                  evtTag = std::string("evt") + m[1].str();
+              else
+                  evtTag = "evtUnknown";
+          }
 
-        ensure_dir(baseGen);                         // may throw on permission issues
+          fs::path baseGen = isEvt3D
+              ? cPath(root,
+                      "Inclusive",                               // per-event maps are not centrality-aggregated
+                      fs::path("jetQA/perEvent") / rLab / evtTag)
+              : cPath(root,
+                      slice,
+                      fs::path("jetQA/generalHistos") / rLab);
+
+          ensure_dir(baseGen);
+
 
         //----------------------------------------------------------------
         // 1.2  Delegate to the original helpers; propagate their return
@@ -5455,6 +5473,9 @@ class JetQA : public QA
            * at the very end of the run. Accept both "0_10" and "Cent_0_10".
            * If sliceKey() didn't carry centrality, recover lo_hi from name.
            * ──────────────────────────────────────────────────────────────── */
+          /* For per-event histograms we do NOT cache into centrality grids.
+           * Keep the existing behaviour for standard (aggregated) histograms. */
+          if (!isEvt3D)
           {
               std::string slNorm = slice;                 // "Inclusive" or "0_10" or "Cent_0_10"
 
