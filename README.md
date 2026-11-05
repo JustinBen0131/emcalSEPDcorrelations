@@ -1,8 +1,18 @@
-# CALO × sEPD × MBD – **Run‑25 Au+Au (CALOFITTING)**  
-*(patsfan753 · July 2025 · BNL sPHENIX farm)*
+# Run-by-run calorimeter and forward-detector monitoring in sPHENIX
 
-End‑to‑end instructions to turn raw **CALOFITTING** DSTs into merged,
-analysis‑ready ROOT files **and** publication‑quality flow‑vₙ plots.
+During data taking, a drop in recorded energy can reflect a readout problem or a change in the collisions selected by the trigger. A second detector provides an independent reference. Justin Bennett built this workflow to compare the electromagnetic and hadronic calorimeters with the sPHENIX Event Plane Detector (sEPD) and Minimum Bias Detector (MBD) in gold–gold data. The analysis keeps the two detector arms and trigger selections separate, so a change confined to one side or trigger can be investigated in the affected runs.
+
+The C++ module produces correlation histograms. The ROOT analysis compares runs and checks whether entire groups of calorimeter sectors have lost occupancy. These checks identify where to investigate. Attributing an anomaly to a specific hardware fault also requires the detector experts’ operating and maintenance records.
+
+## Where to see the diagnostics
+
+- [Arm-matched detector correlations](https://github.com/JustinBen0131/emcalSEPDcorrelations/blob/b6496a45fa0865d042a368ba22b020473a6ced33/src/emcal_sepdCorrelator.cc#L2743-L2780) show which calorimeter and forward-detector signals are compared for each trigger.
+- [Run-by-run readout check](https://github.com/JustinBen0131/emcalSEPDcorrelations/blob/b6496a45fa0865d042a368ba22b020473a6ced33/macros/analyzeRun24or25auau.cpp#L3766-L3814) maps empty sectors to their readout groups.
+- [Merged calorimeter-validation fix](https://github.com/sPHENIX-Collaboration/coresoftware/pull/3475) documents Bennett’s separate correction to the interface-board index in shared reconstruction software.
+
+## Running the Run-25 analysis
+
+The instructions below describe the July 2025 CALOFITTING workflow from detector data to merged ROOT histograms and flow plots.
 
 ---
 
